@@ -1,5 +1,6 @@
 using System.Globalization;
 using System.Text;
+using System.Text.RegularExpressions;
 using System.Text.Json.Nodes;
 
 namespace GTINSyncWB;
@@ -11,6 +12,8 @@ public static class Matching
         var chars=s.Trim().Normalize(NormalizationForm.FormD).Where(c=>CharUnicodeInfo.GetUnicodeCategory(c)!=UnicodeCategory.NonSpacingMark && char.IsLetterOrDigit(c));
         return new string(chars.ToArray()).ToUpperInvariant();
     }
+    // Identity comparison keeps punctuation: PANTS-1 and PANTS1, XL+ and XL are different products/sizes.
+    public static string ExactKey(string? s)=>Regex.Replace((s??"").Trim().Normalize(NormalizationForm.FormKC),@"\s+"," ").ToUpperInvariant();
     public static string Color(Listing card)
     {
         if (!string.IsNullOrWhiteSpace(card.Color)) return card.Color;
@@ -33,12 +36,12 @@ public static class Matching
             var color=Color(card);
             var row=new MatchRow{ShopId=card.ShopId,Shop=card.ShopName,NmId=card.NmId,VendorCode=card.VendorCode,Color=color,WbSize=wbSize,ChrtId=chrt,Status=MatchStatus.Missing};
             result.Add(row);
-            if(chrt==0 || Normalize(color)=="" || Normalize(card.VendorCode)=="" || Normalize(wbSize)=="") {row.Detail="Thiếu định danh WB (mã hàng, màu, size hoặc chrtID)";continue;}
+            if(chrt==0 || ExactKey(color)=="" || ExactKey(card.VendorCode)=="" || ExactKey(wbSize)=="") {row.Detail="Thiếu định danh WB (mã hàng, màu, size hoặc chrtID)";continue;}
             // A product-specific model mapping and size mapping are explicit; no global size guess.
             var model=config.ProductRules.GetValueOrDefault(card.ShopId+":"+card.VendorCode,card.VendorCode);
-            var mappedSize=config.SizeRules.GetValueOrDefault(card.ShopId+":"+Normalize(model)+":"+Normalize(wbSize),wbSize);
-            var mappedColor=config.ColorRules.GetValueOrDefault(card.ShopId+":"+Normalize(model)+":"+Normalize(color),color);
-            var candidates=goods.Where(g=>Normalize(g.Model)==Normalize(model) && Normalize(g.Color)==Normalize(mappedColor) && Normalize(g.Size)==Normalize(mappedSize)).ToList();
+            var mappedSize=config.SizeRules.GetValueOrDefault(card.ShopId+":"+ExactKey(model)+":"+ExactKey(wbSize),wbSize);
+            var mappedColor=config.ColorRules.GetValueOrDefault(card.ShopId+":"+ExactKey(model)+":"+ExactKey(color),color);
+            var candidates=goods.Where(g=>ExactKey(g.Model)==ExactKey(model) && ExactKey(g.Color)==ExactKey(mappedColor) && ExactKey(g.Size)==ExactKey(mappedSize)).ToList();
             if(candidates.Count==0){row.Detail="Không có đủ mã mẫu + màu + size trùng khớp";continue;}
             if(candidates.Any(g=>!g.Accessible)){row.Status=MatchStatus.AccessDenied;row.Detail="Không có quyền đọc đủ thuộc tính thẻ";continue;}
             if(candidates.Any(g=>!g.Status.Equals("published",StringComparison.OrdinalIgnoreCase))){row.Status=MatchStatus.Unpublished;row.Detail="Thẻ chưa công bố";continue;}
@@ -49,7 +52,7 @@ public static class Matching
             var slots=cards.Where(c=>c.ShopId==card.ShopId).SelectMany(c=>Json.A(c.Raw,"sizes").Select(s=>(Card:c,Size:s))).Where(pair=>Json.A(pair.Size,"skus").Any(x=>x?.ToString()==gtin)).ToList();
             if(slots.Any(pair=>Json.L(pair.Size,"chrtID")!=chrt || pair.Card.NmId!=card.NmId)){row.Status=MatchStatus.Conflict;row.Detail="GTIN đã nằm ở size khác";continue;}
             row.Status=slots.Count>0?MatchStatus.Existing:MatchStatus.Exact;
-            row.Detail=row.Status==MatchStatus.Exact?"Sẵn sàng, cần seller xác nhận":"GTIN đã có";
+            row.Detail=row.Status==MatchStatus.Exact?"Mã hàng + màu + size trùng theo định danh hoặc ánh xạ riêng; cần xác nhận":"GTIN đã có";
         }
         return result;
     }
