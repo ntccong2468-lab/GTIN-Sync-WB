@@ -25,11 +25,11 @@ dotnet publish src/GTINSyncWB/GTINSyncWB.csproj -c Release -r win-x64 --self-con
 & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' installer\GTINSyncWB.iss
 ```
 
-Workflow `.github/workflows/windows.yml` chạy test, build, cài sạch, xác nhận lối tắt desktop, khởi động ứng dụng và chụp giao diện trên Windows. Bản cài 0.2.0 được tạo tại [Windows CI run #9](https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/36237594218) từ commit `e4deae474d6643f50e66ada4419896b19f3d5724`: 17 assertions đạt, build, cài đặt và smoke test đạt. SHA-256 của tệp `.exe`: `8c16d80bb683a97286ff5fb5b27737079e9fa623364971530f24ea326f280d5b`.
+Workflow `.github/workflows/windows.yml` chạy test, build, cài sạch, xác nhận lối tắt desktop, khởi động ứng dụng và chụp giao diện trên Windows. Bản cài 0.2.0 được tạo tại [Windows CI run #11](https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/36237955290) từ commit `ab9584bdc1181b771e59fc06e72c02d3b26c5326`: 17 assertions đạt, build, cài đặt và smoke test đạt. SHA-256 của tệp `.exe`: `d7d95d37718f04daf292d1f03a7f4b8d6e76569be0b307a1a8f37ef392bd2de1`.
 
 ### Sửa giao diện 0.2.0
 
-Thanh bên rộng hơn; sáu ô Tổng quan và thông báo dùng bố cục co giãn; các nhóm thao tác Ghép GTIN xuống dòng khi hẹp, bảng cuộn ngang/dọc và có chỉ dẫn khi chưa có dữ liệu. Ảnh chụp từ ứng dụng đã cài trên Windows CI gồm giao diện sáng/tối, chế độ mẫu/trống và tỷ lệ mô phỏng 125%.
+Thanh bên rộng hơn; sáu ô Tổng quan và thông báo dùng bố cục co giãn; các nhóm thao tác Ghép GTIN xuống dòng khi hẹp, bảng cuộn ngang/dọc và có chỉ dẫn khi chưa có dữ liệu. Ảnh chụp từ ứng dụng đã cài trên Windows CI gồm giao diện sáng/tối, chế độ mẫu/trống, cửa sổ phóng to và tỷ lệ mô phỏng 125%.
 
 ## Giới hạn bản 0.2.0
 
