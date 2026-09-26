@@ -4,6 +4,12 @@ internal static class Program
     [STAThread] static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+        using var instance=new Mutex(true,@"Local\GTINSyncWB",out var firstInstance);
+        if(!firstInstance)
+        {
+            if(args.Length==0)MessageBox.Show("GTIN Sync WB đang mở trong phiên Windows này.","GTIN Sync WB",MessageBoxButtons.OK,MessageBoxIcon.Information);
+            return;
+        }
         if(args.Length==2 && args[0]=="--ui-snapshot")
         {
             using var window=new Dashboard();
@@ -18,7 +24,7 @@ internal static class Program
             try
             {
                 var storage=new Storage(smokeFolder);
-                storage.Save(new Settings{Organization="Smoke test",ProtectedCatalogKey=Secrets.Protect(value),Shops=[new Shop{Name="Smoke shop",ProtectedToken=Secrets.Protect("separate-wb-smoke-key")]});
+                storage.Save(new Settings{Organization="Smoke test",ProtectedCatalogKey=Secrets.Protect(value),Shops=[new Shop{Name="Smoke shop",ProtectedToken=Secrets.Protect("separate-wb-smoke-key")}]});
                 var saved=storage.Load();
                 if(saved.Organization!="Smoke test" || Secrets.Reveal(saved.ProtectedCatalogKey)!=value || saved.Shops.Count!=1 || Secrets.Reveal(saved.Shops[0].ProtectedToken)!="separate-wb-smoke-key")Environment.Exit(3);
             }

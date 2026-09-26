@@ -36,6 +36,10 @@ var mock=new MockHandler();var api=new CatalogApi(new ApiTransport(mock));
 var read=await api.Read("test-key",new DateTime(2026,1,1),new DateTime(2026,1,2),null,CancellationToken.None);
 Check(read.Count==2 && read.All(x=>x.Model=="PANTS"),"NK pagination and detailed attributes");
 Check(mock.Calls.Count(x=>x.Contains("product-list"))==2,"NK follows total/offset");
+var wbPages=new WbPagesHandler();
+var wbRead=await new WbApi(new ApiTransport(wbPages)).Read(shop,"dummy",CancellationToken.None);
+Check(wbRead.Count==101 && wbRead.Last().NmId==101,"WB cursor pagination reads the final page");
+Check(wbPages.Requests.Count==2 && wbPages.Requests[1].Contains("\"updatedAt\"") && wbPages.Requests[1].Contains("\"nmID\":100"),"WB sends updatedAt and nmID cursor");
 var retry=new ApiTransport(new RetryHandler());
 using var req=new HttpRequestMessage(HttpMethod.Get,"https://example.org/data");
 Check((await retry.Send(req,CancellationToken.None))["ok"]?.ToString()=="true","429 retry");
@@ -126,6 +130,16 @@ sealed class WriteTimeoutHandler:HttpMessageHandler
 {
     public int Calls;
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct){Calls++;throw new TaskCanceledException();}
+}
+sealed class WbPagesHandler:HttpMessageHandler
+{
+    public List<string> Requests=[];
+    protected override async Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)
+    {
+        Requests.Add(await request.Content!.ReadAsStringAsync(ct));
+        var cards=Requests.Count==1?string.Join(',',Enumerable.Range(1,100).Select(i=>$"{{\"nmID\":{i},\"vendorCode\":\"SKU-{i}\",\"sizes\":[]}}")):"{\"nmID\":101,\"vendorCode\":\"SKU-101\",\"sizes\":[]}";
+        return new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent("{\"cards\":["+cards+"],\"cursor\":{\"updatedAt\":\"2026-09-26T00:00:00Z\",\"nmID\":100}}",Encoding.UTF8,"application/json")};
+    }
 }
 sealed class FakeWriteGateway(Listing listing):IWriteGateway
 {
