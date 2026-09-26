@@ -50,7 +50,7 @@ public interface IWriteGateway
     Task<string> Errors(string token,long nmId,CancellationToken ct);
 }
 
-public sealed class WriteProcessor(Storage disk,IWriteGateway gateway,Func<DateTimeOffset>? clock=null,Func<string,string>? tokenForShop=null,Func<TimeSpan,CancellationToken,Task>? delay=null)
+public sealed class WriteProcessor(Storage disk,IWriteGateway gateway,Func<DateTimeOffset>? clock=null,Func<string,string>? tokenForShop=null,Func<TimeSpan,CancellationToken,Task>? delay=null,Func<Listing,WriteJob,string?>? validate=null,Action<WriteJob>? changed=null)
 {
     private readonly Func<DateTimeOffset> now=clock??(()=>DateTimeOffset.UtcNow);
     private readonly Func<string,string> token=tokenForShop??(_=>"");
@@ -75,6 +75,8 @@ public sealed class WriteProcessor(Storage disk,IWriteGateway gateway,Func<DateT
         }
         if(CardPayload.Base(fresh.Raw).ToJsonString()!=job.ExpectedCard)
         {Set(job,WriteState.Review,"Thẻ WB thay đổi từ lúc xác nhận; đồng bộ và đối chiếu lại");return;}
+        var reason=validate?.Invoke(fresh,job);
+        if(reason!=null){Set(job,WriteState.Review,"Đối chiếu lại trước khi ghi: "+reason);return;}
 
         var rows=job.Lines.Select(line=>new MatchRow{Selected=true,ShopId=job.ShopId,NmId=job.NmId,VendorCode=job.VendorCode,ChrtId=line.ChrtId,Gtin=line.Gtin,WbSize=line.WbSize,Color=line.Color,Status=MatchStatus.Exact}).ToList();
         JsonArray payload;
@@ -120,6 +122,7 @@ public sealed class WriteProcessor(Storage disk,IWriteGateway gateway,Func<DateT
         var jobs=disk.LoadJobs();var index=jobs.FindIndex(x=>x.Id==job.Id);
         if(index>=0)jobs[index]=job;else jobs.Add(job);
         disk.SaveJobs(jobs);
+        changed?.Invoke(job);
     }
     private static bool AllPresent(JsonObject card,WriteJob job)=>job.Lines.All(line=>Json.A(card,"sizes").Any(s=>Json.L(s,"chrtID")==line.ChrtId && Json.A(s,"skus").Any(v=>v?.ToString()==line.Gtin)));
     private static bool AtWrongSize(JsonObject card,WriteJob job)=>job.Lines.Any(line=>Json.A(card,"sizes").Any(s=>Json.L(s,"chrtID")!=line.ChrtId && Json.A(s,"skus").Any(v=>v?.ToString()==line.Gtin)));

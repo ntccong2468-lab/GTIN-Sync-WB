@@ -12,17 +12,27 @@ var listing=new Listing(shop.Id,shop.Name,101,"PANTS","Pants","đen","photo",Car
 var gtin="00000000000017";
 var goods=new List<CatalogItem>{new(gtin,"PANTS","Pants","B","đen","48","published",DateTimeOffset.UtcNow,"NK")};
 var settings=new Settings();
-Check(Matching.Build(goods,[listing],settings).All(x=>x.Status==MatchStatus.Missing),"No implicit XL to 48 conversion");
+Check(Matching.Build(goods,[listing],settings)[0].Status==MatchStatus.NeedsConfirmation,"No implicit XL to 48 conversion");
+var secondCard=Card();secondCard["nmID"]=102;secondCard["vendorCode"]="SHIRT";
+var second=new Listing(shop.Id,shop.Name,102,"SHIRT","Shirt","đen","",secondCard,DateTimeOffset.UtcNow);
+Check(Matching.Build(goods,[second],settings)[0].Status!=MatchStatus.Exact,"Identical size in a different model cannot match");
+var missingModel=listing with {VendorCode="",Raw=Card()};
+Check(Matching.Build(goods,[missingModel],settings)[0].Status!=MatchStatus.Exact,"Missing model identifier blocks selection");
 settings.SizeRules[shop.Id+":PANTS:XL"]="48";
 var rows=Matching.Build(goods,[listing],settings);Check(rows[0].Status==MatchStatus.Exact,"Product scoped size rule");
-Check(rows[1].Status==MatchStatus.Missing,"Other size stays unmatched");
-Check(Matching.Build([goods[0] with { Color="navy" }],[listing],settings)[0].Status==MatchStatus.Missing,"Color isolation");
+Check(rows[1].Status==MatchStatus.NeedsConfirmation,"Other size stays unmatched");
+Check(Matching.Build([goods[0] with { Color="navy" }],[listing],settings)[0].Status==MatchStatus.Conflict,"Color isolation");
+var blueCard=Card();blueCard["nmID"]=103;blueCard["characteristics"]![0]!["value"]=new JsonArray("navy");
+var blueListing=listing with {NmId=103,Color="navy",Raw=blueCard};
+Check(Matching.Build(goods,[blueListing],settings)[0].Status!=MatchStatus.Exact,"Same size but wrong color blocked");
 Check(Matching.Build([goods[0] with { Model="PANTS1",Size="XL" }],[listing with { VendorCode="PANTS-1" }],new Settings())[0].Status==MatchStatus.Missing,"Model punctuation is an identifier, not discarded");
 var plus=Card();Json.A(plus,"sizes")[0]!["techSize"]="XL+";
-Check(Matching.Build([goods[0] with { Size="XL" }],[listing with { Raw=plus }],new Settings())[0].Status==MatchStatus.Missing,"Size XL+ never silently matches XL");
+Check(Matching.Build([goods[0] with { Size="XL" }],[listing with { Raw=plus }],new Settings())[0].Status==MatchStatus.NeedsConfirmation,"Size XL+ never silently matches XL");
 settings.ColorRules[shop.Id+":PANTS:ĐEN"]="navy";
 Check(Matching.Build([goods[0] with { Color="navy" }],[listing],settings)[0].Status==MatchStatus.Exact,"Explicit shop and product scoped color rule");
 settings.ColorRules.Clear();
+var mappedOther=Matching.Build(goods,[second],settings)[0];
+Check(mappedOther.Status!=MatchStatus.Exact,"XL conversion remains local to PANTS");
 Check(Matching.Build([goods[0],goods[0] with { Gtin="00000000000024" }],[listing],settings)[0].Status==MatchStatus.Multiple,"Ambiguous codes blocked");
 Check(Matching.Build([goods[0] with { Status="draft" }],[listing],settings)[0].Status==MatchStatus.Unpublished,"Draft blocked");
 rows[0].Selected=true;
@@ -34,6 +44,12 @@ Check(changed["photos"]==null,"Media excluded from update API payload");
 Check(Matching.Build(goods,[listing with { Raw=changed }],settings)[0].Status==MatchStatus.Existing,"Duplicate is detected");
 var conflict=Card();Json.A(Json.A(conflict,"sizes")[1],"skus").Add(gtin);
 Check(Matching.Build(goods,[listing with { Raw=conflict }],settings)[0].Status==MatchStatus.Conflict,"Barcode in another size blocked");
+var selection=Matching.Build(goods,[listing,second],settings);
+Check(MatchSelection.SelectExact(selection,shop.Id,MatchStatus.Exact)==1 && selection.Count(x=>x.Selected)==1,"Select all exact in current shop/filter across underlying collection");
+Check(MatchSelection.SelectExact(selection,shop.Id,MatchStatus.Missing)==0,"Nonexact filter cannot select blocked rows");
+Check(MatchSelection.Clear(selection)==0 && selection.All(x=>!x.Selected),"Clear all selection");
+var drop=Matching.Build(goods,[listing],settings)[0];drop.Selected=true;
+Check(MatchSelection.Revalidate([drop],[goods[0] with {Color="navy"}],[listing],settings).Count==0 && drop.Status==MatchStatus.Review,"Revalidate drops changed candidate before preview");
 Check(Gtin.IsValid(gtin) && !Gtin.IsValid("00000000000018"),"GTIN check digit and leading zero");
 var mock=new MockHandler();var api=new CatalogApi(new ApiTransport(mock));
 var read=await api.Read("test-key",new DateTime(2026,1,1),new DateTime(2026,1,2),null,CancellationToken.None);
@@ -84,6 +100,16 @@ try
     fake.OnUpdate=()=>{var updated=Card();Json.A(Json.A(updated,"sizes")[0],"skus").Add(gtin);fake.Current=listing with {Raw=updated};return Task.CompletedTask;};
     await processor.Process(clean,CancellationToken.None);
     Check(clean.Status==WriteState.Success && fake.Writes==2,"Acknowledgment requires readback");
+    fake.Current=listing with {Raw=Card()};
+    var changedCard=Card();changedCard["description"]="changed on WB";fake.Current=listing with {Raw=changedCard};
+    var drift=WriteJob.FromRows(listing,[rows[0]]);disk.SaveJobs([drift]);
+    await processor.Process(drift,CancellationToken.None);
+    Check(drift.Status==WriteState.Review && fake.Writes==2,"WB drift before update stops write");
+    fake.Current=listing;fake.ReportError="WB processing rejected this card";fake.OnUpdate=()=>Task.CompletedTask;
+    var rejected=WriteJob.FromRows(listing,[rows[0]]);disk.SaveJobs([rejected]);
+    await processor.Process(rejected,CancellationToken.None);
+    Check(rejected.Status==WriteState.Failed && fake.Writes==3,"HTTP 200 with asynchronous card processing error is not success");
+    fake.ReportError="";
 }
 finally{if(Directory.Exists(workFolder))Directory.Delete(workFolder,true);}
 var report=Path.Combine(Path.GetTempPath(),"gtin-report-"+Guid.NewGuid().ToString("N")+".xlsx");
@@ -149,7 +175,8 @@ sealed class FakeWriteGateway(Listing listing):IWriteGateway
     public Listing Current=listing;
     public int Writes;
     public Func<Task>? OnUpdate;
+    public string ReportError="";
     public Task<Listing> ReadOne(Shop shop,string token,long nmId,CancellationToken ct)=>Task.FromResult(Current);
     public async Task Update(string token,JsonArray payload,CancellationToken ct){Writes++;if(OnUpdate!=null)await OnUpdate();}
-    public Task<string> Errors(string token,long nmId,CancellationToken ct)=>Task.FromResult("");
+    public Task<string> Errors(string token,long nmId,CancellationToken ct)=>Task.FromResult(ReportError);
 }

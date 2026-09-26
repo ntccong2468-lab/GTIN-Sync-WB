@@ -14,9 +14,9 @@ public sealed class Settings
     public Dictionary<string,string> ColorRules { get; set; } = new();
     public Dictionary<string,string> ProductRules { get; set; } = new();
 }
-public sealed record CatalogItem(string Gtin,string Model,string Name,string Brand,string Color,string Size,string Status,DateTimeOffset SyncedAt,string Source, bool Accessible = true);
+public sealed record CatalogItem(string Gtin,string Model,string Name,string Brand,string Color,string Size,string Status,DateTimeOffset SyncedAt,string Source, bool Accessible = true, bool TradeUnit = true);
 public sealed record Listing(string ShopId,string ShopName,long NmId,string VendorCode,string Title,string Color,string Photo,JsonObject Raw,DateTimeOffset SyncedAt);
-public enum MatchStatus { Exact, Existing, Missing, Multiple, Conflict, Unpublished, AccessDenied, Stale, Updated, Failed, Queued, Sending, Received, Verifying, Unknown, Review }
+public enum MatchStatus { Exact, Existing, Missing, Multiple, Conflict, Unpublished, AccessDenied, Stale, Updated, Failed, Queued, Sending, Received, Verifying, Unknown, Review, NeedsConfirmation }
 public sealed class MatchRow
 {
     public bool Selected { get; set; }
@@ -28,6 +28,9 @@ public sealed class MatchRow
     public string WbSize { get; init; } = "";
     public long ChrtId { get; init; }
     public string Gtin { get; set; } = "";
+    public string CatalogModel { get; set; } = "";
+    public string CatalogColor { get; set; } = "";
+    public string CatalogSize { get; set; } = "";
     public string Source { get; set; } = "";
     public MatchStatus Status { get; set; }
     public string Detail { get; set; } = "";

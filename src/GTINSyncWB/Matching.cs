@@ -36,15 +36,23 @@ public static class Matching
             var color=Color(card);
             var row=new MatchRow{ShopId=card.ShopId,Shop=card.ShopName,NmId=card.NmId,VendorCode=card.VendorCode,Color=color,WbSize=wbSize,ChrtId=chrt,Status=MatchStatus.Missing};
             result.Add(row);
-            if(chrt==0 || ExactKey(color)=="" || ExactKey(card.VendorCode)=="" || ExactKey(wbSize)=="") {row.Detail="Thiếu định danh WB (mã hàng, màu, size hoặc chrtID)";continue;}
+            if(chrt==0 || ExactKey(color)=="" || ExactKey(card.VendorCode)=="" || ExactKey(wbSize)=="") {row.Status=MatchStatus.NeedsConfirmation;row.Detail="Thiếu định danh WB (mã hàng, màu, size hoặc chrtID)";continue;}
             // A product-specific model mapping and size mapping are explicit; no global size guess.
             var model=config.ProductRules.GetValueOrDefault(card.ShopId+":"+card.VendorCode,card.VendorCode);
             var mappedSize=config.SizeRules.GetValueOrDefault(card.ShopId+":"+ExactKey(model)+":"+ExactKey(wbSize),wbSize);
             var mappedColor=config.ColorRules.GetValueOrDefault(card.ShopId+":"+ExactKey(model)+":"+ExactKey(color),color);
-            var candidates=goods.Where(g=>ExactKey(g.Model)==ExactKey(model) && ExactKey(g.Color)==ExactKey(mappedColor) && ExactKey(g.Size)==ExactKey(mappedSize)).ToList();
-            if(candidates.Count==0){row.Detail="Không có đủ mã mẫu + màu + size trùng khớp";continue;}
+            var byModel=goods.Where(g=>ExactKey(g.Model)==ExactKey(model)).ToList();
+            if(byModel.Count==0){row.Detail="Không tìm thấy mã mẫu NK đã xác nhận; có thể cần ánh xạ mã hàng";continue;}
+            var byColor=byModel.Where(g=>ExactKey(g.Color)==ExactKey(mappedColor)).ToList();
+            if(byColor.Count==0){row.Status=MatchStatus.Conflict;row.Detail="Màu NK khác màu WB của cùng mã mẫu";continue;}
+            var candidates=byColor.Where(g=>ExactKey(g.Size)==ExactKey(mappedSize)).ToList();
+            if(candidates.Count==0){row.Status=MatchStatus.NeedsConfirmation;row.Detail="Size chưa trùng; cần seller xác nhận ánh xạ riêng cho mẫu này";continue;}
+            row.CatalogModel=string.Join(", ",candidates.Select(g=>g.Model).Distinct());
+            row.CatalogColor=string.Join(", ",candidates.Select(g=>g.Color).Distinct());
+            row.CatalogSize=string.Join(", ",candidates.Select(g=>g.Size).Distinct());
             if(candidates.Any(g=>!g.Accessible)){row.Status=MatchStatus.AccessDenied;row.Detail="Không có quyền đọc đủ thuộc tính thẻ";continue;}
             if(candidates.Any(g=>!g.Status.Equals("published",StringComparison.OrdinalIgnoreCase))){row.Status=MatchStatus.Unpublished;row.Detail="Thẻ chưa công bố";continue;}
+            if(candidates.Any(g=>!g.TradeUnit)){row.Status=MatchStatus.Conflict;row.Detail="GTIN thuộc cấp bao bì khác, không phải đơn vị hàng";continue;}
             if(candidates.Count!=1){row.Status=MatchStatus.Multiple;row.Detail=$"{candidates.Count} GTIN ứng viên";continue;}
             var gtin=candidates[0].Gtin;
             row.Gtin=gtin;row.Source=candidates[0].Source;
@@ -55,6 +63,35 @@ public static class Matching
             row.Detail=row.Status==MatchStatus.Exact?"Mã hàng + màu + size trùng theo định danh hoặc ánh xạ riêng; cần xác nhận":"GTIN đã có";
         }
         return result;
+    }
+}
+public static class MatchSelection
+{
+    // Operates on the whole result set, not DataGridView's rendered or currently scrolled rows.
+    public static int SelectExact(IEnumerable<MatchRow> rows,string? shopId,MatchStatus? filter)
+    {
+        var count=0;
+        foreach(var row in rows)
+        {
+            if(row.Status==MatchStatus.Exact && (shopId==null || row.ShopId==shopId) && (filter==null || filter==MatchStatus.Exact))
+            {row.Selected=true;count++;}
+            else row.Selected=false;
+        }
+        return count;
+    }
+    public static int Clear(IEnumerable<MatchRow> rows){foreach(var row in rows)row.Selected=false;return 0;}
+    public static List<MatchRow> Revalidate(IEnumerable<MatchRow> selected,IReadOnlyList<CatalogItem> goods,IReadOnlyList<Listing> cards,Settings settings)
+    {
+        var latest=Matching.Build(goods,cards,settings);
+        var accepted=new List<MatchRow>();
+        foreach(var old in selected.Where(x=>x.Selected).ToList())
+        {
+            var current=latest.SingleOrDefault(x=>x.ShopId==old.ShopId && x.NmId==old.NmId && x.ChrtId==old.ChrtId);
+            if(current?.Status!=MatchStatus.Exact || current.Gtin!=old.Gtin || old.Status!=MatchStatus.Exact)
+            {old.Selected=false;old.Status=MatchStatus.Review;old.Detail="Đã loại khỏi lô: "+(current?.Detail??"Không còn size tương ứng");continue;}
+            accepted.Add(old);
+        }
+        return accepted;
     }
 }
 public static class Gtin

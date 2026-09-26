@@ -140,8 +140,10 @@ public sealed class CatalogApi(ApiTransport transport)
     {
         var attrs=Json.A(item,"good_attrs");
         string Attr(params string[] names)=>attrs.FirstOrDefault(a=>names.Any(n=>Json.S(a,"attr_name").Equals(n,StringComparison.OrdinalIgnoreCase)))?["attr_value"]?.ToString()??"";
-        var id=(Json.A(item,"identified_by").FirstOrDefault(x=>Json.S(x,"type")=="gtin")?["value"]?.ToString())??Json.S(item,"gtin");
-        return new(id,Attr("Артикул","Артикул производителя","Модель","Код модели","Код товара"),Json.S(item,"good_name"),Json.S(item,"brand_name"),Attr("Цвет","Основной цвет"),Attr("Размер","Размер изделия","Размер товара"),Json.S(item,"good_status"),at,"НК: "+id);
+        var identifier=Json.A(item,"identified_by").FirstOrDefault(x=>Json.S(x,"type").Equals("gtin",StringComparison.OrdinalIgnoreCase) && Json.S(x,"level")=="trade-unit")
+            ??Json.A(item,"identified_by").FirstOrDefault(x=>Json.S(x,"type").Equals("gtin",StringComparison.OrdinalIgnoreCase));
+        var id=identifier?["value"]?.ToString()??Json.S(item,"gtin");
+        return new(id,Attr("Артикул","Артикул производителя","Модель","Код модели","Код товара"),Json.S(item,"good_name"),Json.S(item,"brand_name"),Attr("Цвет","Основной цвет"),Attr("Размер","Размер изделия","Размер товара"),Json.S(item,"good_status"),at,"НК: "+id,true,Json.S(identifier,"level")=="trade-unit");
     }
 }
 public sealed class WbApi(ApiTransport transport):IWriteGateway
@@ -158,7 +160,7 @@ public sealed class WbApi(ApiTransport transport):IWriteGateway
         return await transport.Send(req,ct,write);
     }
     public Task<JsonNode> Check(string token,CancellationToken ct)=>Post("/content/v2/get/cards/list",token,new JsonObject{["settings"]=new JsonObject{["cursor"]=new JsonObject{["limit"]=1}}},ct);
-    public async Task<List<Listing>> Read(Shop shop,string token,CancellationToken ct)
+    public async Task<List<Listing>> Read(Shop shop,string token,CancellationToken ct,IProgress<int>? progress=null)
     {
         var cards=new List<Listing>();JsonNode? cursor=null;
         for(var page=0;page<10000;page++)
@@ -169,10 +171,12 @@ public sealed class WbApi(ApiTransport transport):IWriteGateway
             var inner=data["cards"]!=null?data:data["data"];
             var batch=Json.A(inner,"cards");
             foreach(var card in batch.OfType<JsonObject>())cards.Add(Parse(shop,card));
+            progress?.Report(cards.Count);
             if(batch.Count<100)break;
             var next=inner?["cursor"];
             if(next==null || Json.L(next,"nmID")==Json.L(cursor,"nmID"))throw new ApiFailure("Phân trang WB thiếu cursor tiếp theo");
             cursor=next.DeepClone();
+            if(page==9999)throw new ApiFailure("Chưa đọc hết phân trang WB; không dùng danh sách chưa hoàn tất");
         }
         return cards;
     }

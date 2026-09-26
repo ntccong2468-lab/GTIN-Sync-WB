@@ -1,4 +1,4 @@
-#define AppVersion "0.3.1"
+#define AppVersion "0.4.0"
 [Setup]
 AppId={{1A71EAD8-AB04-46A4-9F9B-5149EE426D62}
 AppName=GTIN Sync WB
