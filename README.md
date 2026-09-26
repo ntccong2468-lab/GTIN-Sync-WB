@@ -25,8 +25,8 @@ dotnet publish src/GTINSyncWB/GTINSyncWB.csproj -c Release -r win-x64 --self-con
 & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' installer\GTINSyncWB.iss
 ```
 
-Workflow `.github/workflows/windows.yml` chạy test, build, cài sạch và kiểm tra khởi động qua desktop shortcut trên Windows. Chỉ phát hành `.exe` khi workflow thực sự thành công.
+Workflow `.github/workflows/windows.yml` chạy test, build, cài sạch, xác nhận lối tắt desktop và khởi động ứng dụng trên Windows. Bản cài 0.1.0 được tạo tại [Windows CI run #2](https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/36235430274) từ commit `704e273f587807ceeaf3b854cc90bc226c1d5903`: 17 assertions đạt, build và smoke test đạt. SHA-256 của tệp `.exe`: `5ed09496f42548202a2a619dd1aa3459adc617b75bbb6dfb84226b64481ad432`.
 
 ## Giới hạn bản 0.1.0
 
-Đây là mã nguồn ứng viên; chưa xác nhận tương thích bằng API thật. Không thực hiện ghi bằng khóa seller trong quá trình phát triển. Xuất XLSX chưa triển khai, hiện xuất CSV UTF-8 (Excel mở được). Ảnh WB được tải để hiển thị dạng thu nhỏ nếu URL còn truy cập được. Tác vụ lỗi lưu lịch sử; để thử lại, đồng bộ và xác nhận lại. Bản xem trước lưu trong phiên mở ứng dụng, lịch sử lưu trên máy.
+Bản cài đã được kiểm tra cài đặt và khởi động trên Windows CI; chưa xác nhận tương thích bằng API thật của tài khoản seller. Không thực hiện ghi bằng khóa seller trong quá trình phát triển. Xuất XLSX chưa triển khai, hiện xuất CSV UTF-8 (Excel mở được). Ảnh WB được tải để hiển thị dạng thu nhỏ nếu URL còn truy cập được. Tác vụ lỗi lưu lịch sử; để thử lại, đồng bộ và xác nhận lại. Bản xem trước lưu trong phiên mở ứng dụng, lịch sử lưu trên máy.
