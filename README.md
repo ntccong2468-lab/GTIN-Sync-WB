@@ -27,7 +27,7 @@ dotnet publish src/GTINSyncWB/GTINSyncWB.csproj -c Release -r win-x64 --self-con
 & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' installer\GTINSyncWB.iss
 ```
 
-Workflow `.github/workflows/windows.yml` chạy kiểm thử, build, cài trên Windows runner, xác nhận shortcut desktop, DPAPI và khởi động, rồi chụp 13 ảnh giao diện. Xem [báo cáo kiểm thử](BUILD-STATUS.md) để biết bản build cuối cùng và giới hạn của phép thử.
+Workflow `.github/workflows/windows.yml` chạy kiểm thử, build, cài trên Windows runner, xác nhận shortcut desktop, DPAPI và khởi động, rồi chụp 14 ảnh giao diện. Xem [báo cáo kiểm thử](BUILD-STATUS.md) để biết bản build cuối cùng và giới hạn của phép thử.
 
 ## Giới hạn đã biết
 

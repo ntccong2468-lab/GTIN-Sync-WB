@@ -70,7 +70,7 @@ public sealed class Dashboard : Form
     }
     private FlowLayoutPanel Strip(params Control[] controls)
     {
-        var p=new FlowLayoutPanel{Dock=DockStyle.Top,Height=52,Padding=new Padding(16,6,0,0),BackColor=BackColor};p.Controls.AddRange(controls);return p;
+        var p=new FlowLayoutPanel{Dock=DockStyle.Top,Height=100,WrapContents=true,AutoScroll=true,Padding=new Padding(16,6,0,0),BackColor=BackColor};p.Controls.AddRange(controls);return p;
     }
     private FlowLayoutPanel WrapActions(params Control[] controls)
     {
@@ -140,7 +140,7 @@ public sealed class Dashboard : Form
     }
     private void Connections()
     {
-        var p=Section("Wildberries • mỗi cửa hàng có token riêng",160);
+        var p=Section("Wildberries • mỗi cửa hàng có token riêng",300);
         var name=new TextBox{PlaceholderText="Tên cửa hàng",Width=190};var token=new TextBox{PlaceholderText="WB Content API token mới",Width=290,UseSystemPasswordChar=true};
         var select=new ComboBox{Width=240,DropDownStyle=ComboBoxStyle.DropDownList};
         void Refresh(){select.Items.Clear();foreach(var s in config.Shops)select.Items.Add(s.Name+" ["+s.Id[..6]+"]");if(select.Items.Count>0)select.SelectedIndex=0;}
@@ -148,9 +148,9 @@ public sealed class Dashboard : Form
         var row=Strip(name,token,Action("Lưu cửa hàng",(_,_)=>{if(string.IsNullOrWhiteSpace(name.Text)||string.IsNullOrWhiteSpace(token.Text))return;config.Shops.Add(new Shop{Name=name.Text.Trim(),ProtectedToken=Secrets.Protect(token.Text.Trim())});disk.Save(config);token.Clear();Refresh();Notice("Đã lưu khóa WB bằng DPAPI");}));row.Dock=DockStyle.Bottom;p.Controls.Add(row);
         var actions=Strip(select,Action("Kiểm tra WB",async (_,_)=>{if(select.SelectedIndex<0)return;await Run(async ct=>{await wb.Check(Secrets.Reveal(config.Shops[select.SelectedIndex].ProtectedToken),ct);Notice("WB đã phản hồi");});}),Action("Xóa cửa hàng",(_,_)=>{if(select.SelectedIndex<0)return;config.Shops.RemoveAt(select.SelectedIndex);disk.Save(config);Refresh();}),Action("Thay token",(_,_)=>{if(select.SelectedIndex<0||token.TextLength==0)return;config.Shops[select.SelectedIndex].ProtectedToken=Secrets.Protect(token.Text.Trim());disk.Save(config);token.Clear();Notice("Đã thay token WB");}));actions.Dock=DockStyle.Bottom;p.Controls.Add(actions);
         body.Controls.Add(p);
-        var nk=Section("Честный Знак / Национальный каталог • khóa riêng theo tổ chức",156);
+        var nk=Section("Честный Знак / Национальный каталог • khóa riêng theo tổ chức",300);
         var org=new TextBox{PlaceholderText="Tên tổ chức",Text=config.Organization,Width=180};var key=new TextBox{PlaceholderText=config.ProtectedCatalogKey==""?"API Key NK":"Đã lưu ••••••",UseSystemPasswordChar=true,Width=260};var since=new TextBox{Text=config.Since,Width=110};
-        nk.Controls.Add(Strip(org,key,new Label{Text="Từ ngày YYYY-MM-DD",AutoSize=true,Padding=new Padding(2,9,0,0)},since,Action("Lưu khóa",(_,_)=>{if(key.TextLength==0)return;config.Organization=org.Text;config.Since=since.Text;config.ProtectedCatalogKey=Secrets.Protect(key.Text.Trim());disk.Save(config);key.Clear();key.PlaceholderText="Đã lưu ••••••";})));
+        nk.Controls.Add(Strip(org,key,new Label{Text="Từ ngày YYYY-MM-DD",AutoSize=true,ForeColor=TextColor,Padding=new Padding(2,9,0,0)},since,Action("Lưu khóa",(_,_)=>{if(key.TextLength==0)return;config.Organization=org.Text;config.Since=since.Text;config.ProtectedCatalogKey=Secrets.Protect(key.Text.Trim());disk.Save(config);key.Clear();key.PlaceholderText="Đã lưu ••••••";})));
         var nkActions=Strip(Action("Kiểm tra NK",async (_,_)=>await Run(async ct=>{await catalog.Check(Secrets.Reveal(config.ProtectedCatalogKey),ct);Notice("NK đã phản hồi");})),Action("Xóa khóa NK",(_,_)=>{config.ProtectedCatalogKey="";disk.Save(config);key.PlaceholderText="API Key NK";}));nkActions.Dock=DockStyle.Bottom;nk.Controls.Add(nkActions);body.Controls.Add(nk);nk.BringToFront();
         var caution=Section("Khóa NK được gửi trong query theo yêu cầu tài liệu của NK. Ứng dụng không ghi URL, khóa hoặc nội dung phản hồi vào log.",72);body.Controls.Add(caution);caution.BringToFront();
     }
@@ -323,6 +323,7 @@ public sealed class Dashboard : Form
         Size=new Size(1280,800);Scale(new SizeF(1.25f,1.25f));ShowPage("Tổng quan");Save("Tong-quan-toi-scale125");
         ShowPage("Ghép GTIN");Save("Ghep-GTIN-toi-scale125");
         ShowPage("Bài đăng WB");Save("Bai-dang-WB-toi-scale125");
+        ShowPage("Kết nối API");Save("Ket-noi-API-toi-scale125");
     }
     private async Task Sync()
     {
