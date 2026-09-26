@@ -31,7 +31,7 @@ public sealed class Dashboard : Form
         }
         catch{goods.Clear();cards.Clear();matches.Clear();syncAt=null;}
         AutoScaleMode=AutoScaleMode.Dpi;
-        Text="GTIN Sync WB 0.4.1";Width=1280;Height=800;MinimumSize=new Size(960,620);StartPosition=FormStartPosition.CenterScreen;
+        Text="GTIN Sync WB 0.4.2";Width=1280;Height=800;MinimumSize=new Size(960,620);StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(245,247,251);
         side.Dock=DockStyle.Left;side.Width=260;side.BackColor=navy;Controls.Add(side);
         header.Dock=DockStyle.Top;header.Height=82;header.BackColor=Color.White;Controls.Add(header);
@@ -146,19 +146,25 @@ public sealed class Dashboard : Form
         void Refresh(){select.Items.Clear();foreach(var s in config.Shops)select.Items.Add(s.Name+" ["+s.Id[..6]+"]");if(select.Items.Count>0)select.SelectedIndex=0;}
         Refresh();
         var row=Strip(name,token,Action("Lưu cửa hàng",(_,_)=>{if(string.IsNullOrWhiteSpace(name.Text)||string.IsNullOrWhiteSpace(token.Text))return;config.Shops.Add(new Shop{Name=name.Text.Trim(),ProtectedToken=Secrets.Protect(token.Text.Trim())});disk.Save(config);token.Clear();Refresh();Notice("Đã lưu khóa WB bằng DPAPI");}));row.Dock=DockStyle.Bottom;p.Controls.Add(row);
-        var actions=Strip(select,Action("Kiểm tra WB",async (_,_)=>{if(select.SelectedIndex<0)return;await Run(async ct=>{await wb.Check(Secrets.Reveal(config.Shops[select.SelectedIndex].ProtectedToken),ct);Notice("WB đã phản hồi");});}),Action("Xóa cửa hàng",(_,_)=>{if(select.SelectedIndex<0)return;config.Shops.RemoveAt(select.SelectedIndex);disk.Save(config);Refresh();}),Action("Thay token",(_,_)=>{if(select.SelectedIndex<0||token.TextLength==0)return;config.Shops[select.SelectedIndex].ProtectedToken=Secrets.Protect(token.Text.Trim());disk.Save(config);token.Clear();Notice("Đã thay token WB");}));actions.Dock=DockStyle.Bottom;p.Controls.Add(actions);
+        var actions=Strip(select,Action("Kiểm tra WB",async (_,_)=>{if(select.SelectedIndex<0)return;await Run(async ct=>{await wb.Check(Secrets.Reveal(config.Shops[select.SelectedIndex].ProtectedToken),ct);Notice("Token WB đã phản hồi; chưa tải bài đăng. Bấm Đồng bộ và đối chiếu GTIN.");});}),Action("Xóa cửa hàng",(_,_)=>{if(select.SelectedIndex<0)return;config.Shops.RemoveAt(select.SelectedIndex);disk.Save(config);Refresh();}),Action("Thay token",(_,_)=>{if(select.SelectedIndex<0||token.TextLength==0)return;config.Shops[select.SelectedIndex].ProtectedToken=Secrets.Protect(token.Text.Trim());disk.Save(config);token.Clear();Notice("Đã thay token WB");}));actions.Dock=DockStyle.Bottom;p.Controls.Add(actions);
         body.Controls.Add(p);
         var nk=Section("Честный Знак / Национальный каталог • khóa riêng theo tổ chức",300);
         var org=new TextBox{PlaceholderText="Tên tổ chức",Text=config.Organization,Width=180};var key=new TextBox{PlaceholderText=config.ProtectedCatalogKey==""?"API Key NK":"Đã lưu ••••••",UseSystemPasswordChar=true,Width=260};var since=new TextBox{Text=config.Since,Width=110};
         var nkInput=Strip(org,key,new Label{Text="Từ ngày YYYY-MM-DD",AutoSize=true,ForeColor=TextColor,Padding=new Padding(2,9,0,0)},since,Action("Lưu khóa",(_,_)=>{if(key.TextLength==0)return;config.Organization=org.Text;config.Since=since.Text;config.ProtectedCatalogKey=Secrets.Protect(key.Text.Trim());disk.Save(config);key.Clear();key.PlaceholderText="Đã lưu ••••••";}));nkInput.Dock=DockStyle.Bottom;nk.Controls.Add(nkInput);
-        var nkActions=Strip(Action("Kiểm tra NK",async (_,_)=>await Run(async ct=>{await catalog.Check(Secrets.Reveal(config.ProtectedCatalogKey),ct);Notice("NK đã phản hồi");})),Action("Xóa khóa NK",(_,_)=>{config.ProtectedCatalogKey="";disk.Save(config);key.PlaceholderText="API Key NK";}));nkActions.Dock=DockStyle.Bottom;nk.Controls.Add(nkActions);body.Controls.Add(nk);nk.BringToFront();
+        var nkActions=Strip(Action("Kiểm tra NK",async (_,_)=>await Run(async ct=>{await catalog.Check(Secrets.Reveal(config.ProtectedCatalogKey),ct);Notice("Khóa NK đã phản hồi; chưa tải GTIN. Bấm Đồng bộ và đối chiếu GTIN.");})),Action("Xóa khóa NK",(_,_)=>{config.ProtectedCatalogKey="";disk.Save(config);key.PlaceholderText="API Key NK";}));nkActions.Dock=DockStyle.Bottom;nk.Controls.Add(nkActions);body.Controls.Add(nk);nk.BringToFront();
         var caution=Section("Khóa NK được gửi trong query theo yêu cầu tài liệu của NK. Ứng dụng không ghi URL, khóa hoặc nội dung phản hồi vào log.",72);body.Controls.Add(caution);caution.BringToFront();
     }
     private void CatalogPage()
     {
         var grid=Grid("КОД ТОВАРА","НАИМЕНОВАНИЕ ТОВАРА","Mã mẫu / article","Thương hiệu","Màu","Size","Trạng thái thẻ","Đồng bộ");
         foreach(var x in goods)grid.Rows.Add(x.Gtin,x.Name,x.Model,x.Brand,x.Color,x.Size,x.Accessible?x.Status:"Không có quyền",x.SyncedAt.LocalDateTime.ToString("g"));
-        body.Controls.Add(grid);body.Controls.Add(Strip(new Label{Text=demo?"DỮ LIỆU MẪU • KHÔNG PHẢI NK THẬT":$"{goods.Count} GTIN đã đọc",ForeColor=TextColor,AutoSize=true}));
+        var panel=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=2,Padding=new Padding(12),BackColor=BackColor};
+        panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));panel.RowStyles.Add(new RowStyle(SizeType.Absolute,84));panel.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+        var label=demo?"DỮ LIỆU MẪU • KHÔNG PHẢI NK THẬT":syncIncomplete?"Lần đồng bộ mới chưa hoàn tất; danh sách bên dưới là bản lưu cũ":syncAt==null?"Chưa đồng bộ: lưu hai kết nối rồi bấm Đồng bộ và đối chiếu GTIN":$"{goods.Count} GTIN đã đọc • hoàn tất {syncAt.Value.LocalDateTime:g}";
+        panel.Controls.Add(WrapActions(new Label{Text=label,AutoSize=true,ForeColor=TextColor,Margin=new Padding(8,12,16,4)},Action("Đồng bộ và đối chiếu GTIN",async (_,_)=>await Sync())),0,0);
+        if(goods.Count==0)panel.Controls.Add(new Label{Text=syncAt==null?"Chưa có dữ liệu NK. Vào Kết nối API để lưu khóa NK và cửa hàng WB, sau đó bấm Đồng bộ và đối chiếu GTIN ở phía trên.":"NK trả về 0 GTIN trong phạm vi đã đọc. Kiểm tra tổ chức, quyền truy cập và ngày bắt đầu ở Kết nối API; sau đó đồng bộ lại.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=TextColor},0,1);
+        else panel.Controls.Add(grid,0,1);
+        body.Controls.Add(panel);
     }
     private void CardsPage()
     {
@@ -190,8 +196,8 @@ public sealed class Dashboard : Form
         search.TextChanged+=(_,_)=>Refresh();shopFilter.SelectedIndexChanged+=(_,_)=>Refresh();syncFilter.SelectedIndexChanged+=(_,_)=>Refresh();
         grid.CellContentClick+=(_,e)=>{if(e.RowIndex>=0&&e.ColumnIndex==8&&grid.Rows[e.RowIndex].Tag is Listing selected)ShowCardDetail(selected);};
         grid.CellDoubleClick+=(_,e)=>{if(e.RowIndex>=0&&grid.Rows[e.RowIndex].Tag is Listing selected)ShowCardDetail(selected);};
-        panel.Controls.Add(WrapActions(search,shopFilter,syncFilter,Action("Đồng bộ lại",async (_,_)=>await Sync())),0,0);panel.Controls.Add(summary,0,1);
-        if(cards.Count==0)panel.Controls.Add(new Label{Text="Chưa có bài đăng WB. Kết nối token Content, rồi chọn Đồng bộ và đối chiếu GTIN tại Tổng quan.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=TextColor},0,2);
+        panel.Controls.Add(WrapActions(search,shopFilter,syncFilter,Action("Đồng bộ và đối chiếu GTIN",async (_,_)=>await Sync())),0,0);panel.Controls.Add(summary,0,1);
+        if(cards.Count==0)panel.Controls.Add(new Label{Text=syncAt==null?"Chưa có bài đăng WB. Lưu token Content và khóa NK ở Kết nối API, sau đó bấm Đồng bộ và đối chiếu GTIN ở phía trên.":"WB trả về 0 bài đăng sau khi đọc xong. Kiểm tra đúng token Content và cửa hàng, rồi đồng bộ lại.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=TextColor},0,2);
         else panel.Controls.Add(grid,0,2);
         body.Controls.Add(panel);Refresh();
     }
@@ -331,15 +337,18 @@ public sealed class Dashboard : Form
         await Run(async ct=>
         {
             syncIncomplete=true;
-            Notice("Đang đọc dữ liệu");bar.Value=5;
+            Notice("Đang đọc GTIN từ NK");bar.Value=5;
             if(!DateTime.TryParse(config.Since,out var since))throw new InvalidOperationException("Ngày bắt đầu không hợp lệ");
-            var freshGoods=await catalog.Read(Secrets.Reveal(config.ProtectedCatalogKey),since,DateTime.UtcNow.AddDays(1),new Progress<string>(Notice),ct);
+            List<CatalogItem> freshGoods;
+            try{freshGoods=await catalog.Read(Secrets.Reveal(config.ProtectedCatalogKey),since,DateTime.UtcNow.AddDays(1),new Progress<string>(message=>Notice("NK • "+message)),ct);}
+            catch(ApiFailure e){throw new InvalidOperationException("Không đồng bộ được NK: "+e.Message);}
+            Notice($"NK đã đọc xong {freshGoods.Count} GTIN. Đang đọc bài đăng WB...");bar.Value=35;
             var freshCards=new List<Listing>();
-            foreach(var shop in config.Shops){ct.ThrowIfCancellationRequested();freshCards.AddRange(await wb.Read(shop,Secrets.Reveal(shop.ProtectedToken),ct,new Progress<int>(count=>Notice($"Đang đọc WB: {shop.Name} • đã tải {count} thẻ; chưa hoàn tất"))));Notice($"Đã đọc xong WB: {shop.Name} ({freshCards.Count} thẻ cộng dồn)");}
+            foreach(var shop in config.Shops){ct.ThrowIfCancellationRequested();try{freshCards.AddRange(await wb.Read(shop,Secrets.Reveal(shop.ProtectedToken),ct,new Progress<int>(count=>Notice($"Đang đọc WB: {shop.Name} • đã tải {count} thẻ; chưa hoàn tất"))));}catch(ApiFailure e){throw new InvalidOperationException($"Không đồng bộ được WB ({shop.Name}): {e.Message}");}Notice($"Đã đọc xong WB: {shop.Name} ({freshCards.Count} thẻ cộng dồn)");}
             var completed=DateTimeOffset.UtcNow;
             disk.SaveSnapshot(new ReadSnapshot{CompletedAt=completed,Goods=freshGoods,Cards=freshCards});
             goods.Clear();goods.AddRange(freshGoods);cards.Clear();cards.AddRange(freshCards);syncAt=completed;demo=false;syncIncomplete=false;bar.Value=80;
-            Notice("Đang đối chiếu");Rebuild();bar.Value=100;ShowPage("Tổng quan");Notice($"Đã đối chiếu {matches.Count} dòng; cần seller xem và xác nhận");
+            Notice("Đang đối chiếu");Rebuild();bar.Value=100;ShowPage("Tổng quan");Notice($"Đồng bộ hoàn tất: {goods.Count} GTIN NK, {cards.Count} bài đăng WB, {matches.Count} dòng đối chiếu");
         });
     }
     private void ShowPreview()

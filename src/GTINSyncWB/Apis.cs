@@ -84,11 +84,10 @@ public sealed class CatalogApi(ApiTransport transport)
     public async Task<List<CatalogItem>> Read(string key,DateTime from,DateTime to,IProgress<string>? progress,CancellationToken ct)
     {
         var summaries=new Dictionary<string,JsonNode>();
-        for(var start=from.Date;start<to;start=start.AddDays(30))
-        {
-            var end=start.AddDays(30)<to?start.AddDays(30):to;
-            await Window(start,end,0,summaries,key,progress,ct);
-        }
+        if(to<=from.Date)throw new InvalidOperationException("Khoảng ngày NK không hợp lệ");
+        // NK accepts a long date interval. Divide only when its 10,000-record
+        // selection limit is reached, instead of scanning years month by month.
+        await Window(from.Date,to,0,summaries,key,progress,ct);
         var goods=new List<CatalogItem>();var keys=summaries.Keys.ToList();
         for(var i=0;i<keys.Count;i+=25)
         {
