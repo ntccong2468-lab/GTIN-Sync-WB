@@ -8,18 +8,26 @@ public sealed class Dashboard : Form
 {
     private readonly Storage disk=new();private Settings config;private readonly HttpClient media=new(){Timeout=TimeSpan.FromSeconds(8)};
     private readonly CatalogApi catalog;private readonly WbApi wb;
+    private readonly WriteProcessor processor;
     private readonly Panel side=new(),body=new(),header=new();
     private readonly Label title=new(),state=new();private readonly ProgressBar bar=new();
     private readonly List<CatalogItem> goods=[];private readonly List<Listing> cards=[];private readonly List<MatchRow> matches=[];
     private CancellationTokenSource? running;private readonly ManualResetEventSlim resume=new(true);
-    private bool demo,dark;private string page="Tổng quan";
+    private bool demo,dark;private DateTimeOffset? syncAt;private string page="Tổng quan";
     private readonly Color navy=Color.FromArgb(20,35,66),blue=Color.FromArgb(42,105,223);
     private static readonly Bitmap EmptyPhoto=new(1,1);
     public Dashboard()
     {
         config=disk.Load();var transport=new ApiTransport();catalog=new(transport);wb=new(transport);
+        processor=new WriteProcessor(disk,wb,tokenForShop:id=>Secrets.Reveal(config.Shops.Single(s=>s.Id==id).ProtectedToken));
+        try
+        {
+            var snapshot=disk.LoadSnapshot();
+            if(snapshot!=null){goods.AddRange(snapshot.Goods);cards.AddRange(snapshot.Cards);syncAt=snapshot.CompletedAt;Rebuild();foreach(var m in matches.Where(m=>m.Status==MatchStatus.Exact))m.Status=MatchStatus.Stale;}
+        }
+        catch{goods.Clear();cards.Clear();matches.Clear();syncAt=null;}
         AutoScaleMode=AutoScaleMode.Dpi;
-        Text="GTIN Sync WB 0.2.0";Width=1280;Height=800;MinimumSize=new Size(960,620);StartPosition=FormStartPosition.CenterScreen;
+        Text="GTIN Sync WB 0.3.0";Width=1280;Height=800;MinimumSize=new Size(960,620);StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(245,247,251);
         side.Dock=DockStyle.Left;side.Width=260;side.BackColor=navy;Controls.Add(side);
         header.Dock=DockStyle.Top;header.Height=82;header.BackColor=Color.White;Controls.Add(header);
@@ -28,16 +36,18 @@ public sealed class Dashboard : Form
         bar.Dock=DockStyle.Bottom;bar.Height=5;bar.Style=ProgressBarStyle.Continuous;header.Controls.Add(bar);
         body.Dock=DockStyle.Fill;body.AutoScroll=true;Controls.Add(body);body.BringToFront();
         var brand=new Label{Text="GTIN Sync WB",ForeColor=Color.White,Font=new Font("Segoe UI Semibold",15),Location=new Point(18,24),Size=new Size(230,38),AutoEllipsis=false};side.Controls.Add(brand);
-        string[] pages=["Tổng quan","Kết nối API","Danh sách GTIN","Bài đăng WB","Ghép GTIN","Lịch sử"];
+        string[] pages=["Tổng quan","Kết nối API","Danh sách GTIN","Bài đăng WB","Ghép GTIN","Lịch sử","Cài đặt"];
         for(var i=0;i<pages.Length;i++)
         {
             var p=pages[i];var b=new Button{Text=p,FlatStyle=FlatStyle.Flat,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.White,BackColor=navy,Location=new Point(14,88+i*50),Size=new Size(232,42),Cursor=Cursors.Hand};
             b.FlatAppearance.BorderSize=0;b.Click+=(_,_)=>ShowPage(p);side.Controls.Add(b);
         }
-        var theme=new Button{Text="◐  Sáng / tối",ForeColor=Color.White,BackColor=navy,FlatStyle=FlatStyle.Flat,Location=new Point(14,420),Size=new Size(232,40)};
-        theme.Click+=(_,_)=>{dark=!dark;BackColor=dark?Color.FromArgb(31,40,58):Color.FromArgb(245,247,251);body.BackColor=BackColor;header.BackColor=dark?Color.FromArgb(47,58,79):Color.White;title.ForeColor=dark?Color.White:navy;state.ForeColor=dark?Color.White:navy;ShowPage(page);};side.Controls.Add(theme);
+        var theme=new Button{Text="◐  Sáng / tối",ForeColor=Color.White,BackColor=navy,FlatStyle=FlatStyle.Flat,Location=new Point(14,480),Size=new Size(232,40)};
+        theme.Click+=(_,_)=>{dark=!dark;config.DarkMode=dark;disk.Save(config);ApplyTheme();ShowPage(page);};side.Controls.Add(theme);
+        dark=config.DarkMode;ApplyTheme();
         ShowPage(page);
     }
+    private void ApplyTheme(){BackColor=dark?Color.FromArgb(31,40,58):Color.FromArgb(245,247,251);body.BackColor=BackColor;header.BackColor=dark?Color.FromArgb(47,58,79):Color.White;title.ForeColor=dark?Color.White:navy;state.ForeColor=dark?Color.White:navy;}
     private Color TextColor=>dark?Color.White:navy;
     private Panel Section(string heading,int height=0)
     {
@@ -47,7 +57,7 @@ public sealed class Dashboard : Form
     private void ShowPage(string next)
     {
         page=next;body.SuspendLayout();body.Controls.Clear();body.BackColor=BackColor;body.AutoScroll=next is not ("Tổng quan" or "Ghép GTIN");
-        title.Text=next;switch(next){case "Tổng quan":Overview();break;case "Kết nối API":Connections();break;case "Danh sách GTIN":CatalogPage();break;case "Bài đăng WB":CardsPage();break;case "Ghép GTIN":MatchPage();break;case "Lịch sử":HistoryPage();break;}
+        title.Text=next;switch(next){case "Tổng quan":Overview();break;case "Kết nối API":Connections();break;case "Danh sách GTIN":CatalogPage();break;case "Bài đăng WB":CardsPage();break;case "Ghép GTIN":MatchPage();break;case "Lịch sử":HistoryPage();break;case "Cài đặt":SettingsPage();break;}
         body.ResumeLayout();
     }
     private Button Action(string label,EventHandler handler)
@@ -116,7 +126,7 @@ public sealed class Dashboard : Form
         var info=new TableLayoutPanel{Dock=DockStyle.Fill,AutoSize=true,AutoSizeMode=AutoSizeMode.GrowAndShrink,ColumnCount=1,RowCount=2,Padding=new Padding(16),Margin=new Padding(0,12,0,0),BackColor=dark?Color.FromArgb(45,57,78):Color.White};
         info.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         info.RowStyles.Add(new RowStyle(SizeType.AutoSize));info.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        info.Controls.Add(new Label{Text=demo?"CHẾ ĐỘ MẪU • Dữ liệu chỉ nằm trên máy":"Dữ liệu thật chỉ được đọc khi bấm Đồng bộ",Dock=DockStyle.Fill,AutoSize=true,Font=new Font("Segoe UI Semibold",12),ForeColor=TextColor,Margin=new Padding(0,0,0,8)},0,0);
+        info.Controls.Add(new Label{Text=demo?"CHẾ ĐỘ MẪU • Dữ liệu chỉ nằm trên máy":syncAt==null?"Chưa đồng bộ dữ liệu thật":$"Lần đọc hoàn tất: {syncAt.Value.LocalDateTime:g} • Bản lưu có thể đã cũ; đồng bộ lại để ghi",Dock=DockStyle.Fill,AutoSize=true,Font=new Font("Segoe UI Semibold",12),ForeColor=TextColor,Margin=new Padding(0,0,0,8)},0,0);
         info.Controls.Add(new Label{Text="Mỗi đợt ghi yêu cầu chọn dòng và bấm Xác nhận thêm GTIN. Khi mất kết nối, bản xem trước được giữ nhưng không thể ghi.",Dock=DockStyle.Fill,AutoSize=true,ForeColor=TextColor,Margin=Padding.Empty},0,1);
         var actions=WrapActions(Action("Nạp dữ liệu mẫu",(_,_)=>LoadDemo()),Action("Đồng bộ dữ liệu thật",async (_,_)=>await Sync()),Action("Hủy tác vụ",(_,_)=>running?.Cancel()));
         layout.Controls.Add(actions,0,0);layout.Controls.Add(stats,0,1);layout.Controls.Add(info,0,2);
@@ -165,7 +175,7 @@ public sealed class Dashboard : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,170));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,110));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-        var message=new Label{Text=(demo?"DỮ LIỆU MẪU • CẤM GHI WB. ":"")+"Thao tác chỉ thêm barcode vào size; WB không cho thay hoặc xóa mã cũ.",Dock=DockStyle.Fill,ForeColor=TextColor,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
+        var message=new Label{Text=(demo?"DỮ LIỆU MẪU • CẤM GHI WB. ":syncAt!=null?$"Lần đọc: {syncAt.Value.LocalDateTime:g}. ":"")+"Thao tác chỉ thêm barcode vào size; WB không cho thay hoặc xóa mã cũ.",Dock=DockStyle.Fill,ForeColor=TextColor,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
         var grid=Grid("Chọn","Ảnh","Cửa hàng","Tên","nmID","Mã seller","Màu","Size WB","chrtID","Barcode hiện có","GTIN đề xuất","Thẻ NK","Lý do khớp","Trạng thái");
         grid.ReadOnly=false;grid.Columns.RemoveAt(0);grid.Columns.Insert(0,new DataGridViewCheckBoxColumn{Name="Chọn",HeaderText="Chọn",Width=55,MinimumWidth=55});
         grid.Columns.RemoveAt(1);grid.Columns.Insert(1,new DataGridViewImageColumn{Name="Ảnh",HeaderText="Ảnh",ImageLayout=DataGridViewImageCellLayout.Zoom,Width=65,MinimumWidth=65});
@@ -189,20 +199,38 @@ public sealed class Dashboard : Form
         filter.SelectedIndexChanged+=(_,_)=>{foreach(DataGridViewRow r in grid.Rows)if(r.Tag is MatchRow m)r.Visible=filter.SelectedIndex switch {0=>true,1=>m.Status==MatchStatus.Exact,2=>m.Status==MatchStatus.Existing,3=>m.Status is MatchStatus.Multiple or MatchStatus.AccessDenied or MatchStatus.Unpublished or MatchStatus.Stale,4=>m.Status==MatchStatus.Conflict,5=>m.Status==MatchStatus.Missing,_=>true};};
         var model=new TextBox{PlaceholderText="Mã mẫu NK",Width=140};var sizeFrom=new TextBox{PlaceholderText="Size WB (XL)",Width=120};var sizeTo=new TextBox{PlaceholderText="Size NK (48)",Width=120};
         var rules=ActionGroup("Ánh xạ mã hàng và size cho sản phẩm đang chọn",model,sizeFrom,sizeTo,Action("Lưu ánh xạ",(_,_)=>{if(grid.CurrentRow?.Tag is not MatchRow m)return;if(model.TextLength>0)config.ProductRules[m.ShopId+":"+m.VendorCode]=model.Text.Trim();var actual=config.ProductRules.GetValueOrDefault(m.ShopId+":"+m.VendorCode,m.VendorCode);if(sizeFrom.TextLength>0&&sizeTo.TextLength>0)config.SizeRules[Matching.Normalize(actual)+":"+Matching.Normalize(sizeFrom.Text)]=sizeTo.Text.Trim();disk.Save(config);Rebuild();ShowPage("Ghép GTIN");}));
-        var actions=ActionGroup("Lọc và cập nhật",filter,Action("Chọn dòng khớp chắc chắn",(_,_)=>{foreach(var m in matches)m.Selected=m.Status==MatchStatus.Exact;ShowPage("Ghép GTIN");}),Action("Xác nhận thêm GTIN",async (_,_)=>await Commit()),Action("Tạm dừng",(_,_)=>{resume.Reset();Notice("Đã tạm dừng hàng đợi");}),Action("Tiếp tục",(_,_)=>{resume.Set();Notice("Đang tiếp tục");}),Action("Hủy",(_,_)=>running?.Cancel()),Action("Xuất CSV",(_,_)=>ExportMatches()));
+        var actions=ActionGroup("Lọc và cập nhật",filter,Action("Chọn dòng khớp chắc chắn",(_,_)=>{foreach(var m in matches)m.Selected=m.Status==MatchStatus.Exact;ShowPage("Ghép GTIN");}),Action("Xác nhận thêm GTIN",async (_,_)=>await Commit()),Action("Tạm dừng",(_,_)=>{resume.Reset();Notice("Đã tạm dừng hàng đợi");}),Action("Tiếp tục tác vụ đã xác nhận",async (_,_)=>{resume.Set();await RunJobs();}),Action("Hủy",(_,_)=>running?.Cancel()),Action("Xuất CSV",(_,_)=>ExportMatches()));
         var area=new Panel{Dock=DockStyle.Fill,BackColor=BackColor};
         if(matches.Count==0)area.Controls.Add(new Label{Text="Chưa có dữ liệu đối chiếu.\nVào Tổng quan → Nạp dữ liệu mẫu để xem thử, hoặc kết nối hai API rồi chọn Đồng bộ dữ liệu thật.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=TextColor,Font=new Font("Segoe UI",12),Padding=new Padding(25)});
         else area.Controls.Add(grid);
         layout.Controls.Add(message,0,0);layout.Controls.Add(actions,0,1);layout.Controls.Add(rules,0,2);layout.Controls.Add(area,0,3);
         body.Controls.Add(layout);
     }
-    private static string Status(MatchStatus x)=>x switch {MatchStatus.Exact=>"Khớp chắc chắn",MatchStatus.Existing=>"Đã có GTIN",MatchStatus.Missing=>"Không tìm thấy",MatchStatus.Multiple=>"Nhiều GTIN ứng viên",MatchStatus.Conflict=>"Xung đột",MatchStatus.Unpublished=>"Chưa công bố",MatchStatus.AccessDenied=>"Không có quyền",MatchStatus.Stale=>"Dữ liệu cũ",MatchStatus.Updated=>"Đã cập nhật",_=>"Lỗi"};
+    private static string Status(MatchStatus x)=>x switch {MatchStatus.Exact=>"Khớp chắc chắn",MatchStatus.Existing=>"Đã có GTIN",MatchStatus.Missing=>"Không tìm thấy",MatchStatus.Multiple=>"Nhiều GTIN ứng viên",MatchStatus.Conflict=>"Xung đột",MatchStatus.Unpublished=>"Chưa công bố",MatchStatus.AccessDenied=>"Không có quyền",MatchStatus.Stale=>"Dữ liệu cũ",MatchStatus.Updated=>"Thành công",MatchStatus.Queued=>"Chờ xác nhận",MatchStatus.Sending=>"Đang gửi",MatchStatus.Received=>"WB đã nhận",MatchStatus.Verifying=>"Đang kiểm tra",MatchStatus.Unknown=>"Chưa rõ kết quả",MatchStatus.Review=>"Cần kiểm tra",_=>"Lỗi"};
     private void HistoryPage()
     {
         var grid=Grid("Thời gian","Cửa hàng","nmID","chrtID","GTIN","Kết quả","Chi tiết");foreach(var x in disk.History().OrderByDescending(x=>x.At))grid.Rows.Add(x.At.LocalDateTime.ToString("g"),x.Shop,x.NmId,x.ChrtId,x.Gtin,x.Result,x.Detail);
+        foreach(var job in disk.LoadJobs().Where(j=>j.Status is not (WriteState.Success or WriteState.Review or WriteState.Failed)))foreach(var line in job.Lines)grid.Rows.Add(job.ConfirmedAt.LocalDateTime.ToString("g"),job.ShopName,job.NmId,line.ChrtId,line.Gtin,Status(job.Status switch{WriteState.Queued=>MatchStatus.Queued,WriteState.Sending=>MatchStatus.Sending,WriteState.Received=>MatchStatus.Received,WriteState.Verifying=>MatchStatus.Verifying,_=>MatchStatus.Unknown}),line.Detail);
         body.Controls.Add(grid);body.Controls.Add(Strip(Action("Xuất báo cáo CSV",(_,_)=>ExportHistory())));
     }
-    private void Rebuild(){matches.Clear();matches.AddRange(Matching.Build(goods,cards,config));}
+    private void SettingsPage()
+    {
+        var status=Section("Cấu hình cục bộ và trạng thái dữ liệu",160);
+        status.Controls.Add(new Label{Text=$"Thư mục dữ liệu: {disk.Folder}\nLần đồng bộ hoàn tất: {(syncAt==null?"Chưa có":syncAt.Value.LocalDateTime.ToString("g"))}\nTác vụ đang chờ hoặc chưa rõ kết quả: {disk.LoadJobs().Count(j=>j.Status is WriteState.Queued or WriteState.Sending or WriteState.Received or WriteState.Verifying or WriteState.Unknown)}\nChế độ sáng/tối được lưu riêng trên máy này.",Dock=DockStyle.Fill,Padding=new Padding(20,40,10,0),ForeColor=TextColor});
+        body.Controls.Add(status);
+        body.Controls.Add(Strip(Action("Tiếp tục tác vụ đã xác nhận",async (_,_)=>await RunJobs())));
+    }
+    private void Rebuild(){matches.Clear();matches.AddRange(Matching.Build(goods,cards,config));ApplyJobs();}
+    private void ApplyJobs()
+    {
+        foreach(var job in disk.LoadJobs())foreach(var line in job.Lines)
+        {
+            var row=matches.FirstOrDefault(m=>m.ShopId==job.ShopId&&m.NmId==job.NmId&&m.ChrtId==line.ChrtId&&m.Gtin==line.Gtin);
+            if(row==null)continue;
+            row.Status=job.Status switch{WriteState.Queued=>MatchStatus.Queued,WriteState.Sending=>MatchStatus.Sending,WriteState.Received=>MatchStatus.Received,WriteState.Verifying=>MatchStatus.Verifying,WriteState.Unknown=>MatchStatus.Unknown,WriteState.Success=>MatchStatus.Updated,WriteState.Review=>MatchStatus.Review,_=>MatchStatus.Failed};
+            row.Detail=line.Detail;
+        }
+    }
     private void LoadDemo()
     {
         demo=true;goods.Clear();cards.Clear();
@@ -239,56 +267,54 @@ public sealed class Dashboard : Form
             var freshGoods=await catalog.Read(Secrets.Reveal(config.ProtectedCatalogKey),since,DateTime.UtcNow.AddDays(1),new Progress<string>(Notice),ct);
             var freshCards=new List<Listing>();
             foreach(var shop in config.Shops){ct.ThrowIfCancellationRequested();freshCards.AddRange(await wb.Read(shop,Secrets.Reveal(shop.ProtectedToken),ct));Notice($"Đang đọc WB: {shop.Name} ({freshCards.Count} thẻ)");}
-            goods.Clear();goods.AddRange(freshGoods);cards.Clear();cards.AddRange(freshCards);demo=false;bar.Value=80;
+            var completed=DateTimeOffset.UtcNow;
+            disk.SaveSnapshot(new ReadSnapshot{CompletedAt=completed,Goods=freshGoods,Cards=freshCards});
+            goods.Clear();goods.AddRange(freshGoods);cards.Clear();cards.AddRange(freshCards);syncAt=completed;demo=false;bar.Value=80;
             Notice("Đang đối chiếu");Rebuild();bar.Value=100;ShowPage("Tổng quan");Notice($"Đã đối chiếu {matches.Count} dòng; cần seller xem và xác nhận");
         });
     }
     private async Task Commit()
     {
         if(demo){Notice("Dữ liệu mẫu không được ghi lên WB");return;}
+        if(syncAt==null || DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30))
+        {Notice("Bản xem trước đã cũ hoặc đồng bộ chưa hoàn tất; đồng bộ lại trước khi xác nhận");return;}
         var selected=matches.Where(m=>m.Selected&&m.Status==MatchStatus.Exact).ToList();
         if(selected.Count==0){Notice("Chọn ít nhất một dòng Khớp chính xác");return;}
-        if(MessageBox.Show(this,$"Thêm {selected.Count} GTIN vào {selected.Select(x=>x.ShopId).Distinct().Count()} cửa hàng WB?\nWB không thể xóa barcode cũ.","Xác nhận thêm GTIN",MessageBoxButtons.YesNo,MessageBoxIcon.Warning)!=DialogResult.Yes)return;
+        var pending=disk.LoadJobs();
+        if(selected.Any(row=>pending.Any(job=>job.ShopId==row.ShopId&&job.NmId==row.NmId&&job.Status is not (WriteState.Success or WriteState.Review or WriteState.Failed))))
+        {Notice("Bài đăng đã có tác vụ chờ; tiếp tục hoặc xử lý tác vụ đó trước");return;}
+        var groups=selected.GroupBy(x=>(x.ShopId,x.NmId)).ToList();
+        var stores=string.Join("\n",selected.GroupBy(x=>x.Shop).Select(g=>$"{g.Key}: {g.Select(x=>x.NmId).Distinct().Count()} bài đăng, {g.Count()} size"));
+        if(MessageBox.Show(this,$"Thêm {selected.Count} GTIN vào {groups.Count} bài đăng của {selected.Select(x=>x.ShopId).Distinct().Count()} cửa hàng?\n{stores}\n\nWB chỉ thêm barcode; không thể xóa mã cũ.","Xác nhận thêm GTIN",MessageBoxButtons.YesNo,MessageBoxIcon.Warning)!=DialogResult.Yes)return;
+        foreach(var group in groups)
+        {
+            var listing=cards.Single(c=>c.ShopId==group.Key.ShopId&&c.NmId==group.Key.NmId);
+            pending.Add(WriteJob.FromRows(listing,group));
+        }
+        disk.SaveJobs(pending);
+        ApplyJobs();ShowPage("Ghép GTIN");
+        await RunJobs();
+    }
+    private async Task RunJobs()
+    {
         await Run(async ct=>
         {
-            resume.Set();var done=0;
-            foreach(var group in selected.GroupBy(x=>(x.ShopId,x.NmId)))
+            var jobs=disk.LoadJobs().Where(j=>j.Status is WriteState.Queued or WriteState.Sending or WriteState.Received or WriteState.Verifying or WriteState.Unknown).ToList();
+            if(jobs.Count==0){Notice("Không có tác vụ đã xác nhận cần tiếp tục");return;}
+            var completed=0;
+            foreach(var job in jobs)
             {
-                ct.ThrowIfCancellationRequested();while(!resume.IsSet){await Task.Delay(200,ct);}
-                var shop=config.Shops.SingleOrDefault(s=>s.Id==group.Key.ShopId)??throw new InvalidOperationException("Cửa hàng không còn tồn tại");
-                var token=Secrets.Reveal(shop.ProtectedToken);
-                try
-                {
-                    Notice($"Đang cập nhật WB: {done}/{selected.Count}");
-                    var fresh=await wb.ReadOne(shop,token,group.Key.NmId,ct);
-                    // Invalidate a preview when identifiers, sizes, or color have drifted.
-                    var original=cards.Single(c=>c.ShopId==shop.Id&&c.NmId==fresh.NmId);
-                    if(Json.A(original.Raw,"sizes").ToJsonString()!=Json.A(fresh.Raw,"sizes").ToJsonString() || Matching.Normalize(Matching.Color(original))!=Matching.Normalize(Matching.Color(fresh)))throw new InvalidOperationException("Thẻ WB đã thay đổi; đồng bộ và duyệt lại");
-                    var payload=CardPayload.Add(fresh.Raw,group);
-                    await wb.Update(token,payload,ct);
-                    foreach(var row in group)
-                    {
-                        var found=false;
-                        for(var attempt=0;attempt<6;attempt++)
-                        {
-                            ct.ThrowIfCancellationRequested();await Task.Delay(TimeSpan.FromSeconds(attempt==0?2:6),ct);
-                            var verify=await wb.ReadOne(shop,token,row.NmId,ct);
-                            found=Json.A(verify.Raw,"sizes").Any(s=>Json.L(s,"chrtID")==row.ChrtId&&Json.A(s,"skus").Any(v=>v?.ToString()==row.Gtin));
-                            if(found)break;
-                        }
-                        if(!found)throw new ApiFailure((await wb.Errors(token,row.NmId,ct)) is {Length:>0} error?error:"WB chưa xác nhận GTIN trong size; kiểm tra lại sau khi xử lý đồng bộ");
-                        row.Status=MatchStatus.Updated;row.Detail="Đã đọc lại đúng chrtID";disk.Append(new(DateTimeOffset.UtcNow,shop.Name,row.NmId,row.ChrtId,row.Gtin,"Đã cập nhật",row.Detail));done++;
-                    }
-                }
-                catch(OperationCanceledException){throw;}
-                catch(Exception e)
-                {
-                    foreach(var row in group.Where(r=>r.Status==MatchStatus.Exact)){row.Status=MatchStatus.Failed;row.Detail=SafeError(e);disk.Append(new(DateTimeOffset.UtcNow,shop.Name,row.NmId,row.ChrtId,row.Gtin,"Lỗi",row.Detail));done++;}
-                }
-                bar.Value=Math.Min(100,(int)(100.0*done/selected.Count));
-                if(done<selected.Count)await Task.Delay(TimeSpan.FromSeconds(6),ct);
+                ct.ThrowIfCancellationRequested();
+                while(!resume.IsSet)await Task.Delay(200,ct);
+                if(!config.Shops.Any(s=>s.Id==job.ShopId)){job.Mark(WriteState.Review,"Cửa hàng đã bị xóa; cần kiểm tra lại");disk.SaveJobs(disk.LoadJobs().Select(x=>x.Id==job.Id?job:x));continue;}
+                Notice($"Đang cập nhật WB: {completed}/{jobs.Count} bài đăng");
+                var before=job.Status;
+                await processor.Process(job,ct);
+                if(before!=job.Status && job.Status is WriteState.Success or WriteState.Review or WriteState.Failed)
+                    foreach(var line in job.Lines)disk.Append(new(DateTimeOffset.UtcNow,job.ShopName,job.NmId,line.ChrtId,line.Gtin,job.Status.ToString(),line.Detail));
+                completed++;bar.Value=Math.Min(100,completed*100/jobs.Count);ApplyJobs();ShowPage("Ghép GTIN");
             }
-            ShowPage("Ghép GTIN");Notice($"Hoàn tất {done}/{selected.Count}; kiểm tra từng dòng trong Lịch sử");
+            Notice($"Đã xử lý {completed}/{jobs.Count} bài đăng; xem trạng thái từng dòng");
         });
     }
     private async Task Run(Func<CancellationToken,Task> work)

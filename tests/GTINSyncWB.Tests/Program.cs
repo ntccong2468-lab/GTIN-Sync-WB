@@ -38,10 +38,16 @@ Check((await retry.Send(req,CancellationToken.None))["ok"]?.ToString()=="true","
 var denied=new ApiTransport(new DeniedHandler());
 try{using var r=new HttpRequestMessage(HttpMethod.Get,"https://example.org/data");await denied.Send(r,CancellationToken.None);throw new Exception("403 incorrectly passed");}
 catch(ApiFailure e){Check(e.Status==403,"403 surfaced without secret");}
+var uncertainHandler=new WriteTimeoutHandler();
+var uncertainTransport=new ApiTransport(uncertainHandler);
+try{using var r=new HttpRequestMessage(HttpMethod.Post,"https://example.org/update"){Content=new StringContent("[]")};await uncertainTransport.Send(r,CancellationToken.None,true);throw new Exception("Write timeout incorrectly accepted");}
+catch(ApiFailure e){Check(e.UnknownOutcome && uncertainHandler.Calls==1,"Timed-out POST is unknown and never retried blindly");}
 var workFolder=Path.Combine(Path.GetTempPath(),"gtin-queue-test-"+Guid.NewGuid().ToString("N"));
 try
 {
     var disk=new Storage(workFolder);
+    disk.SaveSnapshot(new ReadSnapshot{CompletedAt=DateTimeOffset.UtcNow,Goods=goods,Cards=[listing]});
+    Check(disk.LoadSnapshot()?.Goods.Single().Gtin==gtin && disk.LoadSnapshot()?.Cards.Single().Raw["sizes"] is JsonArray,"Read preview survives restart with GTIN string and sizes");
     var job=WriteJob.FromRows(listing,[rows[0]]);
     disk.SaveJobs([job]);
     var restored=new Storage(workFolder).LoadJobs().Single();
@@ -101,6 +107,11 @@ sealed class RetryHandler:HttpMessageHandler
 sealed class DeniedHandler:HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)=>Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+}
+sealed class WriteTimeoutHandler:HttpMessageHandler
+{
+    public int Calls;
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct){Calls++;throw new TaskCanceledException();}
 }
 sealed class FakeWriteGateway(Listing listing):IWriteGateway
 {

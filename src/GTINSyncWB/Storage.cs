@@ -29,6 +29,31 @@ public sealed class Storage
         var path=Path.Combine(Folder,"history.jsonl");
         return File.Exists(path)?File.ReadLines(path).Select(x=>{try{return JsonSerializer.Deserialize<HistoryEntry>(x);}catch{return null;}}).OfType<HistoryEntry>().ToList():[];
     }
+    public void SaveJobs(IEnumerable<WriteJob> jobs)=>WriteAtomic("jobs.json",JsonSerializer.Serialize(jobs));
+    public List<WriteJob> LoadJobs()
+    {
+        var path=Path.Combine(Folder,"jobs.json");
+        return File.Exists(path)?JsonSerializer.Deserialize<List<WriteJob>>(File.ReadAllText(path))??[]:[];
+    }
+    public void SaveSnapshot(ReadSnapshot snapshot)=>WriteAtomic("snapshot.json",JsonSerializer.Serialize(snapshot));
+    public ReadSnapshot? LoadSnapshot()
+    {
+        var path=Path.Combine(Folder,"snapshot.json");
+        return File.Exists(path)?JsonSerializer.Deserialize<ReadSnapshot>(File.ReadAllText(path)):null;
+    }
+    private void WriteAtomic(string file,string content)
+    {
+        Directory.CreateDirectory(Folder);
+        var path=Path.Combine(Folder,file);var temp=path+".tmp";
+        File.WriteAllText(temp,content);
+        File.Move(temp,path,true);
+    }
+}
+public sealed class ReadSnapshot
+{
+    public DateTimeOffset CompletedAt { get; set; }
+    public List<CatalogItem> Goods { get; set; } = [];
+    public List<Listing> Cards { get; set; } = [];
 }
 public static class Secrets
 {

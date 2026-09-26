@@ -64,13 +64,18 @@ public static class Gtin
 }
 public static class CardPayload
 {
+    public static JsonObject Base(JsonObject fresh)
+    {
+        var fields=new[]{"nmID","vendorCode","kizMarked","brand","title","description","dimensions","characteristics","sizes"};
+        var copy=new JsonObject();foreach(var key in fields)if(fresh[key]!=null)copy[key]=fresh[key]!.DeepClone();
+        return copy;
+    }
     public static JsonArray Add(JsonObject fresh,IEnumerable<MatchRow> rows)
     {
         var selected=rows.Where(r=>r.Status==MatchStatus.Exact && r.Selected).ToList();
         if(selected.Count==0)throw new InvalidOperationException("Không có dòng hợp lệ được chọn");
         if(selected.Any(r=>r.NmId!=Json.L(fresh,"nmID") || r.VendorCode!=Json.S(fresh,"vendorCode")))throw new InvalidOperationException("Bài đăng WB đã thay đổi định danh");
-        var fields=new[]{"nmID","vendorCode","kizMarked","brand","title","description","dimensions","characteristics","sizes"};
-        var copy=new JsonObject();foreach(var key in fields)if(fresh[key]!=null)copy[key]=fresh[key]!.DeepClone();
+        var copy=Base(fresh);
         var sizes=Json.A(copy,"sizes");
         foreach(var r in selected)
         {

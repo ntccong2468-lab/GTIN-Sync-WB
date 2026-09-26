@@ -50,11 +50,11 @@ jobs:
           $files | ForEach-Object { Write-Output "$($_.Name): $($_.Length) bytes" }
       - uses: actions/upload-artifact@v4
         with:
-          name: GTIN-Sync-WB-Setup-0.2.0-win-x64
+          name: GTIN-Sync-WB-Setup-0.3.0-win-x64
           path: dist/*.exe
           if-no-files-found: error
       - uses: actions/upload-artifact@v4
         with:
-          name: GTIN-Sync-WB-UI-0.2.0
+          name: GTIN-Sync-WB-UI-0.3.0
           path: ui-snapshots/*.png
           if-no-files-found: error

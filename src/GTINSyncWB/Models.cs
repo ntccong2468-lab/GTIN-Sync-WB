@@ -8,13 +8,14 @@ public sealed class Settings
     public List<Shop> Shops { get; set; } = [];
     public string ProtectedCatalogKey { get; set; } = "";
     public string Organization { get; set; } = "";
-    public string Since { get; set; } = "2020-01-01";
+    public string Since { get; set; } = "2000-01-01";
+    public bool DarkMode { get; set; }
     public Dictionary<string,string> SizeRules { get; set; } = new();
     public Dictionary<string,string> ProductRules { get; set; } = new();
 }
 public sealed record CatalogItem(string Gtin,string Model,string Name,string Brand,string Color,string Size,string Status,DateTimeOffset SyncedAt,string Source, bool Accessible = true);
 public sealed record Listing(string ShopId,string ShopName,long NmId,string VendorCode,string Title,string Color,string Photo,JsonObject Raw,DateTimeOffset SyncedAt);
-public enum MatchStatus { Exact, Existing, Missing, Multiple, Conflict, Unpublished, AccessDenied, Stale, Updated, Failed }
+public enum MatchStatus { Exact, Existing, Missing, Multiple, Conflict, Unpublished, AccessDenied, Stale, Updated, Failed, Queued, Sending, Received, Verifying, Unknown, Review }
 public sealed class MatchRow
 {
     public bool Selected { get; set; }

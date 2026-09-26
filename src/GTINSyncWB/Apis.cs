@@ -3,7 +3,27 @@ using System.Net.Http.Json;
 using System.Text.Json.Nodes;
 
 namespace GTINSyncWB;
-public sealed class ApiFailure(string message,int status=0) : Exception(message) {public int Status {get;}=status;}
+public sealed class ApiFailure(string message,int status=0,bool unknownOutcome=false) : Exception(message)
+{
+    public int Status {get;}=status;
+    public bool UnknownOutcome {get;}=unknownOutcome;
+}
+public sealed class RequestGate(TimeSpan interval)
+{
+    private readonly SemaphoreSlim mutex=new(1,1);
+    private DateTimeOffset next;
+    public async Task Enter(CancellationToken ct)
+    {
+        await mutex.WaitAsync(ct);
+        try
+        {
+            var delay=next-DateTimeOffset.UtcNow;
+            if(delay>TimeSpan.Zero)await Task.Delay(delay,ct);
+            next=DateTimeOffset.UtcNow+interval;
+        }
+        finally{mutex.Release();}
+    }
+}
 public sealed class ApiTransport
 {
     private readonly HttpClient http;
@@ -12,7 +32,7 @@ public sealed class ApiTransport
         http=handler==null?new HttpClient():new HttpClient(handler);
         http.Timeout=TimeSpan.FromSeconds(35);
     }
-    public async Task<JsonNode> Send(HttpRequestMessage request,CancellationToken ct)
+    public async Task<JsonNode> Send(HttpRequestMessage request,CancellationToken ct,bool isWrite=false)
     {
         for(var attempt=0;attempt<5;attempt++)
         {
@@ -20,22 +40,24 @@ public sealed class ApiTransport
             try
             {
                 using var response=await http.SendAsync(message,ct);
-                if(response.StatusCode==HttpStatusCode.TooManyRequests || response.StatusCode==HttpStatusCode.ServiceUnavailable)
+                if(response.StatusCode==HttpStatusCode.TooManyRequests || (!isWrite && response.StatusCode==HttpStatusCode.ServiceUnavailable))
                 {
                     if(attempt==4)throw new ApiFailure("API tạm giới hạn số yêu cầu; có thể thử lại",(int)response.StatusCode);
-                    var seconds=Math.Clamp(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? Math.Pow(2,attempt+1),1,300);
+                    var retry=response.Headers.RetryAfter;
+                    var seconds=Math.Clamp(retry?.Delta?.TotalSeconds ?? (retry?.Date-DateTimeOffset.UtcNow)?.TotalSeconds ?? Math.Pow(2,attempt+1),1,300);
                     await Task.Delay(TimeSpan.FromSeconds(seconds),ct);continue;
                 }
                 if(!response.IsSuccessStatusCode)
                 {
                     var code=(int)response.StatusCode;
-                    throw new ApiFailure(code switch {401=>"Khóa API không hợp lệ hoặc đã hết quyền",403=>"Không có quyền truy cập thẻ hoặc cửa hàng",413=>"Giới hạn số bản ghi/kích thước yêu cầu",_=>$"API trả lỗi HTTP {code}"},code);
+                    throw new ApiFailure(code switch {401=>"Khóa API không hợp lệ hoặc đã hết quyền",403=>"Không có quyền truy cập thẻ hoặc cửa hàng",413=>"Giới hạn số bản ghi/kích thước yêu cầu",_=>$"API trả lỗi HTTP {code}"},code,isWrite && code>=500);
                 }
                 var data=JsonNode.Parse(await response.Content.ReadAsStringAsync(ct)) ?? throw new ApiFailure("Phản hồi API trống");
                 if(data is JsonObject o && o["error"]?.ToString().Equals("true",StringComparison.OrdinalIgnoreCase)==true)throw new ApiFailure("API báo lỗi xử lý; mở tài khoản seller để xem chi tiết an toàn");
                 return data;
             }
-            catch(TaskCanceledException) when(!ct.IsCancellationRequested){throw new ApiFailure("Kết nối API quá thời gian");}
+            catch(TaskCanceledException) when(!ct.IsCancellationRequested){throw new ApiFailure("Kết nối API quá thời gian",0,isWrite);}
+            catch(HttpRequestException){throw new ApiFailure("Mất kết nối API",0,isWrite);}
         }
         throw new ApiFailure("API chưa thể phục vụ");
     }
@@ -50,10 +72,12 @@ public sealed class ApiTransport
 public sealed class CatalogApi(ApiTransport transport)
 {
     private const string Base="https://апи.национальный-каталог.рф";
+    private readonly RequestGate gate=new(TimeSpan.FromSeconds(1));
     private async Task<JsonNode> Get(string path,string key,CancellationToken ct)
     {
         // NK requires apikey in the query. No request URI or response body is ever logged.
         using var req=new HttpRequestMessage(HttpMethod.Get,Base+path+(path.Contains('?')?'&':'?')+"apikey="+Uri.EscapeDataString(key)+"&format=json");
+        await gate.Enter(ct);
         return await transport.Send(req,ct);
     }
     public Task<JsonNode> Check(string key,CancellationToken ct)=>Get("/v4/product-list?limit=1&offset=0&good_status=published&from_date=2020-01-01%2000%3A00%3A00&to_date=2020-01-02%2000%3A00%3A00",key,ct);
@@ -120,15 +144,18 @@ public sealed class CatalogApi(ApiTransport transport)
         return new(id,Attr("Артикул","Артикул производителя","Модель","Код модели","Код товара"),Json.S(item,"good_name"),Json.S(item,"brand_name"),Attr("Цвет","Основной цвет"),Attr("Размер","Размер изделия","Размер товара"),Json.S(item,"good_status"),at,"НК: "+id);
     }
 }
-public sealed class WbApi(ApiTransport transport)
+public sealed class WbApi(ApiTransport transport):IWriteGateway
 {
     private const string Base="https://content-api.wildberries.ru";
-    private async Task<JsonNode> Post(string path,string token,JsonNode data,CancellationToken ct)
+    private readonly RequestGate readGate=new(TimeSpan.FromMilliseconds(650));
+    private readonly RequestGate writeGate=new(TimeSpan.FromSeconds(6));
+    private async Task<JsonNode> Post(string path,string token,JsonNode data,CancellationToken ct,bool write=false)
     {
         using var req=new HttpRequestMessage(HttpMethod.Post,Base+path);
         req.Headers.TryAddWithoutValidation("Authorization",token);
         req.Content=JsonContent.Create(data);
-        return await transport.Send(req,ct);
+        await (write?writeGate:readGate).Enter(ct);
+        return await transport.Send(req,ct,write);
     }
     public Task<JsonNode> Check(string token,CancellationToken ct)=>Post("/content/v2/get/cards/list",token,new JsonObject{["settings"]=new JsonObject{["cursor"]=new JsonObject{["limit"]=1}}},ct);
     public async Task<List<Listing>> Read(Shop shop,string token,CancellationToken ct)
@@ -156,7 +183,11 @@ public sealed class WbApi(ApiTransport transport)
         var card=Json.A(inner,"cards").OfType<JsonObject>().SingleOrDefault(x=>Json.L(x,"nmID")==nmId);
         return card==null?throw new ApiFailure("Không đọc lại được đúng nmID; dừng ghi"):Parse(shop,card);
     }
-    public Task<JsonNode> Update(string token,JsonArray payload,CancellationToken ct)=>Post("/content/v2/cards/update",token,payload,ct);
+    public async Task Update(string token,JsonArray payload,CancellationToken ct)
+    {
+        if(payload.Count!=1 || System.Text.Encoding.UTF8.GetByteCount(payload.ToJsonString())>10_000_000)throw new ApiFailure("Lô cập nhật WB vượt giới hạn an toàn");
+        await Post("/content/v2/cards/update",token,payload,ct,true);
+    }
     public async Task<string> Errors(string token,long nmId,CancellationToken ct)
     {
         var data=await Post("/content/v2/cards/error/list",token,new JsonObject{["cursor"]=new JsonObject{["limit"]=100},["order"]=new JsonObject{["ascending"]=false}},ct);
