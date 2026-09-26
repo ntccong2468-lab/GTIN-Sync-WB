@@ -12,6 +12,10 @@ var listing=new Listing(shop.Id,shop.Name,101,"PANTS","Pants","đen","photo",Car
 var gtin="00000000000017";
 var goods=new List<CatalogItem>{new(gtin,"PANTS","Pants","B","đen","48","published",DateTimeOffset.UtcNow,"NK")};
 var settings=new Settings();
+var direct=goods[0] with {Size="XL"};
+Check(Matching.Build([direct],[listing],settings)[0].Status==MatchStatus.Exact,"Registered article, color and size match automatically without a mapping rule");
+Check(Matching.Build([direct],[listing with {VendorCode="PANTS-SIMILAR",Title="Pants"}],settings)[0].Status!=MatchStatus.Exact,"Nearly identical product name cannot override different article");
+Check(Matching.Build([direct with {Color=""}],[listing],settings)[0].Status!=MatchStatus.Exact,"Missing catalog color blocks match");
 Check(Matching.Build(goods,[listing],settings)[0].Status==MatchStatus.NeedsConfirmation,"No implicit XL to 48 conversion");
 var secondCard=Card();secondCard["nmID"]=102;secondCard["vendorCode"]="SHIRT";
 var second=new Listing(shop.Id,shop.Name,102,"SHIRT","Shirt","đen","",secondCard,DateTimeOffset.UtcNow);

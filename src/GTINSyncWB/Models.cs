@@ -9,7 +9,7 @@ public sealed class Settings
     public string ProtectedCatalogKey { get; set; } = "";
     public string Organization { get; set; } = "";
     public string Since { get; set; } = "2000-01-01";
-    public bool DarkMode { get; set; }
+    public bool DarkMode { get; set; } = true;
     public Dictionary<string,string> SizeRules { get; set; } = new();
     public Dictionary<string,string> ColorRules { get; set; } = new();
     public Dictionary<string,string> ProductRules { get; set; } = new();

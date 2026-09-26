@@ -17,7 +17,7 @@ public sealed class Dashboard : Form
     private DataGridView? progressGrid;private Label? progressSummary;private ProgressBar? progressBar;
     private HashSet<string>? activeJobIds;
     private int matchFilterIndex;private string? matchShopId;
-    private readonly Color navy=Color.FromArgb(20,35,66),blue=Color.FromArgb(42,105,223);
+    private readonly Color navy=Color.FromArgb(28,40,60),blue=Color.FromArgb(138,57,230);
     private static readonly Bitmap EmptyPhoto=FallbackPhoto();
     private static Bitmap FallbackPhoto(){var image=new Bitmap(64,64);using var graphics=Graphics.FromImage(image);graphics.Clear(Color.FromArgb(222,231,240));using var brush=new SolidBrush(Color.FromArgb(70,86,110));graphics.DrawString("Ảnh lỗi",new Font("Segoe UI",8),brush,new RectangleF(2,18,60,30));return image;}
     public Dashboard()
@@ -31,7 +31,7 @@ public sealed class Dashboard : Form
         }
         catch{goods.Clear();cards.Clear();matches.Clear();syncAt=null;}
         AutoScaleMode=AutoScaleMode.Dpi;
-        Text="GTIN Sync WB 0.4.0";Width=1280;Height=800;MinimumSize=new Size(960,620);StartPosition=FormStartPosition.CenterScreen;
+        Text="GTIN Sync WB 0.4.1";Width=1280;Height=800;MinimumSize=new Size(960,620);StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(245,247,251);
         side.Dock=DockStyle.Left;side.Width=260;side.BackColor=navy;Controls.Add(side);
         header.Dock=DockStyle.Top;header.Height=82;header.BackColor=Color.White;Controls.Add(header);
@@ -43,7 +43,7 @@ public sealed class Dashboard : Form
         string[] pages=["Tổng quan","Kết nối API","Danh sách GTIN","Bài đăng WB","Ghép GTIN","Lịch sử","Cài đặt"];
         for(var i=0;i<pages.Length;i++)
         {
-            var p=pages[i];var b=new Button{Text=p,FlatStyle=FlatStyle.Flat,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.White,BackColor=navy,Location=new Point(14,88+i*50),Size=new Size(232,42),Cursor=Cursors.Hand};
+            var p=pages[i];var b=new Button{Text=p=="Ghép GTIN"?"Thêm GTIN WB":p,FlatStyle=FlatStyle.Flat,TextAlign=ContentAlignment.MiddleLeft,ForeColor=Color.White,BackColor=blue,Location=new Point(14,88+i*50),Size=new Size(232,42),Cursor=Cursors.Hand};
             b.FlatAppearance.BorderSize=0;b.Click+=(_,_)=>ShowPage(p);side.Controls.Add(b);
         }
         var theme=new Button{Text="◐  Sáng / tối",ForeColor=Color.White,BackColor=navy,FlatStyle=FlatStyle.Flat,Location=new Point(14,480),Size=new Size(232,40)};
@@ -61,7 +61,7 @@ public sealed class Dashboard : Form
     private void ShowPage(string next)
     {
         page=next;body.SuspendLayout();body.Controls.Clear();body.BackColor=BackColor;body.AutoScroll=next is not ("Tổng quan" or "Ghép GTIN");
-        title.Text=next;switch(next){case "Tổng quan":Overview();break;case "Kết nối API":Connections();break;case "Danh sách GTIN":CatalogPage();break;case "Bài đăng WB":CardsPage();break;case "Ghép GTIN":MatchPage();break;case "Bắt đầu thêm GTIN":ProgressPage();break;case "Lịch sử":HistoryPage();break;case "Cài đặt":SettingsPage();break;}
+        title.Text=next=="Ghép GTIN"?"Thêm GTIN WB":next;switch(next){case "Tổng quan":Overview();break;case "Kết nối API":Connections();break;case "Danh sách GTIN":CatalogPage();break;case "Bài đăng WB":CardsPage();break;case "Ghép GTIN":MatchPage();break;case "Bắt đầu thêm GTIN":ProgressPage();break;case "Lịch sử":HistoryPage();break;case "Cài đặt":SettingsPage();break;}
         body.ResumeLayout();
     }
     private Button Action(string label,EventHandler handler)
@@ -93,6 +93,8 @@ public sealed class Dashboard : Form
         g.DefaultCellStyle.ForeColor=dark?Color.White:navy;
         g.DefaultCellStyle.SelectionBackColor=dark?Color.FromArgb(63,91,137):Color.FromArgb(215,230,255);
         g.DefaultCellStyle.SelectionForeColor=dark?Color.White:navy;
+        g.AlternatingRowsDefaultCellStyle.BackColor=dark?Color.FromArgb(32,44,65):Color.FromArgb(244,247,252);
+        g.AlternatingRowsDefaultCellStyle.ForeColor=dark?Color.White:navy;
         g.ColumnHeadersDefaultCellStyle.BackColor=dark?Color.FromArgb(31,40,58):Color.FromArgb(238,244,255);
         g.ColumnHeadersDefaultCellStyle.ForeColor=dark?Color.White:navy;
         foreach(var n in names){var column=g.Columns[g.Columns.Add(n,n)];column.MinimumWidth=90;}
@@ -132,7 +134,7 @@ public sealed class Dashboard : Form
         info.RowStyles.Add(new RowStyle(SizeType.AutoSize));info.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         info.Controls.Add(new Label{Text=demo?"CHẾ ĐỘ MẪU • Dữ liệu chỉ nằm trên máy":syncAt==null?"Chưa đồng bộ dữ liệu thật":$"Lần đọc hoàn tất: {syncAt.Value.LocalDateTime:g} • Bản lưu có thể đã cũ; đồng bộ lại để ghi",Dock=DockStyle.Fill,AutoSize=true,Font=new Font("Segoe UI Semibold",12),ForeColor=TextColor,Margin=new Padding(0,0,0,8)},0,0);
         info.Controls.Add(new Label{Text="Mỗi đợt ghi yêu cầu chọn dòng và bấm Xác nhận thêm GTIN. Khi mất kết nối, bản xem trước được giữ nhưng không thể ghi.",Dock=DockStyle.Fill,AutoSize=true,ForeColor=TextColor,Margin=Padding.Empty},0,1);
-        var actions=WrapActions(Action("Nạp dữ liệu mẫu",(_,_)=>LoadDemo()),Action("Đồng bộ dữ liệu thật",async (_,_)=>await Sync()),Action("Hủy tác vụ",(_,_)=>running?.Cancel()));
+        var actions=WrapActions(Action("Nạp dữ liệu mẫu",(_,_)=>LoadDemo()),Action("Đồng bộ và đối chiếu GTIN",async (_,_)=>await Sync()),Action("Hủy tác vụ",(_,_)=>running?.Cancel()));
         layout.Controls.Add(actions,0,0);layout.Controls.Add(stats,0,1);layout.Controls.Add(info,0,2);
         body.Controls.Add(layout);
     }
@@ -154,8 +156,8 @@ public sealed class Dashboard : Form
     }
     private void CatalogPage()
     {
-        var grid=Grid("GTIN","Mã mẫu","Tên","Thương hiệu","Màu","Size","Trạng thái","Đồng bộ");
-        foreach(var x in goods)grid.Rows.Add(x.Gtin,x.Model,x.Name,x.Brand,x.Color,x.Size,x.Accessible?x.Status:"Không có quyền",x.SyncedAt.LocalDateTime.ToString("g"));
+        var grid=Grid("КОД ТОВАРА","НАИМЕНОВАНИЕ ТОВАРА","Mã mẫu / article","Thương hiệu","Màu","Size","Trạng thái thẻ","Đồng bộ");
+        foreach(var x in goods)grid.Rows.Add(x.Gtin,x.Name,x.Model,x.Brand,x.Color,x.Size,x.Accessible?x.Status:"Không có quyền",x.SyncedAt.LocalDateTime.ToString("g"));
         body.Controls.Add(grid);body.Controls.Add(Strip(new Label{Text=demo?"DỮ LIỆU MẪU • KHÔNG PHẢI NK THẬT":$"{goods.Count} GTIN đã đọc",ForeColor=TextColor,AutoSize=true}));
     }
     private void CardsPage()
@@ -165,18 +167,31 @@ public sealed class Dashboard : Form
         var shopFilter=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=180};shopFilter.Items.Add("Tất cả cửa hàng");foreach(var name in cards.Select(x=>x.ShopName).Distinct())shopFilter.Items.Add(name);shopFilter.SelectedIndex=0;
         var syncFilter=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=160};syncFilter.Items.AddRange(new object[]{"Tất cả trạng thái","Dữ liệu mới","Dữ liệu cũ"});syncFilter.SelectedIndex=0;
         var summary=new Label{Dock=DockStyle.Fill,ForeColor=TextColor,TextAlign=ContentAlignment.MiddleLeft};
-        var grid=Grid("Ảnh","Ảnh / trạng thái","Cửa hàng","Tên","Thương hiệu","Màu","nmID","Mã seller (vendorCode)","Ngày cập nhật","Số size");
-        grid.Columns.RemoveAt(0);grid.Columns.Insert(0,new DataGridViewImageColumn{Name="Ảnh",HeaderText="Ảnh",ImageLayout=DataGridViewImageCellLayout.Zoom,Width=64,MinimumWidth=64});grid.RowTemplate.Height=55;
+        var grid=Grid("Chọn","Ảnh","Tên","Article seller (vendorCode)","Màu","Size WB","Barcode WB / GTIN (skus)","Trạng thái","Thao tác","Cửa hàng","nmID","chrtID");
+        grid.Columns.RemoveAt(0);grid.Columns.Insert(0,new DataGridViewCheckBoxColumn{Name="Chọn",HeaderText="Chọn",Width=58,MinimumWidth=58});
+        grid.Columns.RemoveAt(1);grid.Columns.Insert(1,new DataGridViewImageColumn{Name="Ảnh",HeaderText="Ảnh",ImageLayout=DataGridViewImageCellLayout.Zoom,Width=64,MinimumWidth=64});
+        grid.Columns.RemoveAt(8);grid.Columns.Insert(8,new DataGridViewButtonColumn{Name="Thao tác",HeaderText="Thao tác",Text="Chi tiết",UseColumnTextForButtonValue=true,Width=95});
+        grid.ReadOnly=false;foreach(DataGridViewColumn column in grid.Columns)column.ReadOnly=column.Index!=0;
+        grid.RowTemplate.Height=70;grid.DefaultCellStyle.WrapMode=DataGridViewTriState.True;
+        grid.Columns[2].MinimumWidth=240;grid.Columns[6].MinimumWidth=220;grid.Columns[7].MinimumWidth=150;
         void Refresh()
         {
             grid.Rows.Clear();var query=search.Text.Trim();var list=cards.Where(x=>(shopFilter.SelectedIndex==0||x.ShopName==(string)shopFilter.SelectedItem!) && (syncFilter.SelectedIndex==0 || (syncFilter.SelectedIndex==1)==(DateTimeOffset.UtcNow-x.SyncedAt<TimeSpan.FromMinutes(30))) && (query=="" || new[]{x.Title,x.NmId.ToString(),x.VendorCode}.Any(v=>v.Contains(query,StringComparison.OrdinalIgnoreCase)) || Json.A(x.Raw,"sizes").Any(s=>Json.A(s,"skus").Any(v=>v?.ToString().Contains(query,StringComparison.OrdinalIgnoreCase)==true)))).ToList();
-            foreach(var x in list){var index=grid.Rows.Add(EmptyPhoto,string.IsNullOrWhiteSpace(x.Photo)?"Thiếu ảnh":"Đang tải ảnh",x.ShopName,x.Title,Json.S(x.Raw,"brand"),Matching.Color(x),x.NmId,x.VendorCode,Json.S(x.Raw,"updatedAt"),Json.A(x.Raw,"sizes").Count);grid.Rows[index].Tag=x;if(x.Photo!="")_ = LoadPhoto(grid,index,x.Photo,0,x,1);}
-            summary.Text=demo?$"DỮ LIỆU MẪU • {list.Count}/{cards.Count} bài đăng":syncAt==null?$"Chưa đồng bộ hoàn tất • {list.Count}/{cards.Count} bản đã lưu; đồng bộ từ Tổng quan":$"Đã tải đầy đủ {cards.Count} sản phẩm lúc {syncAt.Value.LocalDateTime:g} • Hiển thị {list.Count} • {(DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30)?"Dữ liệu cũ":"Dữ liệu mới")}";
+            foreach(var x in list)foreach(var size in Json.A(x.Raw,"sizes"))
+            {
+                var barcode=string.Join("\n",Json.A(size,"skus").Select(z=>z?.ToString()));
+                var sizeName=Json.S(size,"techSize");if(sizeName=="")sizeName=Json.S(size,"wbSize");
+                var state=string.IsNullOrWhiteSpace(x.Photo)?"Ảnh dự phòng":syncAt==null||DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30)?"Dữ liệu cũ":"Đã đồng bộ";
+                var index=grid.Rows.Add(false,EmptyPhoto,x.Title,x.VendorCode,Matching.Color(x),sizeName,barcode,state,"Chi tiết",x.ShopName,x.NmId,Json.L(size,"chrtID"));grid.Rows[index].Tag=x;
+                if(x.Photo!="")_ = LoadPhoto(grid,index,x.Photo,1,x,7);
+            }
+            summary.Text=demo?$"DỮ LIỆU MẪU • {grid.Rows.Count} dòng size / {cards.Count} bài đăng":syncAt==null?$"Chưa đồng bộ hoàn tất • bản lưu không dùng để ghi; đồng bộ từ Tổng quan":$"Đã tải đầy đủ {cards.Count} sản phẩm lúc {syncAt.Value.LocalDateTime:g} • Hiển thị {grid.Rows.Count} dòng size / {list.Count} bài đăng • {(DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30)?"Dữ liệu cũ":"Dữ liệu mới")}";
         }
         search.TextChanged+=(_,_)=>Refresh();shopFilter.SelectedIndexChanged+=(_,_)=>Refresh();syncFilter.SelectedIndexChanged+=(_,_)=>Refresh();
-        grid.CellDoubleClick+=(_,e)=>{if(e.RowIndex>=0 && grid.Rows[e.RowIndex].Tag is Listing selected)ShowCardDetail(selected);};
+        grid.CellContentClick+=(_,e)=>{if(e.RowIndex>=0&&e.ColumnIndex==8&&grid.Rows[e.RowIndex].Tag is Listing selected)ShowCardDetail(selected);};
+        grid.CellDoubleClick+=(_,e)=>{if(e.RowIndex>=0&&grid.Rows[e.RowIndex].Tag is Listing selected)ShowCardDetail(selected);};
         panel.Controls.Add(WrapActions(search,shopFilter,syncFilter,Action("Đồng bộ lại",async (_,_)=>await Sync())),0,0);panel.Controls.Add(summary,0,1);
-        if(cards.Count==0)panel.Controls.Add(new Label{Text="Chưa có bài đăng WB. Kết nối token Content, rồi chọn Đồng bộ dữ liệu thật tại Tổng quan.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=TextColor},0,2);
+        if(cards.Count==0)panel.Controls.Add(new Label{Text="Chưa có bài đăng WB. Kết nối token Content, rồi chọn Đồng bộ và đối chiếu GTIN tại Tổng quan.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=TextColor},0,2);
         else panel.Controls.Add(grid,0,2);
         body.Controls.Add(panel);Refresh();
     }
@@ -282,15 +297,19 @@ public sealed class Dashboard : Form
         Size=new Size(1024,768);ShowPage("Tổng quan");Save("Tong-quan-sang-100");
         ShowPage("Ghép GTIN");Save("Ghep-GTIN-trong-100");
         LoadDemo();ShowPage("Ghép GTIN");Save("Ghep-GTIN-mau-100");
+        ShowPage("Danh sách GTIN");Save("Danh-sach-GTIN-mau-100");
         dark=true;BackColor=Color.FromArgb(31,40,58);body.BackColor=BackColor;header.BackColor=Color.FromArgb(47,58,79);title.ForeColor=Color.White;state.ForeColor=Color.White;
         ShowPage("Tổng quan");Save("Tong-quan-toi-100");
         ShowPage("Ghép GTIN");Save("Ghep-GTIN-toi-100");
+        ShowPage("Bài đăng WB");Save("Bai-dang-WB-toi-100");
         WindowState=FormWindowState.Maximized;Application.DoEvents();
         ShowPage("Tổng quan");Save("Tong-quan-toi-phong-to");
         ShowPage("Ghép GTIN");Save("Ghep-GTIN-toi-phong-to");
+        ShowPage("Bài đăng WB");Save("Bai-dang-WB-toi-phong-to");
         WindowState=FormWindowState.Normal;Application.DoEvents();
         Size=new Size(1280,800);Scale(new SizeF(1.25f,1.25f));ShowPage("Tổng quan");Save("Tong-quan-toi-scale125");
         ShowPage("Ghép GTIN");Save("Ghep-GTIN-toi-scale125");
+        ShowPage("Bài đăng WB");Save("Bai-dang-WB-toi-scale125");
     }
     private async Task Sync()
     {
