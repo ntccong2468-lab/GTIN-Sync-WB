@@ -4,5 +4,7 @@
     <Compile Include="../../src/GTINSyncWB/Models.cs" Link="Models.cs"/>
     <Compile Include="../../src/GTINSyncWB/Matching.cs" Link="Matching.cs"/>
     <Compile Include="../../src/GTINSyncWB/Apis.cs" Link="Apis.cs"/>
+    <Compile Include="../../src/GTINSyncWB/Storage.cs" Link="Storage.cs"/>
+    <Compile Include="../../src/GTINSyncWB/WriteQueue.cs" Link="WriteQueue.cs"/>
   </ItemGroup>
 </Project>
