@@ -13,7 +13,7 @@ public sealed class Dashboard : Form
     private readonly Label title=new(),state=new();private readonly ProgressBar bar=new();
     private readonly List<CatalogItem> goods=[];private readonly List<Listing> cards=[];private readonly List<MatchRow> matches=[];
     private CancellationTokenSource? running;private readonly ManualResetEventSlim resume=new(true);
-    private bool demo,dark;private DateTimeOffset? syncAt;private string page="Tổng quan";
+    private bool demo,dark,syncIncomplete;private DateTimeOffset? syncAt;private string page="Tổng quan";
     private DataGridView? progressGrid;private Label? progressSummary;private ProgressBar? progressBar;
     private HashSet<string>? activeJobIds;
     private int matchFilterIndex;private string? matchShopId;
@@ -185,7 +185,7 @@ public sealed class Dashboard : Form
                 var index=grid.Rows.Add(false,EmptyPhoto,x.Title,x.VendorCode,Matching.Color(x),sizeName,barcode,state,"Chi tiết",x.ShopName,x.NmId,Json.L(size,"chrtID"));grid.Rows[index].Tag=x;
                 if(x.Photo!="")_ = LoadPhoto(grid,index,x.Photo,1,x,7);
             }
-            summary.Text=demo?$"DỮ LIỆU MẪU • {grid.Rows.Count} dòng size / {cards.Count} bài đăng":syncAt==null?$"Chưa đồng bộ hoàn tất • bản lưu không dùng để ghi; đồng bộ từ Tổng quan":$"Đã tải đầy đủ {cards.Count} sản phẩm lúc {syncAt.Value.LocalDateTime:g} • Hiển thị {grid.Rows.Count} dòng size / {list.Count} bài đăng • {(DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30)?"Dữ liệu cũ":"Dữ liệu mới")}";
+            summary.Text=demo?$"DỮ LIỆU MẪU • {grid.Rows.Count} dòng size / {cards.Count} bài đăng":syncIncomplete?"Đồng bộ mới chưa hoàn tất; đang xem bản lưu cũ, không được ghi":syncAt==null?$"Chưa đồng bộ hoàn tất • bản lưu không dùng để ghi; đồng bộ từ Tổng quan":$"Đã tải đầy đủ {cards.Count} sản phẩm lúc {syncAt.Value.LocalDateTime:g} • Hiển thị {grid.Rows.Count} dòng size / {list.Count} bài đăng • {(DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30)?"Dữ liệu cũ":"Dữ liệu mới")}";
         }
         search.TextChanged+=(_,_)=>Refresh();shopFilter.SelectedIndexChanged+=(_,_)=>Refresh();syncFilter.SelectedIndexChanged+=(_,_)=>Refresh();
         grid.CellContentClick+=(_,e)=>{if(e.RowIndex>=0&&e.ColumnIndex==8&&grid.Rows[e.RowIndex].Tag is Listing selected)ShowCardDetail(selected);};
@@ -217,7 +217,7 @@ public sealed class Dashboard : Form
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,215));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,225));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
-        var message=new Label{Text=(demo?"DỮ LIỆU MẪU • CẤM GHI WB. ":syncAt!=null?$"Lần đọc: {syncAt.Value.LocalDateTime:g}. ":"")+"Thao tác chỉ thêm barcode vào size; WB không cho thay hoặc xóa mã cũ.",Dock=DockStyle.Fill,ForeColor=TextColor,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
+        var message=new Label{Text=(demo?"DỮ LIỆU MẪU • CẤM GHI WB. ":syncIncomplete?"Đồng bộ mới chưa hoàn tất • bản cũ không được ghi. ":syncAt!=null?$"Lần đọc: {syncAt.Value.LocalDateTime:g}. ":"")+"Thao tác chỉ thêm barcode vào size; WB không cho thay hoặc xóa mã cũ.",Dock=DockStyle.Fill,ForeColor=TextColor,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
         var grid=Grid("Chọn","Ảnh","Cửa hàng","Tên","nmID","Mã seller","Mã mẫu NK","Màu WB","Màu NK","Size WB","Size NK","chrtID","Barcode hiện có","GTIN đề xuất","Thẻ NK","Lý do cụ thể","Trạng thái");
         grid.ReadOnly=false;grid.Columns.RemoveAt(0);grid.Columns.Insert(0,new DataGridViewCheckBoxColumn{Name="Chọn",HeaderText="Chọn",Width=55,MinimumWidth=55});
         grid.Columns.RemoveAt(1);grid.Columns.Insert(1,new DataGridViewImageColumn{Name="Ảnh",HeaderText="Ảnh",ImageLayout=DataGridViewImageCellLayout.Zoom,Width=65,MinimumWidth=65});
@@ -329,6 +329,7 @@ public sealed class Dashboard : Form
         if(config.ProtectedCatalogKey==""||config.Shops.Count==0){Notice("Cần lưu khóa NK và ít nhất một cửa hàng WB");return;}
         await Run(async ct=>
         {
+            syncIncomplete=true;
             Notice("Đang đọc dữ liệu");bar.Value=5;
             if(!DateTime.TryParse(config.Since,out var since))throw new InvalidOperationException("Ngày bắt đầu không hợp lệ");
             var freshGoods=await catalog.Read(Secrets.Reveal(config.ProtectedCatalogKey),since,DateTime.UtcNow.AddDays(1),new Progress<string>(Notice),ct);
@@ -336,14 +337,14 @@ public sealed class Dashboard : Form
             foreach(var shop in config.Shops){ct.ThrowIfCancellationRequested();freshCards.AddRange(await wb.Read(shop,Secrets.Reveal(shop.ProtectedToken),ct,new Progress<int>(count=>Notice($"Đang đọc WB: {shop.Name} • đã tải {count} thẻ; chưa hoàn tất"))));Notice($"Đã đọc xong WB: {shop.Name} ({freshCards.Count} thẻ cộng dồn)");}
             var completed=DateTimeOffset.UtcNow;
             disk.SaveSnapshot(new ReadSnapshot{CompletedAt=completed,Goods=freshGoods,Cards=freshCards});
-            goods.Clear();goods.AddRange(freshGoods);cards.Clear();cards.AddRange(freshCards);syncAt=completed;demo=false;bar.Value=80;
+            goods.Clear();goods.AddRange(freshGoods);cards.Clear();cards.AddRange(freshCards);syncAt=completed;demo=false;syncIncomplete=false;bar.Value=80;
             Notice("Đang đối chiếu");Rebuild();bar.Value=100;ShowPage("Tổng quan");Notice($"Đã đối chiếu {matches.Count} dòng; cần seller xem và xác nhận");
         });
     }
     private void ShowPreview()
     {
         if(demo){Notice("Dữ liệu mẫu không được ghi lên WB");return;}
-        if(syncAt==null || DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30))
+        if(syncIncomplete || syncAt==null || DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30))
         {Notice("Bản xem trước đã cũ hoặc đồng bộ chưa hoàn tất; đồng bộ lại trước khi xác nhận");return;}
         var chosen=matches.Where(x=>x.Selected).ToList();
         var selected=MatchSelection.Revalidate(chosen,goods,cards,config);
@@ -367,7 +368,7 @@ public sealed class Dashboard : Form
     }
     private async Task Commit(List<MatchRow> selected)
     {
-        if(demo || syncAt==null || DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30)){Notice("Dữ liệu đã cũ; đồng bộ lại trước khi ghi");return;}
+        if(demo || syncIncomplete || syncAt==null || DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30)){Notice("Dữ liệu đã cũ hoặc đồng bộ chưa hoàn tất; đồng bộ lại trước khi ghi");return;}
         var valid=MatchSelection.Revalidate(selected,goods,cards,config);
         if(valid.Count!=selected.Count){Notice($"Đã loại {selected.Count-valid.Count} dòng không còn chắc chắn; xem lại trước khi xác nhận");ShowPage("Ghép GTIN");return;}
         selected=valid;
@@ -387,7 +388,7 @@ public sealed class Dashboard : Form
     }
     private string? ValidateFresh(Listing fresh,WriteJob job)
     {
-        if(syncAt==null || demo || DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30))return "Bản đồng bộ đã cũ hoặc chưa hoàn tất";
+        if(syncIncomplete || syncAt==null || demo || DateTimeOffset.UtcNow-syncAt.Value>TimeSpan.FromMinutes(30))return "Bản đồng bộ đã cũ hoặc chưa hoàn tất";
         var current=cards.Select(c=>c.ShopId==fresh.ShopId&&c.NmId==fresh.NmId?fresh:c).ToList();
         var match=Matching.Build(goods,current,config);
         foreach(var line in job.Lines)
