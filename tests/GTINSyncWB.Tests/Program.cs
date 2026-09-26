@@ -38,6 +38,37 @@ Check((await retry.Send(req,CancellationToken.None))["ok"]?.ToString()=="true","
 var denied=new ApiTransport(new DeniedHandler());
 try{using var r=new HttpRequestMessage(HttpMethod.Get,"https://example.org/data");await denied.Send(r,CancellationToken.None);throw new Exception("403 incorrectly passed");}
 catch(ApiFailure e){Check(e.Status==403,"403 surfaced without secret");}
+var workFolder=Path.Combine(Path.GetTempPath(),"gtin-queue-test-"+Guid.NewGuid().ToString("N"));
+try
+{
+    var disk=new Storage(workFolder);
+    var job=WriteJob.FromRows(listing,[rows[0]]);
+    disk.SaveJobs([job]);
+    var restored=new Storage(workFolder).LoadJobs().Single();
+    Check(restored.Lines.Single().Gtin==gtin && restored.ExpectedCard==job.ExpectedCard,"Confirmed queue survives restart with leading zero");
+    var fake=new FakeWriteGateway(listing);
+    fake.OnUpdate=()=>throw new ApiFailure("Request timed out",0,true);
+    var processor=new WriteProcessor(disk,fake,()=>DateTimeOffset.UtcNow);
+    await processor.Process(restored,CancellationToken.None);
+    Check(fake.Writes==1 && disk.LoadJobs().Single().Status==WriteState.Unknown,"Write timeout stays unknown and persisted");
+    await processor.Process(disk.LoadJobs().Single(),CancellationToken.None);
+    Check(fake.Writes==1,"Unknown result is not immediately resent");
+    var already=Card();Json.A(Json.A(already,"sizes")[0],"skus").Add(gtin);
+    fake.Current=listing with {Raw=already};
+    await processor.Process(disk.LoadJobs().Single(),CancellationToken.None);
+    Check(disk.LoadJobs().Single().Status==WriteState.Success && fake.Writes==1,"Readback resolves uncertain result at exact chrtID without retry");
+    var wrong=Card();Json.A(Json.A(wrong,"sizes")[1],"skus").Add(gtin);
+    fake.Current=listing with {Raw=wrong};
+    var other=WriteJob.FromRows(listing,[rows[0]]);disk.SaveJobs([other]);
+    await processor.Process(other,CancellationToken.None);
+    Check(other.Status==WriteState.Review && fake.Writes==1,"Wrong chrtID blocks write");
+    fake.Current=listing;
+    var clean=WriteJob.FromRows(listing,[rows[0]]);disk.SaveJobs([clean]);
+    fake.OnUpdate=()=>{var updated=Card();Json.A(Json.A(updated,"sizes")[0],"skus").Add(gtin);fake.Current=listing with {Raw=updated};return Task.CompletedTask;};
+    await processor.Process(clean,CancellationToken.None);
+    Check(clean.Status==WriteState.Success && fake.Writes==2,"Acknowledgment requires readback");
+}
+finally{if(Directory.Exists(workFolder))Directory.Delete(workFolder,true);}
 Console.WriteLine($"PASS {passed} assertions");
 
 sealed class MockHandler:HttpMessageHandler
@@ -70,4 +101,13 @@ sealed class RetryHandler:HttpMessageHandler
 sealed class DeniedHandler:HttpMessageHandler
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)=>Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+}
+sealed class FakeWriteGateway(Listing listing):IWriteGateway
+{
+    public Listing Current=listing;
+    public int Writes;
+    public Func<Task>? OnUpdate;
+    public Task<Listing> ReadOne(Shop shop,string token,long nmId,CancellationToken ct)=>Task.FromResult(Current);
+    public async Task Update(string token,JsonArray payload,CancellationToken ct){Writes++;if(OnUpdate!=null)await OnUpdate();}
+    public Task<string> Errors(string token,long nmId,CancellationToken ct)=>Task.FromResult("");
 }
