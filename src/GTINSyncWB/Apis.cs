@@ -1,0 +1,172 @@
+using System.Net;
+using System.Net.Http.Json;
+using System.Text.Json.Nodes;
+
+namespace GTINSyncWB;
+public sealed class ApiFailure(string message,int status=0) : Exception(message) {public int Status {get;}=status;}
+public sealed class ApiTransport
+{
+    private readonly HttpClient http;
+    public ApiTransport(HttpMessageHandler? handler=null)
+    {
+        http=handler==null?new HttpClient():new HttpClient(handler);
+        http.Timeout=TimeSpan.FromSeconds(35);
+    }
+    public async Task<JsonNode> Send(HttpRequestMessage request,CancellationToken ct)
+    {
+        for(var attempt=0;attempt<5;attempt++)
+        {
+            using var message=Clone(request);
+            try
+            {
+                using var response=await http.SendAsync(message,ct);
+                if(response.StatusCode==HttpStatusCode.TooManyRequests || response.StatusCode==HttpStatusCode.ServiceUnavailable)
+                {
+                    if(attempt==4)throw new ApiFailure("API tạm giới hạn số yêu cầu; có thể thử lại",(int)response.StatusCode);
+                    var seconds=Math.Clamp(response.Headers.RetryAfter?.Delta?.TotalSeconds ?? Math.Pow(2,attempt+1),1,300);
+                    await Task.Delay(TimeSpan.FromSeconds(seconds),ct);continue;
+                }
+                if(!response.IsSuccessStatusCode)
+                {
+                    var code=(int)response.StatusCode;
+                    throw new ApiFailure(code switch {401=>"Khóa API không hợp lệ hoặc đã hết quyền",403=>"Không có quyền truy cập thẻ hoặc cửa hàng",413=>"Giới hạn số bản ghi/kích thước yêu cầu",_=>$"API trả lỗi HTTP {code}"},code);
+                }
+                var data=JsonNode.Parse(await response.Content.ReadAsStringAsync(ct)) ?? throw new ApiFailure("Phản hồi API trống");
+                if(data is JsonObject o && o["error"]?.ToString().Equals("true",StringComparison.OrdinalIgnoreCase)==true)throw new ApiFailure("API báo lỗi xử lý; mở tài khoản seller để xem chi tiết an toàn");
+                return data;
+            }
+            catch(TaskCanceledException) when(!ct.IsCancellationRequested){throw new ApiFailure("Kết nối API quá thời gian");}
+        }
+        throw new ApiFailure("API chưa thể phục vụ");
+    }
+    private static HttpRequestMessage Clone(HttpRequestMessage original)
+    {
+        var next=new HttpRequestMessage(original.Method,original.RequestUri);
+        foreach(var h in original.Headers)next.Headers.TryAddWithoutValidation(h.Key,h.Value);
+        if(original.Content!=null)next.Content=new StringContent(original.Content.ReadAsStringAsync().GetAwaiter().GetResult(),System.Text.Encoding.UTF8,"application/json");
+        return next;
+    }
+}
+public sealed class CatalogApi(ApiTransport transport)
+{
+    private const string Base="https://апи.национальный-каталог.рф";
+    private async Task<JsonNode> Get(string path,string key,CancellationToken ct)
+    {
+        // NK requires apikey in the query. No request URI or response body is ever logged.
+        using var req=new HttpRequestMessage(HttpMethod.Get,Base+path+(path.Contains('?')?'&':'?')+"apikey="+Uri.EscapeDataString(key)+"&format=json");
+        return await transport.Send(req,ct);
+    }
+    public Task<JsonNode> Check(string key,CancellationToken ct)=>Get("/v4/product-list?limit=1&offset=0&good_status=published&from_date=2020-01-01%2000%3A00%3A00&to_date=2020-01-02%2000%3A00%3A00",key,ct);
+    public async Task<List<CatalogItem>> Read(string key,DateTime from,DateTime to,IProgress<string>? progress,CancellationToken ct)
+    {
+        var summaries=new Dictionary<string,JsonNode>();
+        for(var start=from.Date;start<to;start=start.AddDays(30))
+        {
+            var end=start.AddDays(30)<to?start.AddDays(30):to;
+            await Window(start,end,0,summaries,key,progress,ct);
+        }
+        var goods=new List<CatalogItem>();var keys=summaries.Keys.ToList();
+        for(var i=0;i<keys.Count;i+=25)
+        {
+            ct.ThrowIfCancellationRequested();
+            var slice=keys.Skip(i).Take(25).ToArray();
+            try
+            {
+                var data=await Get("/v3/feed-product?gtins="+Uri.EscapeDataString(string.Join(';',slice)),key,ct);
+                foreach(var item in data["result"] as JsonArray ?? new JsonArray())goods.Add(Parse(item!,DateTimeOffset.UtcNow));
+                foreach(var missing in slice.Except(goods.Select(x=>x.Gtin)))goods.Add(new(missing,"",Json.S(summaries[missing],"good_name"),"","","","unavailable",DateTimeOffset.UtcNow,"NK: "+missing,false));
+            }
+            catch(ApiFailure e) when(e.Status==403)
+            {
+                // Isolate individual inaccessible cards so other cards remain usable.
+                foreach(var gtin in slice)
+                {
+                    try{var data=await Get("/v3/feed-product?gtin="+Uri.EscapeDataString(gtin),key,ct);foreach(var item in data["result"] as JsonArray ?? new JsonArray())goods.Add(Parse(item!,DateTimeOffset.UtcNow));}
+                    catch(ApiFailure individual) when(individual.Status is 403 or 404){goods.Add(new(gtin,"",Json.S(summaries[gtin],"good_name"),"","","","restricted",DateTimeOffset.UtcNow,"NK: "+gtin,false));}
+                }
+            }
+            progress?.Report($"Đang đọc dữ liệu: {Math.Min(i+25,keys.Count)}/{keys.Count} thẻ");
+        }
+        return goods;
+    }
+    private async Task Window(DateTime start,DateTime end,int depth,Dictionary<string,JsonNode> target,string key,IProgress<string>? progress,CancellationToken ct)
+    {
+        var collected=new List<JsonNode>();
+        try
+        {
+            for(var offset=0;;offset+=1000)
+            {
+                var q=$"/v4/product-list?from_date={Uri.EscapeDataString(start.ToString("yyyy-MM-dd HH:mm:ss"))}&to_date={Uri.EscapeDataString(end.ToString("yyyy-MM-dd HH:mm:ss"))}&good_status=published&limit=1000&offset={offset}";
+                var result=(await Get(q,key,ct))["result"] ?? throw new ApiFailure("Danh sách NK thiếu result");
+                var total=int.TryParse(Json.S(result,"total"),out var t)?t:0;
+                if(total>=10000)throw new ApiFailure("Cửa sổ dữ liệu vượt giới hạn 10000",413);
+                var batch=Json.A(result,"goods");foreach(var item in batch)if(item!=null)collected.Add(item.DeepClone());
+                if(batch.Count==0 || offset+batch.Count>=total)break;
+                if(offset+1000>=10000)throw new ApiFailure("Cửa sổ dữ liệu vượt giới hạn 10000",413);
+            }
+        }
+        catch(ApiFailure e) when(e.Status==413 && depth<16 && (end-start)>TimeSpan.FromMinutes(2))
+        {
+            var mid=start+(end-start)/2;await Window(start,mid,depth+1,target,key,progress,ct);await Window(mid,end,depth+1,target,key,progress,ct);return;
+        }
+        foreach(var item in collected){var gtin=Json.S(item,"gtin");if(gtin!="")target[gtin]=item;}
+        progress?.Report($"Đang đọc dữ liệu: {target.Count} GTIN");
+    }
+    public static CatalogItem Parse(JsonNode item,DateTimeOffset at)
+    {
+        var attrs=Json.A(item,"good_attrs");
+        string Attr(params string[] names)=>attrs.FirstOrDefault(a=>names.Any(n=>Json.S(a,"attr_name").Equals(n,StringComparison.OrdinalIgnoreCase)))?["attr_value"]?.ToString()??"";
+        var id=(Json.A(item,"identified_by").FirstOrDefault(x=>Json.S(x,"type")=="gtin")?["value"]?.ToString())??Json.S(item,"gtin");
+        return new(id,Attr("Артикул","Артикул производителя","Модель","Код модели","Код товара"),Json.S(item,"good_name"),Json.S(item,"brand_name"),Attr("Цвет","Основной цвет"),Attr("Размер","Размер изделия","Размер товара"),Json.S(item,"good_status"),at,"НК: "+id);
+    }
+}
+public sealed class WbApi(ApiTransport transport)
+{
+    private const string Base="https://content-api.wildberries.ru";
+    private async Task<JsonNode> Post(string path,string token,JsonNode data,CancellationToken ct)
+    {
+        using var req=new HttpRequestMessage(HttpMethod.Post,Base+path);
+        req.Headers.TryAddWithoutValidation("Authorization",token);
+        req.Content=JsonContent.Create(data);
+        return await transport.Send(req,ct);
+    }
+    public Task<JsonNode> Check(string token,CancellationToken ct)=>Post("/content/v2/get/cards/list",token,new JsonObject{["settings"]=new JsonObject{["cursor"]=new JsonObject{["limit"]=1}}},ct);
+    public async Task<List<Listing>> Read(Shop shop,string token,CancellationToken ct)
+    {
+        var cards=new List<Listing>();JsonNode? cursor=null;
+        for(var page=0;page<10000;page++)
+        {
+            var c=new JsonObject{["limit"]=100};
+            if(cursor!=null){c["updatedAt"]=cursor["updatedAt"]?.DeepClone();c["nmID"]=cursor["nmID"]?.DeepClone();}
+            var data=await Post("/content/v2/get/cards/list",token,new JsonObject{["settings"]=new JsonObject{["cursor"]=c}},ct);
+            var inner=data["cards"]!=null?data:data["data"];
+            var batch=Json.A(inner,"cards");
+            foreach(var card in batch.OfType<JsonObject>())cards.Add(Parse(shop,card));
+            if(batch.Count<100)break;
+            var next=inner?["cursor"];
+            if(next==null || Json.L(next,"nmID")==Json.L(cursor,"nmID"))throw new ApiFailure("Phân trang WB thiếu cursor tiếp theo");
+            cursor=next.DeepClone();
+        }
+        return cards;
+    }
+    public async Task<Listing> ReadOne(Shop shop,string token,long nmId,CancellationToken ct)
+    {
+        var data=await Post("/content/v2/get/cards/list",token,new JsonObject{["settings"]=new JsonObject{["filter"]=new JsonObject{["textSearch"]=nmId.ToString()},["cursor"]=new JsonObject{["limit"]=100}}},ct);
+        var inner=data["cards"]!=null?data:data["data"];
+        var card=Json.A(inner,"cards").OfType<JsonObject>().SingleOrDefault(x=>Json.L(x,"nmID")==nmId);
+        return card==null?throw new ApiFailure("Không đọc lại được đúng nmID; dừng ghi"):Parse(shop,card);
+    }
+    public Task<JsonNode> Update(string token,JsonArray payload,CancellationToken ct)=>Post("/content/v2/cards/update",token,payload,ct);
+    public async Task<string> Errors(string token,long nmId,CancellationToken ct)
+    {
+        var data=await Post("/content/v2/cards/error/list",token,new JsonObject{["cursor"]=new JsonObject{["limit"]=100},["order"]=new JsonObject{["ascending"]=false}},ct);
+        var errors=Json.A(data["data"]??data,"items");
+        foreach(var item in errors)if(item?.ToJsonString().Contains(nmId.ToString(),StringComparison.Ordinal)==true)return "WB ghi nhận lỗi xử lý thẻ; mở danh sách lỗi trong tài khoản WB để xem chi tiết";
+        return "";
+    }
+    private static Listing Parse(Shop shop,JsonObject card)
+    {
+        var photo=Json.A(card,"photos").FirstOrDefault()?["big"]?.ToString()??"";
+        return new(shop.Id,shop.Name,Json.L(card,"nmID"),Json.S(card,"vendorCode"),Json.S(card,"title"),"",photo,(JsonObject)card.DeepClone(),DateTimeOffset.UtcNow);
+    }
+}

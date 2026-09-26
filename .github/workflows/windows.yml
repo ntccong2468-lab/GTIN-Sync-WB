@@ -1,0 +1,45 @@
+name: Windows installer and clean install smoke
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'installer/**'
+      - '.github/workflows/windows.yml'
+jobs:
+  installer:
+    runs-on: windows-2022
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+      - name: Run offline contract tests
+        run: dotnet run --project tests/GTINSyncWB.Tests/GTINSyncWB.Tests.csproj -c Release
+      - name: Publish self contained Windows app
+        run: dotnet publish src/GTINSyncWB/GTINSyncWB.csproj -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -o publish
+      - name: Build installer
+        shell: pwsh
+        run: |
+          choco install innosetup --yes --no-progress
+          & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' installer\GTINSyncWB.iss
+          if ($LASTEXITCODE -ne 0) { throw 'Inno Setup failed' }
+      - name: Install and smoke test
+        shell: pwsh
+        run: |
+          $setup = (Get-ChildItem dist\GTIN-Sync-WB-Setup-*.exe | Select-Object -First 1).FullName
+          $p = Start-Process $setup -ArgumentList '/VERYSILENT','/SUPPRESSMSGBOXES','/NORESTART','/TASKS="desktopicon"' -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Installer failed: $($p.ExitCode)" }
+          $app = Join-Path ${env:ProgramFiles} 'GTIN Sync WB\GTINSyncWB.exe'
+          if (!(Test-Path $app)) { throw 'Application missing after install' }
+          if (!(Test-Path (Join-Path $env:PUBLIC 'Desktop\GTIN Sync WB.lnk'))) { throw 'Desktop shortcut missing' }
+          $marker = Join-Path $env:TEMP 'gtin-smoke.txt'
+          $p = Start-Process $app -ArgumentList '--smoke',"`"$marker`"" -PassThru -Wait
+          if ($p.ExitCode -ne 0 -or !(Test-Path $marker)) { throw 'Window startup or DPAPI smoke failed' }
+          Get-Content $marker
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GTIN-Sync-WB-Setup-0.1.0-win-x64
+          path: dist/*.exe
+          if-no-files-found: error
