@@ -21,7 +21,7 @@ public sealed class Dashboard : Form
         AutoScaleMode=AutoScaleMode.Dpi;
         Text="GTIN Sync WB 0.2.0";Width=1280;Height=800;MinimumSize=new Size(960,620);StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(245,247,251);
-        side.Dock=DockStyle.Left;side.Width=260;side.BackColor=navy;side.AutoScroll=true;Controls.Add(side);
+        side.Dock=DockStyle.Left;side.Width=260;side.BackColor=navy;Controls.Add(side);
         header.Dock=DockStyle.Top;header.Height=82;header.BackColor=Color.White;Controls.Add(header);
         title.Text="GTIN Sync WB";title.Font=new Font("Segoe UI Semibold",18);title.AutoSize=true;title.Location=new Point(26,11);header.Controls.Add(title);
         state.Text="Sẵn sàng";state.AutoSize=true;state.Location=new Point(29,53);header.Controls.Add(state);
@@ -36,7 +36,6 @@ public sealed class Dashboard : Form
         }
         var theme=new Button{Text="◐  Sáng / tối",ForeColor=Color.White,BackColor=navy,FlatStyle=FlatStyle.Flat,Location=new Point(14,420),Size=new Size(232,40)};
         theme.Click+=(_,_)=>{dark=!dark;BackColor=dark?Color.FromArgb(31,40,58):Color.FromArgb(245,247,251);body.BackColor=BackColor;header.BackColor=dark?Color.FromArgb(47,58,79):Color.White;title.ForeColor=dark?Color.White:navy;state.ForeColor=dark?Color.White:navy;ShowPage(page);};side.Controls.Add(theme);
-        var note=new Label{Text="GTIN là mã loại hàng.\nKIZ/Data Matrix là mã từng đơn vị.\nWB không cho xóa barcode cũ.",ForeColor=Color.FromArgb(194,208,228),Dock=DockStyle.Bottom,Height=120,Padding=new Padding(18,8,12,0)};side.Controls.Add(note);
         ShowPage(page);
     }
     private Color TextColor=>dark?Color.White:navy;
