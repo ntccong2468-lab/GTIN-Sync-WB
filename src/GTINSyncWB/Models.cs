@@ -13,6 +13,7 @@ public sealed class Settings
     public Dictionary<string,string> SizeRules { get; set; } = new();
     public Dictionary<string,string> ColorRules { get; set; } = new();
     public Dictionary<string,string> ProductRules { get; set; } = new();
+    public Dictionary<string,string> GtinRules { get; set; } = new();
 }
 public sealed record CatalogItem(string Gtin,string Model,string Name,string Brand,string Color,string Size,string Status,DateTimeOffset SyncedAt,string Source, bool Accessible = true, bool TradeUnit = true);
 public sealed record Listing(string ShopId,string ShopName,long NmId,string VendorCode,string Title,string Color,string Photo,JsonObject Raw,DateTimeOffset SyncedAt);

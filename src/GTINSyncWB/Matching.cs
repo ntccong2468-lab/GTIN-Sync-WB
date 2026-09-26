@@ -53,14 +53,20 @@ public static class Matching
             if(candidates.Any(g=>!g.Accessible)){row.Status=MatchStatus.AccessDenied;row.Detail="Không có quyền đọc đủ thuộc tính thẻ";continue;}
             if(candidates.Any(g=>!g.Status.Equals("published",StringComparison.OrdinalIgnoreCase))){row.Status=MatchStatus.Unpublished;row.Detail="Thẻ chưa công bố";continue;}
             if(candidates.Any(g=>!g.TradeUnit)){row.Status=MatchStatus.Conflict;row.Detail="GTIN thuộc cấp bao bì khác, không phải đơn vị hàng";continue;}
-            if(candidates.Count!=1){row.Status=MatchStatus.Multiple;row.Detail=$"{candidates.Count} GTIN ứng viên";continue;}
+            var pin=config.GtinRules.GetValueOrDefault(card.ShopId+":"+card.NmId+":"+chrt);
+            if(candidates.Count!=1 && pin!=null)
+            {
+                var chosen=candidates.Where(g=>g.Gtin==pin).ToList();
+                if(chosen.Count==1)candidates=chosen;
+            }
+            if(candidates.Count!=1){row.Status=MatchStatus.Multiple;row.Detail=$"{candidates.Count} GTIN ứng viên; seller cần xác nhận GTIN của chrtID này";continue;}
             var gtin=candidates[0].Gtin;
             row.Gtin=gtin;row.Source=candidates[0].Source;
             if(!Gtin.IsValid(gtin)){row.Status=MatchStatus.Conflict;row.Detail="GTIN không hợp lệ";continue;}
             var slots=cards.Where(c=>c.ShopId==card.ShopId).SelectMany(c=>Json.A(c.Raw,"sizes").Select(s=>(Card:c,Size:s))).Where(pair=>Json.A(pair.Size,"skus").Any(x=>x?.ToString()==gtin)).ToList();
             if(slots.Any(pair=>Json.L(pair.Size,"chrtID")!=chrt || pair.Card.NmId!=card.NmId)){row.Status=MatchStatus.Conflict;row.Detail="GTIN đã nằm ở size khác";continue;}
             row.Status=slots.Count>0?MatchStatus.Existing:MatchStatus.Exact;
-            row.Detail=row.Status==MatchStatus.Exact?"Mã hàng + màu + size trùng theo định danh hoặc ánh xạ riêng; cần xác nhận":"GTIN đã có";
+            row.Detail=row.Status==MatchStatus.Exact?(pin==gtin?"Seller đã xác nhận GTIN cụ thể; mã hàng, màu và size đều khớp":"Mã hàng + màu + size trùng trực tiếp hoặc theo ngoại lệ đã lưu; cần xác nhận cập nhật"):"GTIN đã có đúng chrtID";
         }
         return result;
     }

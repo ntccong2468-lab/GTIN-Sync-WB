@@ -38,6 +38,9 @@ settings.ColorRules.Clear();
 var mappedOther=Matching.Build(goods,[second],settings)[0];
 Check(mappedOther.Status!=MatchStatus.Exact,"XL conversion remains local to PANTS");
 Check(Matching.Build([goods[0],goods[0] with { Gtin="00000000000024" }],[listing],settings)[0].Status==MatchStatus.Multiple,"Ambiguous codes blocked");
+settings.GtinRules[shop.Id+":101:11"]=gtin;
+Check(Matching.Build([goods[0],goods[0] with { Gtin="00000000000024" }],[listing],settings)[0].Status==MatchStatus.Exact,"Seller-confirmed GTIN pin resolves only the exact chrtID");
+settings.GtinRules.Clear();
 Check(Matching.Build([goods[0] with { Status="draft" }],[listing],settings)[0].Status==MatchStatus.Unpublished,"Draft blocked");
 rows[0].Selected=true;
 var payload=CardPayload.Add(Card(),rows);var changed=payload[0]!.AsObject();
@@ -55,6 +58,8 @@ Check(MatchSelection.Clear(selection)==0 && selection.All(x=>!x.Selected),"Clear
 var drop=Matching.Build(goods,[listing],settings)[0];drop.Selected=true;
 Check(MatchSelection.Revalidate([drop],[goods[0] with {Color="navy"}],[listing],settings).Count==0 && drop.Status==MatchStatus.Review,"Revalidate drops changed candidate before preview");
 Check(Gtin.IsValid(gtin) && !Gtin.IsValid("00000000000018"),"GTIN check digit and leading zero");
+var mixed=JsonNode.Parse("""{"identified_by":[{"type":"gtin","value":"00000000000017","level":"trade-unit"},{"type":"gtin","value":"00000000000024","level":"box"}],"good_status":"published"}""")!;
+Check(CatalogApi.Parse(mixed,DateTimeOffset.UtcNow,gtin).TradeUnit && !CatalogApi.Parse(mixed,DateTimeOffset.UtcNow,"00000000000024").TradeUnit,"NK packaging level remains bound to the requested GTIN");
 var mock=new MockHandler();var api=new CatalogApi(new ApiTransport(mock));
 var read=await api.Read("test-key",new DateTime(2026,1,1),new DateTime(2026,1,2),null,CancellationToken.None);
 Check(read.Count==2 && read.All(x=>x.Model=="PANTS"),"NK pagination and detailed attributes");

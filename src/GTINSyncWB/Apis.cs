@@ -97,7 +97,7 @@ public sealed class CatalogApi(ApiTransport transport)
             try
             {
                 var data=await Get("/v3/feed-product?gtins="+Uri.EscapeDataString(string.Join(';',slice)),key,ct);
-                foreach(var item in data["result"] as JsonArray ?? new JsonArray())goods.Add(Parse(item!,DateTimeOffset.UtcNow));
+                foreach(var item in data["result"] as JsonArray ?? new JsonArray())AddRequested(goods,item!,slice);
                 foreach(var missing in slice.Except(goods.Select(x=>x.Gtin)))goods.Add(new(missing,"",Json.S(summaries[missing],"good_name"),"","","","unavailable",DateTimeOffset.UtcNow,"NK: "+missing,false));
             }
             catch(ApiFailure e) when(e.Status==403)
@@ -105,7 +105,7 @@ public sealed class CatalogApi(ApiTransport transport)
                 // Isolate individual inaccessible cards so other cards remain usable.
                 foreach(var gtin in slice)
                 {
-                    try{var data=await Get("/v3/feed-product?gtin="+Uri.EscapeDataString(gtin),key,ct);foreach(var item in data["result"] as JsonArray ?? new JsonArray())goods.Add(Parse(item!,DateTimeOffset.UtcNow));}
+                    try{var data=await Get("/v3/feed-product?gtin="+Uri.EscapeDataString(gtin),key,ct);foreach(var item in data["result"] as JsonArray ?? new JsonArray())AddRequested(goods,item!,[gtin]);}
                     catch(ApiFailure individual) when(individual.Status is 403 or 404){goods.Add(new(gtin,"",Json.S(summaries[gtin],"good_name"),"","","","restricted",DateTimeOffset.UtcNow,"NK: "+gtin,false));}
                 }
             }
@@ -136,11 +136,18 @@ public sealed class CatalogApi(ApiTransport transport)
         foreach(var item in collected){var gtin=Json.S(item,"gtin");if(gtin!="")target[gtin]=item;}
         progress?.Report($"Đang đọc dữ liệu: {target.Count} GTIN");
     }
-    public static CatalogItem Parse(JsonNode item,DateTimeOffset at)
+    private static void AddRequested(List<CatalogItem> goods,JsonNode item,IReadOnlyCollection<string> requested)
+    {
+        var identifiers=Json.A(item,"identified_by").Where(x=>Json.S(x,"type").Equals("gtin",StringComparison.OrdinalIgnoreCase) && requested.Contains(Json.S(x,"value"))).Select(x=>Json.S(x,"value")).Distinct().ToList();
+        if(identifiers.Count==0 && requested.Contains(Json.S(item,"gtin")))identifiers.Add(Json.S(item,"gtin"));
+        foreach(var id in identifiers)if(!goods.Any(g=>g.Gtin==id))goods.Add(Parse(item,DateTimeOffset.UtcNow,id));
+    }
+    public static CatalogItem Parse(JsonNode item,DateTimeOffset at,string? requestedGtin=null)
     {
         var attrs=Json.A(item,"good_attrs");
         string Attr(params string[] names)=>attrs.FirstOrDefault(a=>names.Any(n=>Json.S(a,"attr_name").Equals(n,StringComparison.OrdinalIgnoreCase)))?["attr_value"]?.ToString()??"";
-        var identifier=Json.A(item,"identified_by").FirstOrDefault(x=>Json.S(x,"type").Equals("gtin",StringComparison.OrdinalIgnoreCase) && Json.S(x,"level")=="trade-unit")
+        var identifier=(requestedGtin==null?null:Json.A(item,"identified_by").FirstOrDefault(x=>Json.S(x,"type").Equals("gtin",StringComparison.OrdinalIgnoreCase) && Json.S(x,"value")==requestedGtin))
+            ??Json.A(item,"identified_by").FirstOrDefault(x=>Json.S(x,"type").Equals("gtin",StringComparison.OrdinalIgnoreCase) && Json.S(x,"level")=="trade-unit")
             ??Json.A(item,"identified_by").FirstOrDefault(x=>Json.S(x,"type").Equals("gtin",StringComparison.OrdinalIgnoreCase));
         var id=identifier?["value"]?.ToString()??Json.S(item,"gtin");
         return new(id,Attr("Артикул","Артикул производителя","Модель","Код модели","Код товара"),Json.S(item,"good_name"),Json.S(item,"brand_name"),Attr("Цвет","Основной цвет"),Attr("Размер","Размер изделия","Размер товара"),Json.S(item,"good_status"),at,"НК: "+id,true,Json.S(identifier,"level")=="trade-unit");
