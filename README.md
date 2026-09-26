@@ -1,17 +1,19 @@
-# GTIN Sync WB 0.4.1
+# GTIN Sync WB 0.4.2
 
 Ứng dụng Windows độc lập (.NET 8 WinForms, bộ cài self-contained), không cần Python, website, máy chủ hoặc tài khoản ChatGPT. Cấu hình và lịch sử nằm trong `%LOCALAPPDATA%\GTIN Sync WB`. Khóa Национальный каталог và token từng cửa hàng WB được mã hóa riêng bằng Windows DPAPI; mã nguồn và bộ cài không chứa khóa seller.
 
 ## Cài đặt và sử dụng
 
-1. Tải và chạy `GTIN-Sync-WB-Setup-0.4.1-win-x64.exe`. Bộ cài tạo shortcut **GTIN Sync WB** trên desktop. Mở bằng nhấp đúp.
+1. Tải và chạy `GTIN-Sync-WB-Setup-0.4.2-win-x64.exe`. Bộ cài tạo shortcut **GTIN Sync WB** trên desktop. Mở bằng nhấp đúp.
 2. Vào **Kết nối API**. Nhập API Key Национальный каталог theo tổ chức có quyền đối với thẻ; thêm từng cửa hàng WB với token Content riêng. Chọn ngày bắt đầu đủ sớm để bao gồm thẻ cũ và kiểm tra hai kết nối.
-3. Ở **Tổng quan**, bấm **Đồng bộ và đối chiếu GTIN**. Ứng dụng đọc danh sách và chi tiết NK, rồi đọc mọi trang bài đăng WB của các cửa hàng. Bản đồng bộ chỉ được thay thế khi cả hai nguồn hoàn tất; nếu lỗi, dữ liệu cũ không được phép ghi.
+3. Bấm **Đồng bộ và đối chiếu GTIN** ở Tổng quan, Danh sách GTIN hoặc Bài đăng WB. Nút **Kiểm tra WB/NK** chỉ xác minh phản hồi của token, chưa tải sản phẩm. Ứng dụng đọc danh sách và chi tiết NK, rồi đọc mọi trang bài đăng WB của các cửa hàng. Bản đồng bộ chỉ được thay thế khi cả hai nguồn hoàn tất; nếu lỗi, dữ liệu cũ không được phép ghi. Thanh trạng thái báo nguồn NK hoặc cửa hàng WB bị lỗi.
 4. **Danh sách GTIN** đặt «КОД ТОВАРА» và «НАИМЕНОВАНИЕ ТОВАРА» ở đầu bảng. **Bài đăng WB** có mỗi size một dòng, tìm theo tên/article/nmID/barcode, lọc cửa hàng/trạng thái, và nút **Chi tiết** để xem toàn bộ `skus`, `chrtID` và thuộc tính gốc. `vendorCode` là article seller, còn `skus` là barcode của từng size.
 5. **Thêm GTIN WB** tự ghép article + màu + size trùng trực tiếp. Chỉ khi dữ liệu khác nhau hoặc mơ hồ mới cần seller nhập ánh xạ hoặc chọn GTIN NK cho một ngoại lệ cụ thể; lưu lựa chọn không gửi WB. Lọc trạng thái, chọn từng dòng hoặc **Chọn tất cả dòng khớp chắc chắn** trong phạm vi cửa hàng/bộ lọc hiện tại; có **Bỏ chọn tất cả**.
 6. Bấm **Xem trước cập nhật** để xem ảnh, cửa hàng, article, màu, size, `chrtID`, GTIN và số bài đăng/size/GTIN. Chỉ nút **Xác nhận thêm GTIN** trong bước xem trước mới tạo tác vụ ghi. Màn hình **Bắt đầu thêm GTIN** hiển thị tiến độ và kết quả từng dòng. Có tạm dừng, tiếp tục và xuất CSV/XLSX trong Lịch sử.
 
 **Nạp dữ liệu mẫu** chỉ để xem giao diện; chế độ mẫu chặn lệnh ghi. WB chỉ cho **thêm** barcode qua cập nhật thẻ, không cho thay/xóa mã cũ. GTIN của loại hàng khác với KIZ/Data Matrix của từng đơn vị hàng.
+
+Nếu một danh sách vẫn trống sau khi đồng bộ hoàn tất, xem số GTIN NK và bài đăng WB ở Tổng quan. Kiểm tra đúng tổ chức có quyền truy cập GTIN, ngày bắt đầu đủ sớm, cửa hàng và quyền Content của token. Không gửi API Key/token trong tin nhắn hay ảnh chụp màn hình.
 
 ## Quy tắc an toàn
 
