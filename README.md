@@ -1,23 +1,25 @@
-# GTIN Sync WB 0.3.0
+# GTIN Sync WB 0.4.1
 
-Ứng dụng Windows độc lập (.NET 8 WinForms), không cần Python, website hoặc tài khoản ChatGPT. Mã nguồn không chứa API key. Dữ liệu cấu hình, lịch sử được lưu trong `%LOCALAPPDATA%\GTIN Sync WB`; hai loại khóa được bảo vệ riêng bằng Windows DPAPI của tài khoản đang đăng nhập.
+Ứng dụng Windows độc lập (.NET 8 WinForms, bộ cài self-contained), không cần Python, website, máy chủ hoặc tài khoản ChatGPT. Cấu hình và lịch sử nằm trong `%LOCALAPPDATA%\GTIN Sync WB`. Khóa Национальный каталог và token từng cửa hàng WB được mã hóa riêng bằng Windows DPAPI; mã nguồn và bộ cài không chứa khóa seller.
 
 ## Cài đặt và sử dụng
 
-1. Chạy `GTIN-Sync-WB-Setup-0.3.0-win-x64.exe`, chọn tạo biểu tượng desktop, sau đó nhấp đúp **GTIN Sync WB**.
-2. Vào **Kết nối API**, thêm từng cửa hàng WB với token mới có quyền Контент; nhập API Key Национальный каталог của tổ chức sở hữu thẻ. Đặt ngày bắt đầu đủ sớm để bao phủ thẻ cũ. Bấm kiểm tra từng kết nối.
-3. Bấm **Đồng bộ dữ liệu thật** ở Tổng quan. Xem Danh sách GTIN và Bài đăng WB. Nếu NK không có thuộc tính mã mẫu/màu/size hoặc WB không có màu, dòng được giữ để kiểm tra.
-4. Ở **Ghép GTIN**, chọn dòng, điền mã mẫu NK nếu khác `vendorCode`; thêm ánh xạ màu hoặc size riêng cho cửa hàng và sản phẩm, ví dụ XL → 48. Kiểm tra từng GTIN và chọn các dòng “Khớp chắc chắn”. Ánh xạ size tạo trong bản 0.2.0 cần lưu lại vì bản 0.3.0 giới hạn theo cửa hàng để tránh áp dụng nhầm.
-5. Bấm **Xác nhận thêm GTIN**, kiểm tra số bài đăng/size theo từng cửa hàng trong hộp xác nhận. Ứng dụng lưu hàng đợi đã xác nhận, đọc thẻ WB mới nhất, thêm GTIN mà vẫn giữ barcode hiện có, gửi cập nhật, rồi đọc lại theo `chrtID`. Nếu kết quả không rõ, ứng dụng không gửi lại ngay. Dùng **Tiếp tục tác vụ đã xác nhận** sau khi mở lại. Xuất CSV hoặc XLSX ở trang Ghép GTIN hoặc Lịch sử.
-6. **Nạp dữ liệu mẫu** thử giao diện mà không cần khóa. Chế độ mẫu không cho gửi yêu cầu ghi WB.
+1. Tải và chạy `GTIN-Sync-WB-Setup-0.4.1-win-x64.exe`. Bộ cài tạo shortcut **GTIN Sync WB** trên desktop. Mở bằng nhấp đúp.
+2. Vào **Kết nối API**. Nhập API Key Национальный каталог theo tổ chức có quyền đối với thẻ; thêm từng cửa hàng WB với token Content riêng. Chọn ngày bắt đầu đủ sớm để bao gồm thẻ cũ và kiểm tra hai kết nối.
+3. Ở **Tổng quan**, bấm **Đồng bộ và đối chiếu GTIN**. Ứng dụng đọc danh sách và chi tiết NK, rồi đọc mọi trang bài đăng WB của các cửa hàng. Bản đồng bộ chỉ được thay thế khi cả hai nguồn hoàn tất; nếu lỗi, dữ liệu cũ không được phép ghi.
+4. **Danh sách GTIN** đặt «КОД ТОВАРА» và «НАИМЕНОВАНИЕ ТОВАРА» ở đầu bảng. **Bài đăng WB** có mỗi size một dòng, tìm theo tên/article/nmID/barcode, lọc cửa hàng/trạng thái, và nút **Chi tiết** để xem toàn bộ `skus`, `chrtID` và thuộc tính gốc. `vendorCode` là article seller, còn `skus` là barcode của từng size.
+5. **Thêm GTIN WB** tự ghép article + màu + size trùng trực tiếp. Chỉ khi dữ liệu khác nhau hoặc mơ hồ mới cần seller nhập ánh xạ hoặc chọn GTIN NK cho một ngoại lệ cụ thể; lưu lựa chọn không gửi WB. Lọc trạng thái, chọn từng dòng hoặc **Chọn tất cả dòng khớp chắc chắn** trong phạm vi cửa hàng/bộ lọc hiện tại; có **Bỏ chọn tất cả**.
+6. Bấm **Xem trước cập nhật** để xem ảnh, cửa hàng, article, màu, size, `chrtID`, GTIN và số bài đăng/size/GTIN. Chỉ nút **Xác nhận thêm GTIN** trong bước xem trước mới tạo tác vụ ghi. Màn hình **Bắt đầu thêm GTIN** hiển thị tiến độ và kết quả từng dòng. Có tạm dừng, tiếp tục và xuất CSV/XLSX trong Lịch sử.
 
-WB không cho sửa/xóa barcode cũ. GTIN là mã loại hàng; không dán KIZ/Data Matrix của từng sản phẩm vào `skus`.
+**Nạp dữ liệu mẫu** chỉ để xem giao diện; chế độ mẫu chặn lệnh ghi. WB chỉ cho **thêm** barcode qua cập nhật thẻ, không cho thay/xóa mã cũ. GTIN của loại hàng khác với KIZ/Data Matrix của từng đơn vị hàng.
 
-Nếu mạng lỗi hoặc thẻ thay đổi trong lúc xem trước, đồng bộ lại trước khi ghi. Một số thuộc tính đặc thù của nhóm hàng có thể yêu cầu rà soát thêm với thẻ WB thật; chưa có kiểm thử bằng tài khoản seller. Không dùng token WB từng xuất hiện trong hội thoại: hãy cấp token mới.
+## Quy tắc an toàn
+
+Ứng dụng chỉ tự đề xuất một GTIN thuộc đơn vị hàng (`trade-unit`) trên thẻ `published` khi article, màu và size đủ chắc chắn và chỉ có một ứng viên. Thiếu thuộc tính, nhiều ứng viên, khác màu, GTIN ở `chrtID` khác hoặc dữ liệu cũ đều bị chặn. Ngay trước khi ghi, ứng dụng đọc lại WB và đối chiếu lại; chỉ thêm GTIN vào `skus` đúng size, giữ barcode và thuộc tính cập nhật thẻ còn lại. HTTP 200 chỉ là WB nhận yêu cầu; ứng dụng đọc lại đúng `chrtID` trước khi báo đã thêm xong. Timeout ghi được lưu là chưa rõ kết quả, không gửi lại ngay.
 
 ## Build trên Windows
 
-Cần .NET 8 SDK và Inno Setup 6. Chạy:
+Cần .NET 8 SDK và Inno Setup 6:
 
 ```powershell
 dotnet run --project tests/GTINSyncWB.Tests/GTINSyncWB.Tests.csproj -c Release
@@ -25,12 +27,8 @@ dotnet publish src/GTINSyncWB/GTINSyncWB.csproj -c Release -r win-x64 --self-con
 & 'C:\Program Files (x86)\Inno Setup 6\ISCC.exe' installer\GTINSyncWB.iss
 ```
 
-Workflow `.github/workflows/windows.yml` chạy test, build, cài đặt, xác nhận shortcut desktop, khởi động ứng dụng và chụp giao diện trên Windows. Bản cài 0.3.0 được tạo tại [Windows CI run #36243827273](https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/36243827273) từ commit `1bc4eded68d83ddfb0044b586319873fee27920c`: 30 assertions đạt, build, cài đặt và smoke test đạt. SHA-256 của tệp `.exe`: `30834d59f7b562f4ea0ed5bef98d723d45fe46c3d2abd8fa853e847a5088b80d`.
+Workflow `.github/workflows/windows.yml` chạy kiểm thử, build, cài trên Windows runner, xác nhận shortcut desktop, DPAPI và khởi động, rồi chụp 13 ảnh giao diện. Xem [báo cáo kiểm thử](BUILD-STATUS.md) để biết bản build cuối cùng và giới hạn của phép thử.
 
-### Giao diện và độ tin cậy 0.3.0
+## Giới hạn đã biết
 
-Thanh bên và các ô Tổng quan dùng bố cục co giãn; nhóm thao tác Ghép GTIN xuống dòng, bảng cuộn ngang/dọc và có chỉ dẫn khi chưa có dữ liệu. Hàng đợi ghi đã xác nhận lưu cục bộ, trạng thái chưa rõ được đọc lại trước khi cân nhắc gửi tiếp. Có trang Cài đặt, ghi nhớ chế độ sáng/tối, xuất CSV/XLSX. Ảnh chụp từ ứng dụng đã cài trên Windows CI gồm giao diện sáng/tối, chế độ mẫu/trống, cửa sổ phóng to và tỷ lệ mô phỏng 125%.
-
-## Giới hạn bản 0.3.0
-
-Bản cài đã được kiểm tra cài đặt và khởi động trên Windows CI; chưa xác nhận tương thích bằng API thật của tài khoản seller. Không thực hiện ghi bằng khóa seller trong quá trình phát triển. Ảnh WB được tải để hiển thị dạng thu nhỏ nếu URL còn truy cập được. Bản xem trước được lưu nhưng đánh dấu cũ khi khởi động lại; phải đồng bộ mới trước khi tạo một đợt ghi mới. Hàng đợi ghi đã xác nhận có thể tiếp tục. Nếu đồng bộ đọc bị gián đoạn, ứng dụng đọc lại từ đầu. Ảnh 125% được tạo bằng cách phóng tỷ lệ biểu mẫu trong CI, chưa thay thế phép thử trên màn hình Windows đặt DPI 125% thực tế. Xem [báo cáo kiểm thử](BUILD-STATUS.md).
+Chưa kiểm chứng bằng khóa NK và WB của seller; chưa ghi thử dữ liệu thật. Đồng bộ đọc bị ngắt phải đọc lại từ đầu, nhưng hàng đợi **ghi đã xác nhận** được lưu để tiếp tục. Bản dữ liệu lưu khi khởi động lại được đánh dấu cũ; cần đồng bộ lại trước một đợt ghi mới. Ảnh UI 125% trong CI dùng phóng tỷ lệ biểu mẫu, chưa tương đương việc đặt Windows Display Scaling thực tế ở 125%. Các thuộc tính riêng cho từng ngành hàng cần thử bằng thẻ seller cụ thể trước khi cập nhật nhiều thẻ.

@@ -1,17 +1,15 @@
-# GTIN Sync WB 0.3.0 — báo cáo kiểm thử 26/09/2026
+# GTIN Sync WB 0.4.1 — báo cáo kiểm thử 26/09/2026
 
-- Mã nguồn: `ntccong2468-lab/GTIN-Sync-WB`, commit ứng dụng `1bc4eded68d83ddfb0044b586319873fee27920c`.
-- Windows CI: [run #36243827273](https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/36243827273) thành công. Chương trình kiểm thử offline đạt **30 assertions**; `dotnet publish` win-x64 self-contained, Inno Setup, cài đặt silent, kiểm tra shortcut desktop và khởi động ứng dụng đều đạt.
-- Smoke kiểm tra DPAPI riêng cho khóa NK và khóa WB sau lưu/đọc lại trên Windows. Không dùng token seller thật.
-- Ảnh chụp từ ứng dụng đã cài: trang Tổng quan và Ghép GTIN sáng/tối, dữ liệu mẫu/trống, cửa sổ phóng to, tỷ lệ biểu mẫu mô phỏng 125%.
-- Tệp cài `GTIN-Sync-WB-Setup-0.3.0-win-x64.exe`, 49.196.628 byte, SHA-256 `30834d59f7b562f4ea0ed5bef98d723d45fe46c3d2abd8fa853e847a5088b80d`.
+Mã nguồn: [ntccong2468-lab/GTIN-Sync-WB](https://github.com/ntccong2468-lab/GTIN-Sync-WB). Bản cài cuối cùng và SHA-256 sẽ được ghi sau khi Windows CI của mã nguồn này hoàn tất.
 
-## Phạm vi kiểm thử offline
+## Kiểm thử mô phỏng
 
-Phân trang NK và WB, GTIN có số 0 đầu, ánh xạ màu/size riêng sản phẩm, nhiều ứng viên, thẻ chưa công bố, barcode trùng hoặc ở size khác, payload giữ các trường được WB cho cập nhật, 429/403, timeout POST không gửi lại ngay, hàng đợi tồn tại qua khởi động lại, đọc lại đúng `chrtID`, XLSX lưu GTIN dạng chuỗi. Dữ liệu mẫu cục bộ bị chặn ghi.
+Kiểm thử offline bao gồm: phân trang NK và WB; GTIN có số 0 đầu và cấp bao bì `trade-unit` so với `box`; tự ghép article/màu/size trực tiếp; hai mẫu cùng size, màu khác, tên gần giống, thiếu thuộc tính; ánh xạ size theo mẫu; nhiều GTIN và seller ghim ngoại lệ theo `chrtID`; chọn tất cả chỉ trong phạm vi cửa hàng/bộ lọc và loại dòng hết điều kiện; trùng GTIN hoặc ở size khác; giữ size, barcode và thuộc tính WB; thay đổi thẻ trước khi ghi; 429/403; HTTP 200 nhưng WB báo lỗi xử lý; timeout POST không gửi lại ngay; đọc lại đúng `chrtID`; tác vụ tồn tại sau khởi động lại; báo cáo XLSX giữ GTIN dạng chuỗi. Dữ liệu mẫu bị chặn ghi.
 
-## Chưa xác nhận thực tế
+Windows CI cài bộ cài Inno Setup trên runner, kiểm tra shortcut desktop, khởi động ứng dụng và lưu/đọc lại hai bí mật DPAPI tách biệt. Ảnh chụp giao diện lấy từ ứng dụng đã cài ở chế độ sáng/tối, cửa sổ thường/phóng to và biểu mẫu phóng 125%; đây chưa phải máy seller với màn hình DPI 125% thật.
 
-Chưa kiểm tra tương thích bằng API Key NK và WB Content token mới của một seller. Không gọi API ghi của seller. Chưa chạy cài đặt trên một máy Windows vật lý không có .NET; CI Windows runner có SDK nhưng ứng dụng được đóng gói self-contained. Tỷ lệ 125% trong CI là phóng tỷ lệ biểu mẫu, chưa phải thay đổi DPI của màn hình thật. Đồng bộ đọc bị ngắt sẽ bắt đầu lại toàn bộ khi chạy lần sau; hàng đợi **ghi đã xác nhận** được lưu để tiếp tục sau khi mở lại. Cần thử nghiệm có giám sát bằng thẻ seller cụ thể trước khi dùng cập nhật hàng loạt dữ liệu thật.
+## Chưa thử bằng API thật
 
-Nguồn tài liệu: [API NK](https://docs.crpt.ru/gismt/API_%D0%9D%D0%9A/) và [WB Product Management](https://dev.wildberries.ru/en/openapi/work-with-products). NK `/v4/product-list` tối đa 10.000 thẻ/khoảng, `/v3/feed-product` tối đa 25 GTIN/lần; WB `/content/v2/cards/update` tối đa 10 yêu cầu/phút, 10 MB/lần và xử lý có thể tới 30 phút. Ứng dụng gửi một thẻ/lần và kiểm tra lại kết quả.
+Không có API Key Национальный каталог hay WB Content token của seller trong môi trường build. Chưa kiểm chứng đọc thẻ/sản phẩm thật, phân quyền subaccount và ghi thẻ WB thật. Không thực hiện lệnh ghi lên WB bằng khóa seller. Khi có khóa nhập trực tiếp trong ứng dụng, nên thử có giám sát với một thẻ cụ thể trước khi chạy lô. Nếu mất kết nối khi đọc, tiến độ đọc chưa tiếp tục từ trang dang dở; lần sau đọc lại từ đầu. Hàng đợi ghi đã xác nhận vẫn lưu trên máy.
+
+Tài liệu chính thức: [Национальный каталог](https://docs.crpt.ru/gismt/API_%D0%9D%D0%9A/) và [Wildberries Content API](https://dev.wildberries.ru/en/openapi/work-with-products). NK `/v4/product-list` giới hạn 10.000 thẻ mỗi cửa sổ và `/v3/feed-product` tối đa 25 GTIN/lần; WB `/content/v2/cards/update` tối đa 10 yêu cầu/phút, 10 MB/lần, xử lý bất đồng bộ có thể tới 30 phút. Ứng dụng ghi từng thẻ và đọc lại trước khi báo hoàn tất.

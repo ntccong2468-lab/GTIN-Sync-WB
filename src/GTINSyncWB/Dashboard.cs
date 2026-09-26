@@ -74,7 +74,7 @@ public sealed class Dashboard : Form
     }
     private FlowLayoutPanel WrapActions(params Control[] controls)
     {
-        var p=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=true,AutoScroll=false,Padding=new Padding(4),BackColor=BackColor};
+        var p=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=true,AutoScroll=true,Padding=new Padding(4),BackColor=BackColor};
         p.Controls.AddRange(controls);return p;
     }
     private TableLayoutPanel ActionGroup(string heading,params Control[] controls)
@@ -162,7 +162,7 @@ public sealed class Dashboard : Form
     }
     private void CardsPage()
     {
-        var panel=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(12),BackColor=BackColor};panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));panel.RowStyles.Add(new RowStyle(SizeType.Absolute,60));panel.RowStyles.Add(new RowStyle(SizeType.Absolute,44));panel.RowStyles.Add(new RowStyle(SizeType.Percent,100));
+        var panel=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=3,Padding=new Padding(12),BackColor=BackColor};panel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));panel.RowStyles.Add(new RowStyle(SizeType.Absolute,104));panel.RowStyles.Add(new RowStyle(SizeType.Absolute,44));panel.RowStyles.Add(new RowStyle(SizeType.Percent,100));
         var search=new TextBox{PlaceholderText="Tìm tên, nmID, mã seller hoặc barcode",Width=300};
         var shopFilter=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=180};shopFilter.Items.Add("Tất cả cửa hàng");foreach(var name in cards.Select(x=>x.ShopName).Distinct())shopFilter.Items.Add(name);shopFilter.SelectedIndex=0;
         var syncFilter=new ComboBox{DropDownStyle=ComboBoxStyle.DropDownList,Width=160};syncFilter.Items.AddRange(new object[]{"Tất cả trạng thái","Dữ liệu mới","Dữ liệu cũ"});syncFilter.SelectedIndex=0;
@@ -214,8 +214,8 @@ public sealed class Dashboard : Form
         var layout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=4,Padding=new Padding(12,8,12,12),BackColor=BackColor};
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,44));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,170));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,145));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,215));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,225));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
         var message=new Label{Text=(demo?"DỮ LIỆU MẪU • CẤM GHI WB. ":syncAt!=null?$"Lần đọc: {syncAt.Value.LocalDateTime:g}. ":"")+"Thao tác chỉ thêm barcode vào size; WB không cho thay hoặc xóa mã cũ.",Dock=DockStyle.Fill,ForeColor=TextColor,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
         var grid=Grid("Chọn","Ảnh","Cửa hàng","Tên","nmID","Mã seller","Mã mẫu NK","Màu WB","Màu NK","Size WB","Size NK","chrtID","Barcode hiện có","GTIN đề xuất","Thẻ NK","Lý do cụ thể","Trạng thái");
