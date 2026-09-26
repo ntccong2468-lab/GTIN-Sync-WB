@@ -222,6 +222,10 @@ public sealed class Dashboard : Form
         dark=true;BackColor=Color.FromArgb(31,40,58);body.BackColor=BackColor;header.BackColor=Color.FromArgb(47,58,79);title.ForeColor=Color.White;state.ForeColor=Color.White;
         ShowPage("Tổng quan");Save("Tong-quan-toi-100");
         ShowPage("Ghép GTIN");Save("Ghep-GTIN-toi-100");
+        WindowState=FormWindowState.Maximized;Application.DoEvents();
+        ShowPage("Tổng quan");Save("Tong-quan-toi-phong-to");
+        ShowPage("Ghép GTIN");Save("Ghep-GTIN-toi-phong-to");
+        WindowState=FormWindowState.Normal;Application.DoEvents();
         Size=new Size(1280,800);Scale(new SizeF(1.25f,1.25f));ShowPage("Tổng quan");Save("Tong-quan-toi-scale125");
         ShowPage("Ghép GTIN");Save("Ghep-GTIN-toi-scale125");
     }
