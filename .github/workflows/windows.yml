@@ -46,7 +46,7 @@ jobs:
           $p = Start-Process $app -ArgumentList '--ui-snapshot',"`"$shots`"" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "UI capture failed: $($p.ExitCode)" }
           $files = @(Get-ChildItem $shots -Filter '*.png')
-          if ($files.Count -ne 7) { throw "Expected 7 UI snapshots, got $($files.Count)" }
+          if ($files.Count -ne 9) { throw "Expected 9 UI snapshots, got $($files.Count)" }
           $files | ForEach-Object { Write-Output "$($_.Name): $($_.Length) bytes" }
       - uses: actions/upload-artifact@v4
         with:
