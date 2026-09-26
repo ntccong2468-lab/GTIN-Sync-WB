@@ -6,5 +6,6 @@
     <Compile Include="../../src/GTINSyncWB/Apis.cs" Link="Apis.cs"/>
     <Compile Include="../../src/GTINSyncWB/Storage.cs" Link="Storage.cs"/>
     <Compile Include="../../src/GTINSyncWB/WriteQueue.cs" Link="WriteQueue.cs"/>
+    <Compile Include="../../src/GTINSyncWB/Reports.cs" Link="Reports.cs"/>
   </ItemGroup>
 </Project>

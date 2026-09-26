@@ -173,7 +173,7 @@ public sealed class Dashboard : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,44));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,170));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,110));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,145));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
         var message=new Label{Text=(demo?"DỮ LIỆU MẪU • CẤM GHI WB. ":syncAt!=null?$"Lần đọc: {syncAt.Value.LocalDateTime:g}. ":"")+"Thao tác chỉ thêm barcode vào size; WB không cho thay hoặc xóa mã cũ.",Dock=DockStyle.Fill,ForeColor=TextColor,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
         var grid=Grid("Chọn","Ảnh","Cửa hàng","Tên","nmID","Mã seller","Màu","Size WB","chrtID","Barcode hiện có","GTIN đề xuất","Thẻ NK","Lý do khớp","Trạng thái");
@@ -197,9 +197,10 @@ public sealed class Dashboard : Form
         grid.CurrentCellDirtyStateChanged+=(_,_)=>{if(grid.IsCurrentCellDirty)grid.CommitEdit(DataGridViewDataErrorContexts.Commit);};
         var filter=new ComboBox{Width=180,DropDownStyle=ComboBoxStyle.DropDownList};filter.Items.AddRange(new object[]{"Tất cả","Khớp chắc chắn","Đã có GTIN","Cần xác nhận","Xung đột","Không tìm thấy"});filter.SelectedIndex=0;
         filter.SelectedIndexChanged+=(_,_)=>{foreach(DataGridViewRow r in grid.Rows)if(r.Tag is MatchRow m)r.Visible=filter.SelectedIndex switch {0=>true,1=>m.Status==MatchStatus.Exact,2=>m.Status==MatchStatus.Existing,3=>m.Status is MatchStatus.Multiple or MatchStatus.AccessDenied or MatchStatus.Unpublished or MatchStatus.Stale,4=>m.Status==MatchStatus.Conflict,5=>m.Status==MatchStatus.Missing,_=>true};};
-        var model=new TextBox{PlaceholderText="Mã mẫu NK",Width=140};var sizeFrom=new TextBox{PlaceholderText="Size WB (XL)",Width=120};var sizeTo=new TextBox{PlaceholderText="Size NK (48)",Width=120};
-        var rules=ActionGroup("Ánh xạ mã hàng và size cho sản phẩm đang chọn",model,sizeFrom,sizeTo,Action("Lưu ánh xạ",(_,_)=>{if(grid.CurrentRow?.Tag is not MatchRow m)return;if(model.TextLength>0)config.ProductRules[m.ShopId+":"+m.VendorCode]=model.Text.Trim();var actual=config.ProductRules.GetValueOrDefault(m.ShopId+":"+m.VendorCode,m.VendorCode);if(sizeFrom.TextLength>0&&sizeTo.TextLength>0)config.SizeRules[Matching.Normalize(actual)+":"+Matching.Normalize(sizeFrom.Text)]=sizeTo.Text.Trim();disk.Save(config);Rebuild();ShowPage("Ghép GTIN");}));
-        var actions=ActionGroup("Lọc và cập nhật",filter,Action("Chọn dòng khớp chắc chắn",(_,_)=>{foreach(var m in matches)m.Selected=m.Status==MatchStatus.Exact;ShowPage("Ghép GTIN");}),Action("Xác nhận thêm GTIN",async (_,_)=>await Commit()),Action("Tạm dừng",(_,_)=>{resume.Reset();Notice("Đã tạm dừng hàng đợi");}),Action("Tiếp tục tác vụ đã xác nhận",async (_,_)=>{resume.Set();await RunJobs();}),Action("Hủy",(_,_)=>running?.Cancel()),Action("Xuất CSV",(_,_)=>ExportMatches()));
+        var model=new TextBox{PlaceholderText="Mã mẫu NK",Width=130};var sizeFrom=new TextBox{PlaceholderText="Size WB (XL)",Width=115};var sizeTo=new TextBox{PlaceholderText="Size NK (48)",Width=115};
+        var colorFrom=new TextBox{PlaceholderText="Màu WB",Width=115};var colorTo=new TextBox{PlaceholderText="Màu NK",Width=115};
+        var rules=ActionGroup("Ánh xạ riêng cho cửa hàng và sản phẩm đang chọn",model,sizeFrom,sizeTo,colorFrom,colorTo,Action("Lưu ánh xạ",(_,_)=>{if(grid.CurrentRow?.Tag is not MatchRow m)return;if(model.TextLength>0)config.ProductRules[m.ShopId+":"+m.VendorCode]=model.Text.Trim();var actual=config.ProductRules.GetValueOrDefault(m.ShopId+":"+m.VendorCode,m.VendorCode);var prefix=m.ShopId+":"+Matching.Normalize(actual)+":";if(sizeFrom.TextLength>0&&sizeTo.TextLength>0)config.SizeRules[prefix+Matching.Normalize(sizeFrom.Text)]=sizeTo.Text.Trim();if(colorFrom.TextLength>0&&colorTo.TextLength>0)config.ColorRules[prefix+Matching.Normalize(colorFrom.Text)]=colorTo.Text.Trim();disk.Save(config);Rebuild();ShowPage("Ghép GTIN");}));
+        var actions=ActionGroup("Lọc và cập nhật",filter,Action("Chọn dòng khớp chắc chắn",(_,_)=>{foreach(var m in matches)m.Selected=m.Status==MatchStatus.Exact;ShowPage("Ghép GTIN");}),Action("Xác nhận thêm GTIN",async (_,_)=>await Commit()),Action("Tạm dừng",(_,_)=>{resume.Reset();Notice("Đã tạm dừng hàng đợi");}),Action("Tiếp tục tác vụ đã xác nhận",async (_,_)=>{resume.Set();await RunJobs();}),Action("Hủy",(_,_)=>running?.Cancel()),Action("Xuất CSV / XLSX",(_,_)=>ExportMatches()));
         var area=new Panel{Dock=DockStyle.Fill,BackColor=BackColor};
         if(matches.Count==0)area.Controls.Add(new Label{Text="Chưa có dữ liệu đối chiếu.\nVào Tổng quan → Nạp dữ liệu mẫu để xem thử, hoặc kết nối hai API rồi chọn Đồng bộ dữ liệu thật.",Dock=DockStyle.Fill,TextAlign=ContentAlignment.MiddleCenter,ForeColor=TextColor,Font=new Font("Segoe UI",12),Padding=new Padding(25)});
         else area.Controls.Add(grid);
@@ -211,7 +212,7 @@ public sealed class Dashboard : Form
     {
         var grid=Grid("Thời gian","Cửa hàng","nmID","chrtID","GTIN","Kết quả","Chi tiết");foreach(var x in disk.History().OrderByDescending(x=>x.At))grid.Rows.Add(x.At.LocalDateTime.ToString("g"),x.Shop,x.NmId,x.ChrtId,x.Gtin,x.Result,x.Detail);
         foreach(var job in disk.LoadJobs().Where(j=>j.Status is not (WriteState.Success or WriteState.Review or WriteState.Failed)))foreach(var line in job.Lines)grid.Rows.Add(job.ConfirmedAt.LocalDateTime.ToString("g"),job.ShopName,job.NmId,line.ChrtId,line.Gtin,Status(job.Status switch{WriteState.Queued=>MatchStatus.Queued,WriteState.Sending=>MatchStatus.Sending,WriteState.Received=>MatchStatus.Received,WriteState.Verifying=>MatchStatus.Verifying,_=>MatchStatus.Unknown}),line.Detail);
-        body.Controls.Add(grid);body.Controls.Add(Strip(Action("Xuất báo cáo CSV",(_,_)=>ExportHistory())));
+        body.Controls.Add(grid);body.Controls.Add(Strip(Action("Xuất CSV / XLSX",(_,_)=>ExportHistory())));
     }
     private void SettingsPage()
     {
@@ -328,13 +329,22 @@ public sealed class Dashboard : Form
     private void Notice(string message){if(InvokeRequired){BeginInvoke(new Action(()=>Notice(message)));return;}state.Text=message;}
     private void ExportMatches()
     {
-        var lines=new List<string>{"Cửa hàng,nmID,Mã seller,Màu,Size,chrtID,GTIN,Nguồn,Trạng thái,Chi tiết"};
-        lines.AddRange(matches.Select(x=>string.Join(',',new[]{x.Shop,x.NmId.ToString(),x.VendorCode,x.Color,x.WbSize,x.ChrtId.ToString(),x.Gtin,x.Source,Status(x.Status),x.Detail}.Select(Csv))));SaveCsv(lines);
+        string[] headers=["Cửa hàng","nmID","Mã seller","Màu","Size","chrtID","GTIN","Nguồn","Trạng thái","Chi tiết"];
+        var rows=matches.Select(x=>(IReadOnlyList<string>)new[]{x.Shop,x.NmId.ToString(),x.VendorCode,x.Color,x.WbSize,x.ChrtId.ToString(),x.Gtin,x.Source,Status(x.Status),x.Detail}).ToList();SaveReport(headers,rows);
     }
     private void ExportHistory()
     {
-        var lines=new List<string>{"Thời gian,Cửa hàng,nmID,chrtID,GTIN,Kết quả,Chi tiết"};lines.AddRange(disk.History().Select(x=>string.Join(',',new[]{x.At.ToString("O"),x.Shop,x.NmId.ToString(),x.ChrtId.ToString(),x.Gtin,x.Result,x.Detail}.Select(Csv))));SaveCsv(lines);
+        string[] headers=["Thời gian","Cửa hàng","nmID","chrtID","GTIN","Kết quả","Chi tiết"];
+        var rows=disk.History().Select(x=>(IReadOnlyList<string>)new[]{x.At.ToString("O"),x.Shop,x.NmId.ToString(),x.ChrtId.ToString(),x.Gtin,x.Result,x.Detail}).ToList();
+        rows.AddRange(disk.LoadJobs().Where(x=>x.Status is not (WriteState.Success or WriteState.Review or WriteState.Failed)).SelectMany(job=>job.Lines.Select(line=>(IReadOnlyList<string>)new[]{job.ConfirmedAt.ToString("O"),job.ShopName,job.NmId.ToString(),line.ChrtId.ToString(),line.Gtin,job.Status.ToString(),line.Detail})));
+        SaveReport(headers,rows);
     }
     private static string Csv(string value)=>"\""+value.Replace("\"","\"\"")+"\"";
-    private void SaveCsv(IEnumerable<string> lines){using var d=new SaveFileDialog{Filter="CSV UTF-8|*.csv",FileName="GTIN-Sync-WB-"+DateTime.Now.ToString("yyyyMMdd-HHmm")+".csv"};if(d.ShowDialog(this)==DialogResult.OK)File.WriteAllLines(d.FileName,lines,new UTF8Encoding(true));}
+    private void SaveReport(IReadOnlyList<string> headers,IReadOnlyList<IReadOnlyList<string>> rows)
+    {
+        using var d=new SaveFileDialog{Filter="Excel XLSX|*.xlsx|CSV UTF-8|*.csv",FileName="GTIN-Sync-WB-"+DateTime.Now.ToString("yyyyMMdd-HHmm")+".xlsx"};
+        if(d.ShowDialog(this)!=DialogResult.OK)return;
+        if(d.FilterIndex==1)ReportWriter.Xlsx(d.FileName,headers,rows);
+        else File.WriteAllLines(d.FileName,new[]{headers}.Concat(rows).Select(r=>string.Join(',',r.Select(Csv))),new UTF8Encoding(true));
+    }
 }

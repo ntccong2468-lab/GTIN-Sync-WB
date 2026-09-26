@@ -11,6 +11,7 @@ public sealed class Settings
     public string Since { get; set; } = "2000-01-01";
     public bool DarkMode { get; set; }
     public Dictionary<string,string> SizeRules { get; set; } = new();
+    public Dictionary<string,string> ColorRules { get; set; } = new();
     public Dictionary<string,string> ProductRules { get; set; } = new();
 }
 public sealed record CatalogItem(string Gtin,string Model,string Name,string Brand,string Color,string Size,string Status,DateTimeOffset SyncedAt,string Source, bool Accessible = true);

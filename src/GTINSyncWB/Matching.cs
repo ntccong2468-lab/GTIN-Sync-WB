@@ -36,8 +36,9 @@ public static class Matching
             if(chrt==0 || Normalize(color)=="" || Normalize(card.VendorCode)=="" || Normalize(wbSize)=="") {row.Detail="Thiếu định danh WB (mã hàng, màu, size hoặc chrtID)";continue;}
             // A product-specific model mapping and size mapping are explicit; no global size guess.
             var model=config.ProductRules.GetValueOrDefault(card.ShopId+":"+card.VendorCode,card.VendorCode);
-            var mappedSize=config.SizeRules.GetValueOrDefault(Normalize(model)+":"+Normalize(wbSize),wbSize);
-            var candidates=goods.Where(g=>Normalize(g.Model)==Normalize(model) && Normalize(g.Color)==Normalize(color) && Normalize(g.Size)==Normalize(mappedSize)).ToList();
+            var mappedSize=config.SizeRules.GetValueOrDefault(card.ShopId+":"+Normalize(model)+":"+Normalize(wbSize),wbSize);
+            var mappedColor=config.ColorRules.GetValueOrDefault(card.ShopId+":"+Normalize(model)+":"+Normalize(color),color);
+            var candidates=goods.Where(g=>Normalize(g.Model)==Normalize(model) && Normalize(g.Color)==Normalize(mappedColor) && Normalize(g.Size)==Normalize(mappedSize)).ToList();
             if(candidates.Count==0){row.Detail="Không có đủ mã mẫu + màu + size trùng khớp";continue;}
             if(candidates.Any(g=>!g.Accessible)){row.Status=MatchStatus.AccessDenied;row.Detail="Không có quyền đọc đủ thuộc tính thẻ";continue;}
             if(candidates.Any(g=>!g.Status.Equals("published",StringComparison.OrdinalIgnoreCase))){row.Status=MatchStatus.Unpublished;row.Detail="Thẻ chưa công bố";continue;}
