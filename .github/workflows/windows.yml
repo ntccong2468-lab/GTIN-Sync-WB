@@ -38,8 +38,23 @@ jobs:
           $p = Start-Process $app -ArgumentList '--smoke',"`"$marker`"" -PassThru -Wait
           if ($p.ExitCode -ne 0 -or !(Test-Path $marker)) { throw 'Window startup or DPAPI smoke failed' }
           Get-Content $marker
+      - name: Capture dashboard pages
+        shell: pwsh
+        run: |
+          $app = Join-Path ${env:ProgramFiles} 'GTIN Sync WB\GTINSyncWB.exe'
+          $shots = Join-Path $PWD 'ui-snapshots'
+          $p = Start-Process $app -ArgumentList '--ui-snapshot',"`"$shots`"" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "UI capture failed: $($p.ExitCode)" }
+          $files = @(Get-ChildItem $shots -Filter '*.png')
+          if ($files.Count -ne 7) { throw "Expected 7 UI snapshots, got $($files.Count)" }
+          $files | ForEach-Object { Write-Output "$($_.Name): $($_.Length) bytes" }
       - uses: actions/upload-artifact@v4
         with:
-          name: GTIN-Sync-WB-Setup-0.1.0-win-x64
+          name: GTIN-Sync-WB-Setup-0.2.0-win-x64
           path: dist/*.exe
+          if-no-files-found: error
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GTIN-Sync-WB-UI-0.2.0
+          path: ui-snapshots/*.png
           if-no-files-found: error
