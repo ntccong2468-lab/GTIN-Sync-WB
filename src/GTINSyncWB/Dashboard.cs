@@ -14,13 +14,14 @@ public sealed class Dashboard : Form
     private CancellationTokenSource? running;private readonly ManualResetEventSlim resume=new(true);
     private bool demo,dark;private string page="Tổng quan";
     private readonly Color navy=Color.FromArgb(20,35,66),blue=Color.FromArgb(42,105,223);
+    private static readonly Bitmap EmptyPhoto=new(1,1);
     public Dashboard()
     {
         config=disk.Load();var transport=new ApiTransport();catalog=new(transport);wb=new(transport);
         AutoScaleMode=AutoScaleMode.Dpi;
         Text="GTIN Sync WB 0.2.0";Width=1280;Height=800;MinimumSize=new Size(960,620);StartPosition=FormStartPosition.CenterScreen;
         Font=new Font("Segoe UI",10);BackColor=Color.FromArgb(245,247,251);
-        side.Dock=DockStyle.Left;side.Width=260;side.BackColor=navy;Controls.Add(side);
+        side.Dock=DockStyle.Left;side.Width=260;side.BackColor=navy;side.AutoScroll=true;Controls.Add(side);
         header.Dock=DockStyle.Top;header.Height=82;header.BackColor=Color.White;Controls.Add(header);
         title.Text="GTIN Sync WB";title.Font=new Font("Segoe UI Semibold",18);title.AutoSize=true;title.Location=new Point(26,11);header.Controls.Add(title);
         state.Text="Sẵn sàng";state.AutoSize=true;state.Location=new Point(29,53);header.Controls.Add(state);
@@ -35,7 +36,7 @@ public sealed class Dashboard : Form
         }
         var theme=new Button{Text="◐  Sáng / tối",ForeColor=Color.White,BackColor=navy,FlatStyle=FlatStyle.Flat,Location=new Point(14,420),Size=new Size(232,40)};
         theme.Click+=(_,_)=>{dark=!dark;BackColor=dark?Color.FromArgb(31,40,58):Color.FromArgb(245,247,251);body.BackColor=BackColor;header.BackColor=dark?Color.FromArgb(47,58,79):Color.White;title.ForeColor=dark?Color.White:navy;state.ForeColor=dark?Color.White:navy;ShowPage(page);};side.Controls.Add(theme);
-        var note=new Label{Text="GTIN là mã loại hàng.\nKIZ/Data Matrix là mã từng đơn vị.\nWB không cho xóa barcode cũ.",ForeColor=Color.FromArgb(194,208,228),Location=new Point(18,510),Size=new Size(225,110)};side.Controls.Add(note);
+        var note=new Label{Text="GTIN là mã loại hàng.\nKIZ/Data Matrix là mã từng đơn vị.\nWB không cho xóa barcode cũ.",ForeColor=Color.FromArgb(194,208,228),Dock=DockStyle.Bottom,Height=120,Padding=new Padding(18,8,12,0)};side.Controls.Add(note);
         ShowPage(page);
     }
     private Color TextColor=>dark?Color.White:navy;
@@ -46,7 +47,7 @@ public sealed class Dashboard : Form
     }
     private void ShowPage(string next)
     {
-        page=next;body.SuspendLayout();body.Controls.Clear();body.BackColor=BackColor;
+        page=next;body.SuspendLayout();body.Controls.Clear();body.BackColor=BackColor;body.AutoScroll=next is not ("Tổng quan" or "Ghép GTIN");
         title.Text=next;switch(next){case "Tổng quan":Overview();break;case "Kết nối API":Connections();break;case "Danh sách GTIN":CatalogPage();break;case "Bài đăng WB":CardsPage();break;case "Ghép GTIN":MatchPage();break;case "Lịch sử":HistoryPage();break;}
         body.ResumeLayout();
     }
@@ -60,7 +61,7 @@ public sealed class Dashboard : Form
     }
     private FlowLayoutPanel WrapActions(params Control[] controls)
     {
-        var p=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=true,AutoScroll=true,Padding=new Padding(4),BackColor=BackColor};
+        var p=new FlowLayoutPanel{Dock=DockStyle.Fill,WrapContents=true,AutoScroll=false,Padding=new Padding(4),BackColor=BackColor};
         p.Controls.AddRange(controls);return p;
     }
     private TableLayoutPanel ActionGroup(string heading,params Control[] controls)
@@ -148,7 +149,7 @@ public sealed class Dashboard : Form
     {
         var grid=Grid("Ảnh","Cửa hàng","Tên","nmID","Mã seller","Màu","Size / chrtID / barcode");
         grid.Columns.RemoveAt(0);grid.Columns.Insert(0,new DataGridViewImageColumn{Name="Ảnh",HeaderText="Ảnh",ImageLayout=DataGridViewImageCellLayout.Zoom,Width=60});grid.RowTemplate.Height=54;
-        foreach(var x in cards){var sizes=string.Join("; ",Json.A(x.Raw,"sizes").Select(s=>$"{Json.S(s,"techSize")} / {Json.S(s,"chrtID")} / {string.Join(',',Json.A(s,"skus").Select(z=>z?.ToString()))}"));var index=grid.Rows.Add(null,x.ShopName,x.Title,x.NmId,x.VendorCode,Matching.Color(x),sizes);_ = LoadPhoto(grid,index,x.Photo);}
+        foreach(var x in cards){var sizes=string.Join("; ",Json.A(x.Raw,"sizes").Select(s=>$"{Json.S(s,"techSize")} / {Json.S(s,"chrtID")} / {string.Join(',',Json.A(s,"skus").Select(z=>z?.ToString()))}"));var index=grid.Rows.Add(EmptyPhoto,x.ShopName,x.Title,x.NmId,x.VendorCode,Matching.Color(x),sizes);_ = LoadPhoto(grid,index,x.Photo);}
         body.Controls.Add(grid);body.Controls.Add(Strip(new Label{Text=demo?"DỮ LIỆU MẪU • KHÔNG PHẢI WB THẬT":$"{cards.Count} bài đăng",ForeColor=TextColor,AutoSize=true}));
     }
     private async Task LoadPhoto(DataGridView grid,int row,string url,int column=0)
@@ -162,7 +163,7 @@ public sealed class Dashboard : Form
         var layout=new TableLayoutPanel{Dock=DockStyle.Fill,ColumnCount=1,RowCount=4,Padding=new Padding(12,8,12,12),BackColor=BackColor};
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent,100));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,44));
-        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,150));
+        layout.RowStyles.Add(new RowStyle(SizeType.Absolute,170));
         layout.RowStyles.Add(new RowStyle(SizeType.Absolute,110));
         layout.RowStyles.Add(new RowStyle(SizeType.Percent,100));
         var message=new Label{Text=(demo?"DỮ LIỆU MẪU • CẤM GHI WB. ":"")+"Thao tác chỉ thêm barcode vào size; WB không cho thay hoặc xóa mã cũ.",Dock=DockStyle.Fill,ForeColor=TextColor,TextAlign=ContentAlignment.MiddleLeft,AutoEllipsis=false};
@@ -178,7 +179,7 @@ public sealed class Dashboard : Form
             var size=Json.A(listing?.Raw,"sizes").FirstOrDefault(s=>Json.L(s,"chrtID")==x.ChrtId);
             var barcodes=string.Join(", ",Json.A(size,"skus").Select(s=>s?.ToString()));
             var catalogInfo=item==null?"":$"{item.Name} • {item.Status} • {item.Color} / {item.Size}";
-            var i=grid.Rows.Add(x.Selected,null,x.Shop,listing?.Title??"",x.NmId,x.VendorCode,x.Color,x.WbSize,x.ChrtId,barcodes,x.Gtin,catalogInfo,x.Detail,Status(x.Status));
+            var i=grid.Rows.Add(x.Selected,EmptyPhoto,x.Shop,listing?.Title??"",x.NmId,x.VendorCode,x.Color,x.WbSize,x.ChrtId,barcodes,x.Gtin,catalogInfo,x.Detail,Status(x.Status));
             grid.Rows[i].Tag=x;
             if(x.Status is MatchStatus.Multiple or MatchStatus.Conflict or MatchStatus.Unpublished)grid.Rows[i].DefaultCellStyle.BackColor=dark?Color.FromArgb(98,69,45):Color.FromArgb(255,234,203);
             if(listing!=null)_=LoadPhoto(grid,i,listing.Photo,1);
