@@ -1,4 +1,5 @@
 using System.Net;
+using System.IO.Compression;
 using System.Text;
 using System.Text.Json.Nodes;
 using GTINSyncWB;
@@ -75,6 +76,16 @@ try
     Check(clean.Status==WriteState.Success && fake.Writes==2,"Acknowledgment requires readback");
 }
 finally{if(Directory.Exists(workFolder))Directory.Delete(workFolder,true);}
+var report=Path.Combine(Path.GetTempPath(),"gtin-report-"+Guid.NewGuid().ToString("N")+".xlsx");
+try
+{
+    ReportWriter.Xlsx(report,["GTIN","Kết quả"],[[gtin,"Thành công"]]);
+    using var archive=ZipFile.OpenRead(report);
+    Check(archive.GetEntry("xl/workbook.xml")!=null && archive.GetEntry("xl/worksheets/sheet1.xml")!=null,"XLSX has workbook and worksheet");
+    using var reader=new StreamReader(archive.GetEntry("xl/worksheets/sheet1.xml")!.Open());
+    Check((await reader.ReadToEndAsync()).Contains(gtin),"XLSX keeps leading zero GTIN as text");
+}
+finally{if(File.Exists(report))File.Delete(report);}
 Console.WriteLine($"PASS {passed} assertions");
 
 sealed class MockHandler:HttpMessageHandler
