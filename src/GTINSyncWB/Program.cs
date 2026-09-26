@@ -4,6 +4,12 @@ internal static class Program
     [STAThread] static void Main(string[] args)
     {
         ApplicationConfiguration.Initialize();
+        if(args.Length==2 && args[0]=="--ui-snapshot")
+        {
+            using var window=new Dashboard();
+            window.Shown+=(_,_)=>{window.CaptureForCi(args[1]);window.BeginInvoke(new Action(window.Close));};
+            Application.Run(window);return;
+        }
         if(args.Length==2 && args[0]=="--smoke")
         {
             var value="temporary-key-for-smoke";
