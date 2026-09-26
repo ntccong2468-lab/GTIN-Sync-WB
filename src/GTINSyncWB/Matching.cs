@@ -58,7 +58,7 @@ public static class Gtin
     public static bool IsValid(string code)
     {
         if(code.Length is not (8 or 12 or 13 or 14) || !code.All(char.IsAsciiDigit))return false;
-        var sum=0;for(var i=code.Length-2,weight=3;i>=0;i--,weight=weight==3?1:3)sum+=(code[i]-'0')*weight;
+        var sum=0;for(int i=code.Length-2,weight=3;i>=0;i--,weight=weight==3?1:3)sum+=(code[i]-'0')*weight;
         return (10-sum%10)%10==code[^1]-'0';
     }
 }
