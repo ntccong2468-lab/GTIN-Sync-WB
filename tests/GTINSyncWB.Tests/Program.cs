@@ -64,6 +64,12 @@ var mock=new MockHandler();var api=new CatalogApi(new ApiTransport(mock));
 var read=await api.Read("test-key",new DateTime(2026,1,1),new DateTime(2026,1,2),null,CancellationToken.None);
 Check(read.Count==2 && read.All(x=>x.Model=="PANTS"),"NK pagination and detailed attributes");
 Check(mock.Calls.Count(x=>x.Contains("product-list"))==2,"NK follows total/offset");
+var emptyCatalog=new EmptyCatalogHandler();
+var emptyRead=await new CatalogApi(new ApiTransport(emptyCatalog)).Read("test-key",new DateTime(2026,7,1),new DateTime(2026,9,27),null,CancellationToken.None);
+Check(emptyRead.Count==0 && emptyCatalog.Calls.Count==1,"NK reads a multi-month low-volume range in one request");
+var splitCatalog=new SplitCatalogHandler();
+var splitRead=await new CatalogApi(new ApiTransport(splitCatalog)).Read("test-key",new DateTime(2026,7,1),new DateTime(2026,9,27),null,CancellationToken.None);
+Check(splitRead.Count==0 && splitCatalog.Calls.Count==3,"NK divides an over-limit range after HTTP 413");
 var wbPages=new WbPagesHandler();
 var wbRead=await new WbApi(new ApiTransport(wbPages)).Read(shop,"dummy",CancellationToken.None);
 Check(wbRead.Count==101 && wbRead.Last().NmId==101,"WB cursor pagination reads the final page");
@@ -149,6 +155,24 @@ sealed class MockHandler:HttpMessageHandler
         }
         else text="{\"result\":[{\"identified_by\":[{\"value\":\"00000000000017\",\"type\":\"gtin\"}],\"good_status\":\"published\",\"good_attrs\":[{\"attr_name\":\"Артикул\",\"attr_value\":\"PANTS\"}]},{\"identified_by\":[{\"value\":\"00000000000024\",\"type\":\"gtin\"}],\"good_status\":\"published\",\"good_attrs\":[{\"attr_name\":\"Артикул\",\"attr_value\":\"PANTS\"}]}]}";
         return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent(text,Encoding.UTF8,"application/json")});
+    }
+}
+sealed class EmptyCatalogHandler:HttpMessageHandler
+{
+    public List<string> Calls=[];
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)
+    {
+        Calls.Add(request.RequestUri!.ToString());
+        return Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent("{\"result\":{\"total\":0,\"goods\":[]}}")});
+    }
+}
+sealed class SplitCatalogHandler:HttpMessageHandler
+{
+    public List<string> Calls=[];
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)
+    {
+        Calls.Add(request.RequestUri!.ToString());
+        return Task.FromResult(Calls.Count==1?new HttpResponseMessage(HttpStatusCode.RequestEntityTooLarge):new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent("{\"result\":{\"total\":0,\"goods\":[]}}")});
     }
 }
 sealed class RetryHandler:HttpMessageHandler
