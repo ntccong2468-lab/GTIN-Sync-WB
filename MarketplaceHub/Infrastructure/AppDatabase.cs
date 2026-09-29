@@ -82,6 +82,15 @@ CREATE TABLE IF NOT EXISTS audit(
  module TEXT NOT NULL,
  action TEXT NOT NULL,
  detail TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS znak_config(
+ id INTEGER PRIMARY KEY CHECK(id=1),
+ inn TEXT NOT NULL DEFAULT '',
+ environment TEXT NOT NULL DEFAULT 'Production',
+ certificate_thumbprint TEXT NOT NULL DEFAULT '',
+ certificate_subject TEXT NOT NULL DEFAULT '',
+ auto_sign_mode TEXT NOT NULL DEFAULT 'Thủ công',
+ enabled INTEGER NOT NULL DEFAULT 0
 );";
         cmd.ExecuteNonQuery();
     }
@@ -274,6 +283,53 @@ ON CONFLICT(code) DO UPDATE SET gtin=$g,status=$s,assigned_order=$o,updated_at=$
         cmd.CommandText = "SELECT code,gtin,status,assigned_order FROM kiz_pool ORDER BY updated_at DESC";
         using var r = cmd.ExecuteReader();
         while (r.Read()) result.Add((r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3)));
+        return result;
+    }
+
+
+    public ZnakConfig GetZnakConfig()
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT inn,environment,certificate_thumbprint,certificate_subject,auto_sign_mode,enabled FROM znak_config WHERE id=1";
+        using var r = cmd.ExecuteReader();
+        if (!r.Read()) return new ZnakConfig("", "Production", "", "", "Thủ công", false);
+        return new ZnakConfig(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetInt64(5) == 1);
+    }
+
+    public void SaveZnakConfig(ZnakConfig z)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"INSERT INTO znak_config(id,inn,environment,certificate_thumbprint,certificate_subject,auto_sign_mode,enabled)
+VALUES(1,$i,$e,$t,$s,$a,$n)
+ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,certificate_subject=$s,auto_sign_mode=$a,enabled=$n";
+        cmd.Parameters.AddWithValue("$i", z.Inn.Trim());
+        cmd.Parameters.AddWithValue("$e", z.Environment);
+        cmd.Parameters.AddWithValue("$t", z.CertificateThumbprint);
+        cmd.Parameters.AddWithValue("$s", z.CertificateSubject);
+        cmd.Parameters.AddWithValue("$a", z.AutoSignMode);
+        cmd.Parameters.AddWithValue("$n", z.Enabled ? 1 : 0);
+        cmd.ExecuteNonQuery();
+        Audit("Честный ЗНАК", "Lưu cấu hình", $"{z.Inn}:{z.Environment}:{z.AutoSignMode}");
+    }
+
+    public IReadOnlyList<AuditRow> AuditRows(int limit = 200)
+    {
+        var result = new List<AuditRow>();
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT at,module,action,detail FROM audit ORDER BY id DESC LIMIT $l";
+        cmd.Parameters.AddWithValue("$l", limit);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var at = DateTimeOffset.TryParse(r.GetString(0), out var parsed) ? parsed : DateTimeOffset.MinValue;
+            result.Add(new AuditRow(at, r.GetString(1), r.GetString(2), r.GetString(3)));
+        }
         return result;
     }
 
