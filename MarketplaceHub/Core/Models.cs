@@ -17,3 +17,13 @@ public sealed record FbsOrderRow(
 public sealed record PriceUpdateResult(bool Success, string Message, string? ExternalTaskId = null);
 public sealed record ApiTestResult(bool Success, string Message);
 public sealed record LabelResult(bool Success, string Message, string? FilePath = null);
+
+public sealed record ZnakConfig(
+    string Inn,
+    string Environment,
+    string CertificateThumbprint,
+    string CertificateSubject,
+    string AutoSignMode,
+    bool Enabled);
+
+public sealed record AuditRow(DateTimeOffset At, string Module, string Action, string Detail);
