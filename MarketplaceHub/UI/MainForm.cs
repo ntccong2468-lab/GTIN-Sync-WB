@@ -25,7 +25,7 @@ public sealed class MainForm : Form
     public MainForm(AppServices services)
     {
         app = services;
-        Text = "Marketplace Hub 0.2.0";
+        Text = "Marketplace Hub 0.3.0";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1180, 760);
         Size = new Size(1440, 900);
@@ -49,7 +49,7 @@ public sealed class MainForm : Form
 
         RefreshStores();
         ShowFbs();
-        WriteLog("Marketplace Hub 0.2.0 started. Database: " + app.Db.DbPath);
+        WriteLog("Marketplace Hub 0.3.0 started. Database: " + app.Db.DbPath);
     }
 
     private Control BuildSidebar()
@@ -316,8 +316,25 @@ public sealed class MainForm : Form
         panel.Controls.Add(FieldLabel("Selected SKU", y)); y += 25;
         var sku = new TextBox { Left = 18, Top = y, Width = 300, ReadOnly = true }; panel.Controls.Add(sku); y += 48;
         panel.Controls.Add(FieldLabel("New price (RUB)", y)); y += 25;
-        var price = new NumericUpDown { Left = 18, Top = y, Width = 180, DecimalPlaces = 2, Maximum = 100000000, Minimum = 1 }; panel.Controls.Add(price); y += 52;
+        var price = new NumericUpDown { Left = 18, Top = y, Width = 180, DecimalPlaces = 2, Maximum = 100000000, Minimum = 1 };
+        panel.Controls.Add(price);
+        var percent = new NumericUpDown { Left = 210, Top = y, Width = 108, DecimalPlaces = 2, Minimum = -99, Maximum = 500, Value = 10 };
+        panel.Controls.Add(percent);
+        y += 36;
+        var calc = Button("APPLY %", 100); calc.Left = 210; calc.Top = y; panel.Controls.Add(calc);
+        var preview = new Label { Left = 18, Top = y + 7, Width = 180, ForeColor = Color.FromArgb(92, 113, 138), Text = "Preview: -" };
+        panel.Controls.Add(preview);
+        y += 50;
         var apply = Primary("UPDATE PRICE", 145); apply.Left = 18; apply.Top = y; panel.Controls.Add(apply);
+
+        calc.Click += (_, _) =>
+        {
+            if (grid.SelectedRows.Count == 0) return;
+            if (!decimal.TryParse(grid.SelectedRows[0].Cells[3].Value?.ToString(), out var current) || current <= 0) return;
+            var next = Math.Max(1, Math.Round(current * (1 + percent.Value / 100m), 2));
+            price.Value = Math.Min(next, price.Maximum);
+            preview.Text = $"{current:0.##} → {next:0.##} RUB";
+        };
 
         var s = CurrentStore();
         if (s != null)
@@ -391,8 +408,9 @@ public sealed class MainForm : Form
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 48, BackColor = Color.FromArgb(244, 246, 249) };
         var sync = Primary("SYNC FBS", 110);
         var scan = new TextBox { Width = 330, Height = 30, PlaceholderText = "Scan order / SKU / DataMatrix...", Margin = new Padding(10, 7, 0, 0) };
+        var packBtn = Primary("PACK / READY", 125);
         var labelBtn = Button("DOWNLOAD LABEL", 145);
-        toolbar.Controls.Add(sync); toolbar.Controls.Add(scan); toolbar.Controls.Add(labelBtn);
+        toolbar.Controls.Add(sync); toolbar.Controls.Add(scan); toolbar.Controls.Add(packBtn); toolbar.Controls.Add(labelBtn);
         work.Controls.Add(toolbar);
 
         var grid = Grid("Order", "SKU", "Name", "Qty", "Status", "KIZ");
@@ -434,6 +452,32 @@ public sealed class MainForm : Form
                 e.SuppressKeyPress = true;
             }
         };
+        packBtn.Click += async (_, _) =>
+        {
+            var s = CurrentStore(); if (s is null || grid.SelectedRows.Count == 0) return;
+            var orderId = grid.SelectedRows[0].Cells[0].Value?.ToString() ?? "";
+            var sku = grid.SelectedRows[0].Cells[1].Value?.ToString() ?? "";
+            var order = app.Db.Orders(s.Id).FirstOrDefault(x =>
+                x.ExternalOrderId.Equals(orderId, StringComparison.OrdinalIgnoreCase) &&
+                x.Sku.Equals(sku, StringComparison.OrdinalIgnoreCase));
+            if (order is null) { WriteLog("Selected FBS order not found in local database."); return; }
+
+            if (MessageBox.Show($"Send PACK/READY action for {s.Marketplace} order {order.ExternalOrderId}?", "Confirm FBS action", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+
+            packBtn.Enabled = false;
+            var result = await app.Api.PackOrderAsync(s, order);
+            packBtn.Enabled = true;
+            app.Db.Audit("FBS", result.Success ? "PackAccepted" : "PackFailed", $"{s.Marketplace}:{order.ExternalOrderId}:{result.Message}");
+            WriteLog(result.Message);
+            MessageBox.Show(result.Message, result.Success ? "FBS accepted" : "FBS error", MessageBoxButtons.OK, result.Success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+            if (result.Success)
+            {
+                var syncResult = await app.SyncOrdersAsync(s);
+                WriteLog(syncResult.Message);
+                LoadRows();
+            }
+        };
+
         labelBtn.Click += async (_, _) =>
         {
             var s = CurrentStore(); if (s is null || grid.SelectedRows.Count == 0) return;
@@ -571,7 +615,7 @@ public sealed class MainForm : Form
         {
             Multiline = true, ReadOnly = true, Dock = DockStyle.Top, Height = 250,
             Font = new Font("Consolas", 10), BackColor = Color.White,
-            Text = $"Version: 0.2.0{Environment.NewLine}Database: {app.Db.DbPath}{Environment.NewLine}OS: {Environment.OSVersion}{Environment.NewLine}.NET: {Environment.Version}{Environment.NewLine}Stores: {app.Db.Stores().Count}{Environment.NewLine}Certificates: {AppServices.Certificates().Count}"
+            Text = $"Version: 0.3.0{Environment.NewLine}Database: {app.Db.DbPath}{Environment.NewLine}OS: {Environment.OSVersion}{Environment.NewLine}.NET: {Environment.Version}{Environment.NewLine}Stores: {app.Db.Stores().Count}{Environment.NewLine}Certificates: {AppServices.Certificates().Count}"
         };
         work.Controls.Add(box);
         box.BringToFront();
