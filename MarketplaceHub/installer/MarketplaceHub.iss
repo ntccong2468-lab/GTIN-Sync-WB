@@ -1,5 +1,5 @@
 #define MyAppName "Marketplace Hub"
-#define MyAppVersion "0.1.0"
+#define MyAppVersion "0.2.0"
 #define MyAppPublisher "ntccong2468-lab"
 #define MyAppExeName "MarketplaceHub.exe"
 [Setup]
@@ -24,4 +24,4 @@ Source: "..\bin\Release\net8.0-windows\win-x64\publish\*"; DestDir: "{app}"; Fla
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"
 [Run]
-Filename: "{app}\{#MyAppExeName}"; Description: "Mở Marketplace Hub"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\{#MyAppExeName}"; Description: "Open Marketplace Hub"; Flags: nowait postinstall skipifsilent
