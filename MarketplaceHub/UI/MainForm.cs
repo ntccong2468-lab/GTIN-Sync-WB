@@ -7,7 +7,7 @@ namespace MarketplaceHub.UI;
 public sealed class MainForm : Form
 {
     private readonly AppServices app;
-    private readonly Panel work = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(245, 246, 248), Padding = new Padding(12) };
+    private readonly Panel work = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(247, 248, 250), Padding = new Padding(14) };
     private readonly RichTextBox log = new()
     {
         Dock = DockStyle.Bottom, Height = 92, ReadOnly = true, BorderStyle = BorderStyle.None,
@@ -17,23 +17,23 @@ public sealed class MainForm : Form
     private readonly ComboBox storePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 270 };
     private readonly Label connection = new() { AutoSize = true, ForeColor = Color.FromArgb(114, 122, 132) };
 
-    private readonly Color side = Color.FromArgb(38, 42, 48);
-    private readonly Color side2 = Color.FromArgb(52, 57, 65);
-    private readonly Color accent = Color.FromArgb(25, 157, 135);
+    private readonly Color side = Color.FromArgb(31, 34, 39);
+    private readonly Color side2 = Color.FromArgb(45, 50, 57);
+    private readonly Color accent = Color.FromArgb(34, 176, 135);
     private readonly Color border = Color.FromArgb(216, 220, 226);
     private readonly Color text = Color.FromArgb(48, 55, 66);
 
     public MainForm(AppServices services)
     {
         app = services;
-        Text = "Trung tâm Marketplace 0.4.0";
+        Text = "Trung tâm Marketplace 0.4.1";
         StartPosition = FormStartPosition.CenterScreen;
         MinimumSize = new Size(1220, 780);
-        Size = new Size(1480, 920);
+        Size = new Size(1520, 930);
         Font = new Font("Segoe UI", 9);
 
         var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 226));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 248));
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         Controls.Add(root);
 
@@ -56,23 +56,37 @@ public sealed class MainForm : Form
     private Control BuildSidebar()
     {
         var p = new Panel { Dock = DockStyle.Fill, BackColor = side };
+        var logo = new Panel { BackColor = accent, Width = 40, Height = 40, Left = 16, Top = 14 };
+        logo.Controls.Add(new Label
+        {
+            Text = "W", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter,
+            ForeColor = Color.White, Font = new Font("Segoe UI", 19, FontStyle.Bold)
+        });
+        p.Controls.Add(logo);
         p.Controls.Add(new Label
         {
-            Text = "TRUNG TÂM\nMARKETPLACE",
-            AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 13, FontStyle.Bold),
-            Location = new Point(18, 18)
+            Text = "MARKETPLACE HUB",
+            AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 12.5f, FontStyle.Bold),
+            Location = new Point(67, 16)
+        });
+        p.Controls.Add(new Label
+        {
+            Text = "CÔNG CỤ SELLER",
+            AutoSize = true, ForeColor = Color.FromArgb(145, 155, 168),
+            Font = new Font("Segoe UI", 8, FontStyle.Bold),
+            Location = new Point(69, 40)
         });
         p.Controls.Add(new Label
         {
             Text = "WB  •  OZON  •  YANDEX",
-            AutoSize = true, ForeColor = Color.FromArgb(155, 165, 178),
-            Location = new Point(18, 62)
+            AutoSize = true, ForeColor = Color.FromArgb(145, 155, 168),
+            Location = new Point(18, 70)
         });
 
         var menu = new FlowLayoutPanel
         {
             FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true,
-            Location = new Point(0, 94), Size = new Size(226, 730),
+            Location = new Point(0, 102), Size = new Size(248, 720),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
             BackColor = side
         };
@@ -135,7 +149,7 @@ public sealed class MainForm : Form
     {
         p.Controls.Add(new Label
         {
-            Text = title, Width = 213, Height = 30, ForeColor = Color.FromArgb(132, 143, 157),
+            Text = title, Width = 235, Height = 30, ForeColor = Color.FromArgb(132, 143, 157),
             TextAlign = ContentAlignment.BottomLeft, Padding = new Padding(14, 0, 0, 4),
             Font = new Font("Segoe UI", 8, FontStyle.Bold), Margin = Padding.Empty
         });
@@ -145,7 +159,7 @@ public sealed class MainForm : Form
     {
         var b = new Button
         {
-            Text = caption, Width = 226, Height = 41, FlatStyle = FlatStyle.Flat,
+            Text = caption, Width = 248, Height = 40, FlatStyle = FlatStyle.Flat,
             TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(18, 0, 0, 0),
             BackColor = side, ForeColor = Color.FromArgb(220, 225, 232),
             Margin = Padding.Empty, Cursor = Cursors.Hand
@@ -155,7 +169,8 @@ public sealed class MainForm : Form
         b.Click += (_, _) =>
         {
             foreach (var x in p.Controls.OfType<Button>()) x.BackColor = side;
-            b.BackColor = side2;
+            b.BackColor = accent;
+            b.ForeColor = Color.White;
             action();
         };
         p.Controls.Add(b);
@@ -264,7 +279,13 @@ public sealed class MainForm : Form
         Clear();
         work.Controls.Add(Heading("TỔNG QUAN", "Trạng thái dữ liệu, FBS, KIZ và kết nối của toàn bộ cửa hàng."));
 
-        var cards = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 120, BackColor = Color.FromArgb(245, 246, 248), WrapContents = false };
+        var statusBar = new Panel { Dock = DockStyle.Top, Height = 44, BackColor = Color.White };
+        statusBar.Paint += (_, e) => e.Graphics.DrawRectangle(new Pen(border), 0, 0, statusBar.Width - 1, statusBar.Height - 1);
+        statusBar.Controls.Add(new Label { Text = "Trạng thái hệ thống", Left = 14, Top = 14, AutoSize = true, ForeColor = text, Font = new Font("Segoe UI", 9, FontStyle.Bold) });
+        statusBar.Controls.Add(new Label { Text = "●  Sẵn sàng", Left = 150, Top = 14, AutoSize = true, ForeColor = accent, Font = new Font("Segoe UI", 9, FontStyle.Bold) });
+        work.Controls.Add(statusBar);
+
+        var cards = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 120, BackColor = Color.FromArgb(247, 248, 250), WrapContents = false };
         var stores = app.Db.Stores();
         var products = stores.Sum(x => app.Db.Products(x.Id).Count);
         var orders = stores.Sum(x => app.Db.Orders(x.Id).Count);
@@ -428,7 +449,20 @@ public sealed class MainForm : Form
         Clear();
         work.Controls.Add(Heading("ĐÓNG HÀNG FBS", "Quy trình: đồng bộ đơn → quét hàng/KIZ → đóng hàng → tải nhãn → lô giao hàng."));
 
-        var tabs = new TabControl { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9) };
+        var tabs = new TabControl
+        {
+            Dock = DockStyle.Fill, Font = new Font("Segoe UI", 9, FontStyle.Bold),
+            DrawMode = TabDrawMode.OwnerDrawFixed, ItemSize = new Size(150, 34), SizeMode = TabSizeMode.Fixed
+        };
+        tabs.DrawItem += (_, e) =>
+        {
+            var selected = e.Index == tabs.SelectedIndex;
+            var rect = e.Bounds;
+            using var bg = new SolidBrush(selected ? accent : Color.FromArgb(233, 236, 240));
+            e.Graphics.FillRectangle(bg, rect);
+            TextRenderer.DrawText(e.Graphics, tabs.TabPages[e.Index].Text, new Font("Segoe UI", 9, FontStyle.Bold),
+                rect, selected ? Color.White : text, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+        };
         tabs.TabPages.Add(BuildFbsQueueTab());
         tabs.TabPages.Add(BuildFbsPackingTab());
         tabs.TabPages.Add(BuildFbsLabelsTab());
@@ -439,7 +473,7 @@ public sealed class MainForm : Form
 
     private TabPage BuildFbsQueueTab()
     {
-        var page = new TabPage("Đơn chờ đóng") { BackColor = Color.FromArgb(245, 246, 248) };
+        var page = new TabPage("Đơn FBS") { BackColor = Color.FromArgb(245, 246, 248) };
         var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 48 };
         var sync = Primary("ĐỒNG BỘ ĐƠN", 135);
         var search = new TextBox { Width = 310, PlaceholderText = "Tìm mã đơn / SKU", Margin = new Padding(8, 7, 0, 0) };
@@ -478,7 +512,7 @@ public sealed class MainForm : Form
 
     private TabPage BuildFbsPackingTab()
     {
-        var page = new TabPage("Quét & đóng hàng") { BackColor = Color.FromArgb(245, 246, 248) };
+        var page = new TabPage("Đóng hàng") { BackColor = Color.FromArgb(245, 246, 248) };
         var top = new Panel { Dock = DockStyle.Top, Height = 120, BackColor = Color.White };
         top.Controls.Add(new Label { Text = "Quét mã đơn / SKU / DataMatrix", Left = 16, Top = 14, AutoSize = true, ForeColor = text, Font = new Font("Segoe UI", 10, FontStyle.Bold) });
         var scan = new TextBox { Left = 16, Top = 42, Width = 430, Height = 30, PlaceholderText = "Đặt con trỏ tại đây và quét..." };
@@ -554,7 +588,7 @@ public sealed class MainForm : Form
 
     private TabPage BuildFbsLabelsTab()
     {
-        var page = new TabPage("Nhãn & in") { BackColor = Color.FromArgb(245, 246, 248) };
+        var page = new TabPage("In nhãn") { BackColor = Color.FromArgb(245, 246, 248) };
         var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 48 };
         var reload = Button("TẢI LẠI DANH SÁCH", 155);
         var download = Primary("TẢI NHÃN", 115);
@@ -591,7 +625,7 @@ public sealed class MainForm : Form
 
     private TabPage BuildFbsShipmentTab()
     {
-        var page = new TabPage("Lô giao hàng") { BackColor = Color.FromArgb(245, 246, 248) };
+        var page = new TabPage("Giao hàng") { BackColor = Color.FromArgb(245, 246, 248) };
         var p = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(22) };
         p.Controls.Add(new Label
         {
@@ -831,7 +865,7 @@ public sealed class MainForm : Form
         {
             Multiline = true, ReadOnly = true, Dock = DockStyle.Top, Height = 270,
             Font = new Font("Consolas", 10), BackColor = Color.White,
-            Text = $"Phiên bản: 0.4.0{Environment.NewLine}Cơ sở dữ liệu: {app.Db.DbPath}{Environment.NewLine}Hệ điều hành: {Environment.OSVersion}{Environment.NewLine}.NET: {Environment.Version}{Environment.NewLine}Số cửa hàng: {app.Db.Stores().Count}{Environment.NewLine}Số chứng thư: {AppServices.Certificates().Count}"
+            Text = $"Phiên bản: 0.4.1{Environment.NewLine}Cơ sở dữ liệu: {app.Db.DbPath}{Environment.NewLine}Hệ điều hành: {Environment.OSVersion}{Environment.NewLine}.NET: {Environment.Version}{Environment.NewLine}Số cửa hàng: {app.Db.Stores().Count}{Environment.NewLine}Số chứng thư: {AppServices.Certificates().Count}"
         };
         work.Controls.Add(box);
         box.BringToFront();
