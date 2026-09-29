@@ -1,509 +1,579 @@
-using System.Drawing.Drawing2D;
+using MarketplaceHub.Core;
+using MarketplaceHub.Services;
 
 namespace MarketplaceHub.UI;
 
 public sealed class MainForm : Form
 {
-    private static readonly Color Bg = Color.FromArgb(242, 246, 250);
-    private static readonly Color Surface = Color.White;
-    private static readonly Color Border = Color.FromArgb(223, 230, 238);
-    private static readonly Color TextMain = Color.FromArgb(42, 52, 69);
-    private static readonly Color TextMuted = Color.FromArgb(128, 141, 160);
-    private static readonly Color Accent = Color.FromArgb(17, 161, 146);
-    private static readonly Color AccentSoft = Color.FromArgb(232, 248, 245);
-    private static readonly Color Danger = Color.FromArgb(231, 62, 91);
-    private static readonly Color DangerSoft = Color.FromArgb(255, 237, 240);
-    private static readonly Color Warning = Color.FromArgb(240, 163, 35);
-    private static readonly Color WarningSoft = Color.FromArgb(255, 246, 229);
-
-    private readonly Panel content = new() { Dock = DockStyle.Fill, BackColor = Bg, Padding = new Padding(24) };
-    private readonly Label pageTitle = new() { AutoSize = true, Font = new Font("Segoe UI", 16, FontStyle.Bold), ForeColor = TextMain };
-    private readonly Label pageSubtitle = new() { AutoSize = true, Font = new Font("Segoe UI", 9.5f), ForeColor = TextMuted };
-    private readonly List<Button> navButtons = new();
-    private string activeNav = "Hôm nay";
-
-    public MainForm()
+    private readonly AppServices app;
+    private readonly Panel work = new() { Dock = DockStyle.Fill, BackColor = Color.FromArgb(244, 246, 249), Padding = new Padding(12) };
+    private readonly RichTextBox log = new()
     {
-        Text = "Marketplace Hub";
+        Dock = DockStyle.Bottom, Height = 92, ReadOnly = true, BorderStyle = BorderStyle.None,
+        BackColor = Color.FromArgb(27, 31, 38), ForeColor = Color.FromArgb(210, 218, 228),
+        Font = new Font("Consolas", 9), DetectUrls = false
+    };
+    private readonly ComboBox storePicker = new() { DropDownStyle = ComboBoxStyle.DropDownList, Width = 250 };
+    private readonly Label connection = new() { AutoSize = true, ForeColor = Color.FromArgb(110, 120, 132) };
+
+    private readonly Color side = Color.FromArgb(39, 43, 50);
+    private readonly Color side2 = Color.FromArgb(51, 56, 64);
+    private readonly Color accent = Color.FromArgb(26, 160, 137);
+    private readonly Color border = Color.FromArgb(215, 220, 227);
+    private readonly Color text = Color.FromArgb(48, 55, 66);
+
+    public MainForm(AppServices services)
+    {
+        app = services;
+        Text = "Marketplace Hub 0.2.0";
         StartPosition = FormStartPosition.CenterScreen;
-        MinimumSize = new Size(1220, 760);
-        Size = new Size(1500, 900);
-        Font = new Font("Segoe UI", 9.5f);
-        BackColor = Bg;
+        MinimumSize = new Size(1180, 760);
+        Size = new Size(1440, 900);
+        Font = new Font("Segoe UI", 9);
 
-        var shell = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
-        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 235));
-        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        Controls.Add(shell);
+        var root = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 2, RowCount = 1 };
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 218));
+        root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        Controls.Add(root);
 
-        shell.Controls.Add(BuildSidebar(), 0, 0);
+        root.Controls.Add(BuildSidebar(), 0, 0);
 
-        var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 2, ColumnCount = 1 };
-        right.RowStyles.Add(new RowStyle(SizeType.Absolute, 62));
+        var right = new TableLayoutPanel { Dock = DockStyle.Fill, RowCount = 3, ColumnCount = 1 };
+        right.RowStyles.Add(new RowStyle(SizeType.Absolute, 54));
         right.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        right.Controls.Add(BuildTopBar(), 0, 0);
-        right.Controls.Add(content, 0, 1);
-        shell.Controls.Add(right, 1, 0);
+        right.RowStyles.Add(new RowStyle(SizeType.Absolute, 92));
+        right.Controls.Add(BuildTopbar(), 0, 0);
+        right.Controls.Add(work, 0, 1);
+        right.Controls.Add(log, 0, 2);
+        root.Controls.Add(right, 1, 0);
 
-        ShowToday();
+        RefreshStores();
+        ShowFbs();
+        WriteLog("Marketplace Hub 0.2.0 started. Database: " + app.Db.DbPath);
     }
 
     private Control BuildSidebar()
     {
-        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Surface };
-        panel.Paint += (_, e) => e.Graphics.DrawLine(new Pen(Border), panel.Width - 1, 0, panel.Width - 1, panel.Height);
-
-        var brand = new Panel { Dock = DockStyle.Top, Height = 76, BackColor = Surface };
-        var icon = new RoundedPanel { Radius = 11, BackColor = Accent, Size = new Size(40, 40), Location = new Point(13, 18) };
-        icon.Controls.Add(new Label { Text = "⚡", AutoSize = false, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.White, Font = new Font("Segoe UI Symbol", 19, FontStyle.Bold) });
-        brand.Controls.Add(icon);
-        brand.Controls.Add(new Label { Text = "Marketplace Hub", AutoSize = true, ForeColor = TextMain, Font = new Font("Segoe UI", 14, FontStyle.Bold), Location = new Point(61, 18) });
-        brand.Controls.Add(new Label { Text = "SELLER HUB", AutoSize = true, ForeColor = TextMuted, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(63, 44) });
-        panel.Controls.Add(brand);
-
-        var storeSelect = new RoundedPanel { Radius = 10, BackColor = Surface, BorderColor = Border, BorderWidth = 1, Height = 38, Width = 211, Location = new Point(12, 90) };
-        storeSelect.Controls.Add(new Label { Text = "OZ", AutoSize = false, Size = new Size(26, 26), Location = new Point(7, 6), BackColor = Color.FromArgb(16, 97, 220), ForeColor = Color.White, TextAlign = ContentAlignment.MiddleCenter, Font = new Font("Segoe UI", 8, FontStyle.Bold) });
-        storeSelect.Controls.Add(new Label { Text = "PMP Store Man", AutoSize = true, Location = new Point(42, 10), ForeColor = TextMain, Font = new Font("Segoe UI", 9, FontStyle.Bold) });
-        storeSelect.Controls.Add(new Label { Text = "⌄", AutoSize = true, Location = new Point(187, 10), ForeColor = TextMuted });
-        panel.Controls.Add(storeSelect);
+        var p = new Panel { Dock = DockStyle.Fill, BackColor = side };
+        p.Controls.Add(new Label
+        {
+            Text = "WCODE STYLE\nMARKETPLACE HUB",
+            AutoSize = true, ForeColor = Color.White, Font = new Font("Segoe UI", 13, FontStyle.Bold),
+            Location = new Point(18, 18)
+        });
+        p.Controls.Add(new Label
+        {
+            Text = "WB  •  OZON  •  YANDEX",
+            AutoSize = true, ForeColor = Color.FromArgb(155, 165, 178),
+            Location = new Point(18, 62)
+        });
 
         var menu = new FlowLayoutPanel
         {
-            FlowDirection = FlowDirection.TopDown,
-            WrapContents = false,
-            AutoScroll = true,
-            Location = new Point(12, 140),
-            Size = new Size(211, 570),
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true,
+            Location = new Point(0, 94), Size = new Size(218, 690),
             Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right,
-            BackColor = Surface
+            BackColor = side
         };
-        panel.Controls.Add(menu);
+        p.Controls.Add(menu);
 
-        AddSection(menu, "TỔNG QUAN");
-        AddNav(menu, "◉  Hôm nay", "Hôm nay", ShowToday);
-        AddNav(menu, "▧  Tổng quan", "Tổng quan", ShowDashboard);
+        AddSection(menu, "WORK");
+        AddNav(menu, "FBS PACKING", ShowFbs);
+        AddNav(menu, "PRODUCTS", ShowProducts);
+        AddNav(menu, "PRICE", ShowPrices);
+        AddNav(menu, "COPY LISTING", ShowCopy);
 
-        AddSection(menu, "BÁN HÀNG");
-        AddNav(menu, "▤  Đơn hàng", "Đơn hàng", ShowFbs);
-        AddNav(menu, "🛒  Sản phẩm", "Sản phẩm", ShowProducts);
-        AddNav(menu, "▣  Giá sản phẩm", "Giá sản phẩm", ShowPrices);
-        AddNav(menu, "⇄  Sao chép sản phẩm", "Sao chép sản phẩm", ShowCopy);
+        AddSection(menu, "MARKING");
+        AddNav(menu, "KIZ / ЧЕСТНЫЙ ЗНАК", ShowKiz);
 
-        AddSection(menu, "CÔNG VIỆC");
-        AddNav(menu, "◆  Честный ЗНАК / KIZ", "Честный ЗНАК / KIZ", ShowZnak);
-        AddNav(menu, "◫  Jobs", "Jobs", ShowJobs);
-        AddNav(menu, "▦  Lịch sử", "Lịch sử", ShowHistory);
+        AddSection(menu, "SYSTEM");
+        AddNav(menu, "STORES / API", ShowStores);
+        AddNav(menu, "OVERVIEW", ShowOverview);
+        AddNav(menu, "SETTINGS", ShowSettings);
 
-        AddSection(menu, "CẤU HÌNH");
-        AddNav(menu, "⚙  Cửa hàng / API", "Cửa hàng / API", ShowStores);
-        AddNav(menu, "⌁  Thiết bị", "Thiết bị", ShowDevices);
-        AddNav(menu, "☷  Cài đặt", "Cài đặt", ShowSettings);
+        return p;
+    }
 
-        var footer = new RoundedPanel
+    private Control BuildTopbar()
+    {
+        var p = new Panel { Dock = DockStyle.Fill, BackColor = Color.White };
+        p.Paint += (_, e) => e.Graphics.DrawLine(new Pen(border), 0, p.Height - 1, p.Width, p.Height - 1);
+
+        p.Controls.Add(new Label { Text = "Store:", AutoSize = true, ForeColor = text, Location = new Point(15, 19) });
+        storePicker.Location = new Point(60, 14);
+        storePicker.SelectedIndexChanged += (_, _) => connection.Text = "";
+        p.Controls.Add(storePicker);
+
+        var test = Button("TEST API", 100);
+        test.Location = new Point(320, 10);
+        test.Click += async (_, _) => await TestCurrentStore();
+        p.Controls.Add(test);
+
+        connection.Location = new Point(433, 19);
+        p.Controls.Add(connection);
+
+        var db = new Label
         {
-            Radius = 10, BackColor = Color.FromArgb(238, 250, 248), BorderColor = Color.FromArgb(205, 239, 234),
-            BorderWidth = 1, Size = new Size(205, 76), Location = new Point(14, 725),
-            Anchor = AnchorStyles.Left | AnchorStyles.Bottom
+            Text = "LOCAL DB / DPAPI",
+            AutoSize = true, ForeColor = Color.FromArgb(92, 113, 138),
+            Anchor = AnchorStyles.Top | AnchorStyles.Right, Font = new Font("Segoe UI", 8, FontStyle.Bold)
         };
-        footer.Controls.Add(new Label { Text = "STORES", AutoSize = true, ForeColor = TextMuted, Font = new Font("Segoe UI", 8, FontStyle.Bold), Location = new Point(80, 15) });
-        footer.Controls.Add(new Label { Text = "3", AutoSize = true, ForeColor = TextMain, Font = new Font("Segoe UI", 18, FontStyle.Bold), Location = new Point(95, 35) });
-        panel.Controls.Add(footer);
-
-        return panel;
+        p.Controls.Add(db);
+        p.Resize += (_, _) => db.Location = new Point(p.ClientSize.Width - db.Width - 16, 20);
+        return p;
     }
 
-    private Control BuildTopBar()
+    private void AddSection(FlowLayoutPanel p, string title)
     {
-        var top = new Panel { Dock = DockStyle.Fill, BackColor = Surface };
-        top.Paint += (_, e) => e.Graphics.DrawLine(new Pen(Border), 0, top.Height - 1, top.Width, top.Height - 1);
-
-        top.Controls.Add(new Label { Text = "●", AutoSize = true, ForeColor = Warning, Font = new Font("Segoe UI", 14), Location = new Point(20, 17) });
-        top.Controls.Add(new Label { Text = "PMP Store Man", AutoSize = true, ForeColor = TextMain, Font = new Font("Segoe UI", 14, FontStyle.Bold), Location = new Point(41, 18) });
-
-        var plan = new RoundedPanel { Radius = 14, BackColor = WarningSoft, Size = new Size(86, 27), Location = new Point(170, 17) };
-        plan.Controls.Add(new Label { Text = "HẾT HẠN GÓI", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(190, 116, 17), Font = new Font("Segoe UI", 7.5f, FontStyle.Bold) });
-        top.Controls.Add(plan);
-
-        var actions = new FlowLayoutPanel { FlowDirection = FlowDirection.LeftToRight, WrapContents = false, AutoSize = true, Anchor = AnchorStyles.Top | AnchorStyles.Right, BackColor = Surface };
-        actions.Controls.Add(TopPill("🔔  1", 74));
-        actions.Controls.Add(TopPill("VN  Tiếng Việt ⌄", 122));
-        actions.Controls.Add(TopPill("⚙  Cài đặt cửa hàng", 154, ShowStores));
-        actions.Controls.Add(TopPill("👤  Thanhcong2468", 150));
-        top.Controls.Add(actions);
-        top.Resize += (_, _) => actions.Location = new Point(top.ClientSize.Width - actions.Width - 18, 13);
-
-        return top;
+        p.Controls.Add(new Label
+        {
+            Text = title, Width = 205, Height = 30, ForeColor = Color.FromArgb(132, 143, 157),
+            TextAlign = ContentAlignment.BottomLeft, Padding = new Padding(14, 0, 0, 4),
+            Font = new Font("Segoe UI", 8, FontStyle.Bold), Margin = Padding.Empty
+        });
     }
 
-    private Control TopPill(string text, int width, Action? action = null)
-    {
-        var b = new Button { Text = text, Width = width, Height = 35, FlatStyle = FlatStyle.Flat, BackColor = Surface, ForeColor = TextMain, Font = new Font("Segoe UI", 9), Margin = new Padding(5, 0, 0, 0), Cursor = Cursors.Hand };
-        b.FlatAppearance.BorderColor = Border;
-        b.FlatAppearance.BorderSize = 1;
-        if (action != null) b.Click += (_, _) => action();
-        return b;
-    }
-
-    private void AddSection(FlowLayoutPanel menu, string text)
-    {
-        menu.Controls.Add(new Label { Text = text, Width = 190, Height = 30, TextAlign = ContentAlignment.BottomLeft, ForeColor = Color.FromArgb(151, 164, 184), Font = new Font("Segoe UI", 8, FontStyle.Bold), Margin = new Padding(6, 8, 0, 2) });
-    }
-
-    private void AddNav(FlowLayoutPanel menu, string caption, string key, Action action)
+    private void AddNav(FlowLayoutPanel p, string caption, Action action)
     {
         var b = new Button
         {
-            Text = caption, Width = 198, Height = 36, FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleLeft,
-            ForeColor = TextMain, BackColor = Surface, Padding = new Padding(8, 0, 0, 0), Margin = new Padding(0, 1, 0, 1), Cursor = Cursors.Hand,
-            Tag = key, Font = new Font("Segoe UI", 9)
+            Text = caption, Width = 218, Height = 42, FlatStyle = FlatStyle.Flat,
+            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(18, 0, 0, 0),
+            BackColor = side, ForeColor = Color.FromArgb(220, 225, 232),
+            Margin = Padding.Empty, Cursor = Cursors.Hand
         };
         b.FlatAppearance.BorderSize = 0;
-        b.FlatAppearance.MouseOverBackColor = Color.FromArgb(246, 249, 252);
-        b.Click += (_, _) => { activeNav = key; ApplyNavState(); action(); };
-        navButtons.Add(b);
-        menu.Controls.Add(b);
-    }
-
-    private void ApplyNavState()
-    {
-        foreach (var b in navButtons)
+        b.FlatAppearance.MouseOverBackColor = side2;
+        b.Click += (_, _) =>
         {
-            var active = Equals(b.Tag, activeNav);
-            b.BackColor = active ? AccentSoft : Surface;
-            b.ForeColor = active ? Accent : TextMain;
-            b.Font = new Font("Segoe UI", 9, active ? FontStyle.Bold : FontStyle.Regular);
-        }
+            foreach (var x in p.Controls.OfType<Button>()) x.BackColor = side;
+            b.BackColor = side2;
+            action();
+        };
+        p.Controls.Add(b);
     }
 
-    private void SetPage(string title, string subtitle)
+    private Button Button(string caption, int width = 120)
     {
-        pageTitle.Text = title;
-        pageSubtitle.Text = subtitle;
-        content.Controls.Clear();
-        ApplyNavState();
-    }
-
-    private Control BuildPageHeader(string title, string subtitle, string? statusText = null)
-    {
-        var p = new Panel { Dock = DockStyle.Top, Height = 78, BackColor = Bg };
-        pageTitle.Text = title; pageTitle.Location = new Point(0, 7);
-        pageSubtitle.Text = subtitle; pageSubtitle.Location = new Point(2, 40);
-        p.Controls.Add(pageTitle); p.Controls.Add(pageSubtitle);
-
-        if (!string.IsNullOrWhiteSpace(statusText))
+        var b = new Button
         {
-            var status = new RoundedPanel { Radius = 13, BackColor = WarningSoft, Size = new Size(112, 28), Anchor = AnchorStyles.Top | AnchorStyles.Right };
-            status.Controls.Add(new Label { Text = statusText, Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleCenter, ForeColor = Color.FromArgb(188, 112, 16), Font = new Font("Segoe UI", 8, FontStyle.Bold) });
-            p.Controls.Add(status);
-            p.Resize += (_, _) => status.Location = new Point(p.ClientSize.Width - status.Width, 9);
-        }
-        return p;
+            Text = caption, Width = width, Height = 34, FlatStyle = FlatStyle.Flat,
+            BackColor = Color.White, ForeColor = text, Cursor = Cursors.Hand
+        };
+        b.FlatAppearance.BorderColor = border;
+        return b;
     }
 
-    private void ShowToday()
+    private Button Primary(string caption, int width = 130)
     {
-        SetPage("Hôm nay", "Tình trạng cửa hàng và công việc cần xử lý");
-        content.Controls.Add(BuildPageHeader("PMP Store Man", "Tạo lúc: 05-08-2026", "● HẾT HẠN GÓI"));
-
-        var storeCard = new RoundedPanel { Dock = DockStyle.Top, Height = 52, Radius = 14, BackColor = Surface, BorderColor = Color.FromArgb(235, 239, 244), BorderWidth = 1, Padding = new Padding(18, 10, 18, 10), Margin = new Padding(0, 0, 0, 14) };
-        storeCard.Controls.Add(new Label { Text = "●  HẾT HẠN GÓI", AutoSize = true, ForeColor = Color.FromArgb(190, 116, 17), Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(18, 16) });
-        storeCard.Controls.Add(new Label { Text = "Tạo lúc: 05-08-2026", AutoSize = true, ForeColor = TextMuted, Location = new Point(146, 17) });
-        var del = OutlineButton("🗑  Xóa cửa hàng", Danger, 124);
-        del.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        storeCard.Controls.Add(del);
-        storeCard.Resize += (_, _) => del.Location = new Point(storeCard.ClientSize.Width - del.Width - 16, 9);
-
-        var verify = new RoundedPanel { Dock = DockStyle.Top, Height = 34, Radius = 12, BackColor = Bg };
-        var verifyLabel = new Label { Text = "◷  Không xác minh được", AutoSize = true, ForeColor = TextMuted, Anchor = AnchorStyles.Top | AnchorStyles.Right, Location = new Point(0, 6) };
-        verify.Controls.Add(verifyLabel);
-        verify.Resize += (_, _) => verifyLabel.Location = new Point(verify.ClientSize.Width - verifyLabel.Width - 4, 7);
-
-        var alert = new RoundedPanel { Dock = DockStyle.Top, Height = 94, Radius = 14, BackColor = DangerSoft, BorderColor = Color.FromArgb(255, 128, 147), BorderWidth = 1, Padding = new Padding(22, 15, 22, 15) };
-        alert.Controls.Add(new Label { Text = "×", AutoSize = false, Size = new Size(26, 26), Location = new Point(22, 16), TextAlign = ContentAlignment.MiddleCenter, BackColor = Danger, ForeColor = Color.White, Font = new Font("Segoe UI", 14, FontStyle.Bold) });
-        alert.Controls.Add(new Label { Text = "Không tải được dữ liệu Today", AutoSize = true, ForeColor = TextMain, Font = new Font("Segoe UI", 10), Location = new Point(57, 17) });
-        alert.Controls.Add(new Label { Text = "Cửa hàng hoặc gói sử dụng chưa hoạt động. Hãy kiểm tra gói và trạng thái API key.", AutoSize = true, ForeColor = Color.FromArgb(83, 91, 105), Location = new Point(57, 48) });
-        var retry = FilledButton("Thử tải lại", Surface, TextMain, 98);
-        retry.Anchor = AnchorStyles.Top | AnchorStyles.Right;
-        alert.Controls.Add(retry);
-        alert.Resize += (_, _) => retry.Location = new Point(alert.ClientSize.Width - retry.Width - 22, 20);
-
-        var spacer = new Panel { Dock = DockStyle.Top, Height = 14, BackColor = Bg };
-        content.Controls.Add(alert);
-        content.Controls.Add(spacer);
-        content.Controls.Add(verify);
-        content.Controls.Add(storeCard);
-        alert.BringToFront();
+        var b = Button(caption, width);
+        b.BackColor = accent;
+        b.ForeColor = Color.White;
+        b.FlatAppearance.BorderColor = accent;
+        return b;
     }
 
-    private void ShowDashboard()
+    private Label Heading(string title, string subtitle)
     {
-        SetPage("Tổng quan", "WB • Ozon • Yandex Market • Честный ЗНАК");
-        content.Controls.Add(BuildPageHeader("Tổng quan", "Dữ liệu tổng hợp nhiều sàn"));
-
-        var cards = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 132, WrapContents = false, BackColor = Bg };
-        cards.Controls.Add(MetricCard("Sản phẩm", "1 248", "Đã đồng bộ"));
-        cards.Controls.Add(MetricCard("Đơn FBS chờ", "54", "WB 28 • Ozon 17 • YM 9"));
-        cards.Controls.Add(MetricCard("KIZ hợp lệ", "3 187", "63 mã cần kiểm tra"));
-        cards.Controls.Add(MetricCard("Job đang chạy", "4", "Không có lỗi nghiêm trọng"));
-        content.Controls.Add(cards);
+        return new Label
+        {
+            Text = title + Environment.NewLine + subtitle,
+            Dock = DockStyle.Top, Height = 61, ForeColor = text,
+            Font = new Font("Segoe UI", 13, FontStyle.Bold),
+            Padding = new Padding(3, 3, 0, 0)
+        };
     }
 
-    private Control MetricCard(string caption, string value, string detail)
-    {
-        var p = new RoundedPanel { Radius = 14, BorderColor = Border, BorderWidth = 1, BackColor = Surface, Width = 260, Height = 112, Margin = new Padding(0, 0, 14, 0) };
-        p.Controls.Add(new Label { Text = caption, AutoSize = true, ForeColor = TextMuted, Location = new Point(18, 15) });
-        p.Controls.Add(new Label { Text = value, AutoSize = true, ForeColor = TextMain, Font = new Font("Segoe UI", 22, FontStyle.Bold), Location = new Point(16, 37) });
-        p.Controls.Add(new Label { Text = detail, AutoSize = true, ForeColor = Accent, Location = new Point(18, 84) });
-        return p;
-    }
-
-    private DataGridView BuildGrid(params string[] columns)
+    private DataGridView Grid(params string[] columns)
     {
         var g = new DataGridView
         {
-            Dock = DockStyle.Fill, BackgroundColor = Surface, BorderStyle = BorderStyle.None, AllowUserToAddRows = false,
-            ReadOnly = true, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill, RowHeadersVisible = false,
-            SelectionMode = DataGridViewSelectionMode.FullRowSelect, GridColor = Color.FromArgb(238, 242, 246),
-            ColumnHeadersHeight = 42, RowTemplate = { Height = 40 }, EnableHeadersVisualStyles = false
+            Dock = DockStyle.Fill, BackgroundColor = Color.White, BorderStyle = BorderStyle.FixedSingle,
+            AllowUserToAddRows = false, AllowUserToDeleteRows = false, ReadOnly = true,
+            MultiSelect = false, SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+            RowHeadersVisible = false, AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.Fill,
+            EnableHeadersVisualStyles = false, GridColor = Color.FromArgb(232, 235, 240)
         };
-        g.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(249, 251, 253);
-        g.ColumnHeadersDefaultCellStyle.ForeColor = TextMuted;
+        g.ColumnHeadersDefaultCellStyle.BackColor = Color.FromArgb(235, 238, 242);
+        g.ColumnHeadersDefaultCellStyle.ForeColor = text;
         g.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 8.5f, FontStyle.Bold);
-        g.DefaultCellStyle.BackColor = Surface;
-        g.DefaultCellStyle.ForeColor = TextMain;
-        g.DefaultCellStyle.SelectionBackColor = AccentSoft;
-        g.DefaultCellStyle.SelectionForeColor = TextMain;
+        g.ColumnHeadersHeight = 34;
+        g.RowTemplate.Height = 32;
+        g.DefaultCellStyle.SelectionBackColor = Color.FromArgb(220, 242, 237);
+        g.DefaultCellStyle.SelectionForeColor = text;
         foreach (var c in columns) g.Columns.Add(Guid.NewGuid().ToString(), c);
         return g;
     }
 
-    private void ShowTablePage(string title, string subtitle, DataGridView grid, params string[] actions)
-    {
-        SetPage(title, subtitle);
-        content.Controls.Add(BuildPageHeader(title, subtitle));
+    private StoreProfile? CurrentStore() => storePicker.SelectedItem as StoreProfile;
 
-        var card = new RoundedPanel { Dock = DockStyle.Fill, Radius = 14, BackColor = Surface, BorderColor = Border, BorderWidth = 1, Padding = new Padding(16) };
-        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 54, BackColor = Surface };
-        foreach (var action in actions) toolbar.Controls.Add(OutlineButton(action, Color.FromArgb(96, 108, 125), Math.Max(96, action.Length * 8 + 30)));
-        card.Controls.Add(grid);
-        card.Controls.Add(toolbar);
-        toolbar.BringToFront();
-        content.Controls.Add(card);
-        card.BringToFront();
+    private void RefreshStores(long selectId = 0)
+    {
+        var current = selectId != 0 ? selectId : CurrentStore()?.Id ?? 0;
+        var stores = app.Db.Stores().ToList();
+        storePicker.DataSource = null;
+        storePicker.DisplayMember = nameof(StoreProfile.Name);
+        storePicker.DataSource = stores;
+        if (current != 0)
+        {
+            var index = stores.FindIndex(x => x.Id == current);
+            if (index >= 0) storePicker.SelectedIndex = index;
+        }
+    }
+
+    private async Task TestCurrentStore()
+    {
+        var s = CurrentStore();
+        if (s is null) { WriteLog("No store configured."); return; }
+        connection.Text = "Testing...";
+        var r = await app.Api.TestAsync(s);
+        connection.Text = r.Success ? "CONNECTED" : "ERROR";
+        connection.ForeColor = r.Success ? Color.SeaGreen : Color.Firebrick;
+        WriteLog($"{s.Marketplace}/{s.Name}: {r.Message}");
+    }
+
+    private void Clear() => work.Controls.Clear();
+
+    private void WriteLog(string message)
+    {
+        log.AppendText($"[{DateTime.Now:HH:mm:ss}] {message}{Environment.NewLine}");
+        log.SelectionStart = log.TextLength;
+        log.ScrollToCaret();
+    }
+
+    private void ShowOverview()
+    {
+        Clear();
+        work.Controls.Add(Heading("OVERVIEW", "Local database state. No demo data."));
+        var stores = app.Db.Stores();
+        var grid = Grid("Marketplace", "Store", "Products", "FBS orders");
+        foreach (var s in stores)
+            grid.Rows.Add(s.Marketplace, s.Name, app.Db.Products(s.Id).Count, app.Db.Orders(s.Id).Count);
+        work.Controls.Add(grid);
+        grid.BringToFront();
     }
 
     private void ShowProducts()
     {
-        var g = BuildGrid("Marketplace", "Shop", "SKU", "Tên", "Giá", "Trạng thái");
-        g.Rows.Add("WB", "WB Shop 01", "BLACK-XL", "Quần nam đen XL", "3 200 ₽", "OK");
-        g.Rows.Add("Ozon", "Ozon Store 01", "BLACK-XL", "Брюки мужские", "3 550 ₽", "OK");
-        g.Rows.Add("Yandex", "YM Store 01", "BLACK-XL", "Брюки мужские", "3 680 ₽", "OK");
-        ShowTablePage("Sản phẩm", "Catalog chuẩn hóa dùng chung cho ba marketplace", g, "Đồng bộ", "Tìm SKU", "Xuất Excel");
+        Clear();
+        var header = Heading("PRODUCTS", "Sync real catalog from current marketplace API.");
+        work.Controls.Add(header);
+
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 46, BackColor = Color.FromArgb(244, 246, 249) };
+        var sync = Primary("SYNC PRODUCTS", 135);
+        toolbar.Controls.Add(sync);
+        var filter = new TextBox { Width = 250, PlaceholderText = "Search SKU / name", Margin = new Padding(10, 7, 0, 0) };
+        toolbar.Controls.Add(filter);
+        work.Controls.Add(toolbar);
+
+        var grid = Grid("External ID", "SKU", "Name", "Price", "Image");
+        work.Controls.Add(grid);
+        grid.BringToFront();
+
+        void LoadRows()
+        {
+            grid.Rows.Clear();
+            var s = CurrentStore();
+            if (s is null) return;
+            foreach (var p in app.Db.Products(s.Id))
+            {
+                if (!string.IsNullOrWhiteSpace(filter.Text) &&
+                    !p.Sku.Contains(filter.Text, StringComparison.OrdinalIgnoreCase) &&
+                    !p.Name.Contains(filter.Text, StringComparison.OrdinalIgnoreCase)) continue;
+                grid.Rows.Add(p.ExternalId, p.Sku, p.Name, p.Price?.ToString("0.##") ?? "", p.ImageUrl);
+            }
+        }
+
+        sync.Click += async (_, _) =>
+        {
+            var s = CurrentStore(); if (s is null) return;
+            sync.Enabled = false;
+            var r = await app.SyncProductsAsync(s);
+            sync.Enabled = true;
+            WriteLog(r.Message);
+            if (r.Ok) LoadRows();
+        };
+        filter.TextChanged += (_, _) => LoadRows();
+        LoadRows();
     }
 
     private void ShowPrices()
     {
-        var g = BuildGrid("Chọn", "Sàn", "SKU", "Giá hiện tại", "Giá mới", "%", "Trạng thái");
-        g.Rows.Add("✓", "WB", "BLACK-XL", "3 200 ₽", "3 520 ₽", "+10%", "Sẵn sàng");
-        g.Rows.Add("✓", "Ozon", "BLACK-2XL", "3 300 ₽", "3 630 ₽", "+10%", "Sẵn sàng");
-        ShowTablePage("Giá sản phẩm", "Preview • batch • verify • rollback", g, "Tăng %", "Giảm %", "Giá cố định", "Import Excel", "Xem trước", "Cập nhật giá");
+        Clear();
+        work.Controls.Add(Heading("PRICE", "Select product, calculate new price and send to marketplace."));
+
+        var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 770, BackColor = Color.FromArgb(244, 246, 249) };
+        work.Controls.Add(split);
+        split.BringToFront();
+
+        var grid = Grid("External ID", "SKU", "Name", "Current price");
+        split.Panel1.Controls.Add(grid);
+
+        var panel = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, Padding = new Padding(18) };
+        split.Panel2.Controls.Add(panel);
+
+        var y = 15;
+        panel.Controls.Add(FieldLabel("Selected SKU", y)); y += 25;
+        var sku = new TextBox { Left = 18, Top = y, Width = 300, ReadOnly = true }; panel.Controls.Add(sku); y += 48;
+        panel.Controls.Add(FieldLabel("New price (RUB)", y)); y += 25;
+        var price = new NumericUpDown { Left = 18, Top = y, Width = 180, DecimalPlaces = 2, Maximum = 100000000, Minimum = 1 }; panel.Controls.Add(price); y += 52;
+        var apply = Primary("UPDATE PRICE", 145); apply.Left = 18; apply.Top = y; panel.Controls.Add(apply);
+
+        var s = CurrentStore();
+        if (s != null)
+            foreach (var p in app.Db.Products(s.Id)) grid.Rows.Add(p.ExternalId, p.Sku, p.Name, p.Price?.ToString("0.##") ?? "");
+
+        grid.SelectionChanged += (_, _) =>
+        {
+            if (grid.SelectedRows.Count == 0) return;
+            sku.Text = grid.SelectedRows[0].Cells[1].Value?.ToString() ?? "";
+            if (decimal.TryParse(grid.SelectedRows[0].Cells[3].Value?.ToString(), out var v) && v > 0) price.Value = Math.Min(v, price.Maximum);
+        };
+
+        apply.Click += async (_, _) =>
+        {
+            var store = CurrentStore(); if (store is null || string.IsNullOrWhiteSpace(sku.Text)) return;
+            var product = app.Db.Product(store.Id, sku.Text); if (product is null) { WriteLog("Product not found in local sync."); return; }
+            var confirm = MessageBox.Show($"Update {store.Marketplace} / {product.Sku} to {price.Value:0.##} RUB?", "Confirm price", MessageBoxButtons.YesNo, MessageBoxIcon.Warning);
+            if (confirm != DialogResult.Yes) return;
+            apply.Enabled = false;
+            var r = await app.ChangePriceAsync(store, product, price.Value);
+            apply.Enabled = true;
+            WriteLog(r.Message);
+            MessageBox.Show(r.Message, r.Success ? "Accepted" : "Error", MessageBoxButtons.OK, r.Success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+        };
     }
 
     private void ShowCopy()
     {
-        var g = BuildGrid("Nguồn", "SKU", "Đích", "Category", "Attributes", "Ảnh", "Kết quả");
-        g.Rows.Add("WB Shop 01", "BLACK-XL", "Ozon Store 02", "Matched", "18/20", "7", "Thiếu 2 thuộc tính");
-        g.Rows.Add("Ozon Store 01", "NAVY-XL", "Yandex Store 01", "Matched", "20/20", "6", "Sẵn sàng");
-        ShowTablePage("Sao chép sản phẩm", "Source → normalized catalog → mapper → destination", g, "Chọn nguồn", "Chọn đích", "Phân tích tương thích", "Sao chép hàng loạt");
+        Clear();
+        work.Controls.Add(Heading("COPY LISTING", "Working same-marketplace copy for WB and Yandex. Cross-market copy is blocked until category mapping is complete."));
+
+        var panel = new Panel { Dock = DockStyle.Top, Height = 190, BackColor = Color.White, Padding = new Padding(16) };
+        work.Controls.Add(panel);
+        panel.BringToFront();
+
+        var stores = app.Db.Stores().ToList();
+        panel.Controls.Add(FieldLabel("Source store", 12));
+        var source = new ComboBox { Left = 16, Top = 38, Width = 250, DropDownStyle = ComboBoxStyle.DropDownList, DataSource = stores.ToList(), DisplayMember = nameof(StoreProfile.Name) };
+        panel.Controls.Add(source);
+        panel.Controls.Add(FieldLabel("Destination store", 72));
+        var dest = new ComboBox { Left = 16, Top = 98, Width = 250, DropDownStyle = ComboBoxStyle.DropDownList, DataSource = stores.ToList(), DisplayMember = nameof(StoreProfile.Name) };
+        panel.Controls.Add(dest);
+
+        panel.Controls.Add(FieldLabel("Source SKU", 12, 300));
+        var sourceSku = new TextBox { Left = 300, Top = 38, Width = 240 }; panel.Controls.Add(sourceSku);
+        panel.Controls.Add(FieldLabel("Destination SKU", 72, 300));
+        var destSku = new TextBox { Left = 300, Top = 98, Width = 240 }; panel.Controls.Add(destSku);
+
+        var copy = Primary("COPY PRODUCT", 145); copy.Left = 570; copy.Top = 96; panel.Controls.Add(copy);
+        copy.Click += async (_, _) =>
+        {
+            if (source.SelectedItem is not StoreProfile src || dest.SelectedItem is not StoreProfile dst) return;
+            var p = app.Db.Product(src.Id, sourceSku.Text.Trim());
+            if (p is null) { WriteLog("Source SKU not found. Sync products first."); return; }
+            if (string.IsNullOrWhiteSpace(destSku.Text)) { WriteLog("Destination SKU is required."); return; }
+            if (MessageBox.Show($"Copy {p.Sku} from {src.Name} to {dst.Name}?", "Confirm copy", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+            copy.Enabled = false;
+            var r = await app.Api.CopySameMarketplaceAsync(src, dst, p, destSku.Text.Trim());
+            copy.Enabled = true;
+            app.Db.Audit("Copy", r.Success ? "Accepted" : "Failed", $"{src.Name}:{p.Sku}->{dst.Name}:{destSku.Text}:{r.Message}");
+            WriteLog(r.Message);
+            MessageBox.Show(r.Message, r.Success ? "Copy accepted" : "Copy error", MessageBoxButtons.OK, r.Success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+        };
     }
 
     private void ShowFbs()
     {
-        var g = BuildGrid("Ưu tiên", "Sàn", "Đơn", "SKU", "SL", "KIZ", "Nhãn", "Trạng thái");
-        g.Rows.Add("P1", "Ozon", "0139282-0034-1", "BLACK-XL", "1/1", "Required", "Chưa in", "Chờ đóng");
-        g.Rows.Add("P2", "WB", "18473920193", "NAVY-2XL", "1/1", "OK", "Ready", "Đang đóng");
-        g.Rows.Add("P4", "Yandex", "YM-920183", "BLACK-3XL", "2/2", "N/A", "Ready", "Sẵn sàng giao");
-        ShowTablePage("Đơn hàng FBS", "Packing Station: scan → KIZ → pack → label → shipment", g, "Quét barcode / DataMatrix", "Nhận đơn", "Xác nhận đóng", "In nhãn", "Tạo / giao lô");
+        Clear();
+        work.Controls.Add(Heading("FBS PACKING", "Scanner-first order packing. Sync real FBS queue and download marketplace labels."));
+
+        var toolbar = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 48, BackColor = Color.FromArgb(244, 246, 249) };
+        var sync = Primary("SYNC FBS", 110);
+        var scan = new TextBox { Width = 330, Height = 30, PlaceholderText = "Scan order / SKU / DataMatrix...", Margin = new Padding(10, 7, 0, 0) };
+        var labelBtn = Button("DOWNLOAD LABEL", 145);
+        toolbar.Controls.Add(sync); toolbar.Controls.Add(scan); toolbar.Controls.Add(labelBtn);
+        work.Controls.Add(toolbar);
+
+        var grid = Grid("Order", "SKU", "Name", "Qty", "Status", "KIZ");
+        work.Controls.Add(grid);
+        grid.BringToFront();
+
+        void LoadRows(string q = "")
+        {
+            grid.Rows.Clear();
+            var s = CurrentStore(); if (s is null) return;
+            foreach (var o in app.Db.Orders(s.Id))
+            {
+                if (!string.IsNullOrWhiteSpace(q) &&
+                    !o.ExternalOrderId.Contains(q, StringComparison.OrdinalIgnoreCase) &&
+                    !o.Sku.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
+                grid.Rows.Add(o.ExternalOrderId, o.Sku, o.Name, o.Quantity, o.Status, o.NeedsKiz ? "YES" : "");
+            }
+        }
+
+        sync.Click += async (_, _) =>
+        {
+            var s = CurrentStore(); if (s is null) return;
+            sync.Enabled = false;
+            var r = await app.SyncOrdersAsync(s);
+            sync.Enabled = true;
+            WriteLog(r.Message);
+            if (r.Ok) LoadRows();
+        };
+        scan.TextChanged += (_, _) => LoadRows(scan.Text.Trim());
+        scan.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode != Keys.Enter) return;
+            var p = AppServices.ParseKiz(scan.Text);
+            if (p.Ok)
+            {
+                app.Db.UpsertKiz(scan.Text.Trim(), p.Gtin, "AVAILABLE");
+                WriteLog("KIZ scanned: " + p.Gtin);
+                scan.Clear();
+                e.SuppressKeyPress = true;
+            }
+        };
+        labelBtn.Click += async (_, _) =>
+        {
+            var s = CurrentStore(); if (s is null || grid.SelectedRows.Count == 0) return;
+            var orderId = grid.SelectedRows[0].Cells[0].Value?.ToString() ?? "";
+            var r = await app.Api.DownloadLabelAsync(s, orderId);
+            WriteLog(r.Message + (r.FilePath is null ? "" : " " + r.FilePath));
+            if (r.Success && r.FilePath is not null) MessageBox.Show("Saved: " + r.FilePath);
+        };
+        LoadRows();
+        Shown += (_, _) => scan.Focus();
     }
 
-    private void ShowZnak()
+    private void ShowKiz()
     {
-        var g = BuildGrid("KIZ", "GTIN", "Status", "Crypto", "Owner", "Blocked", "Kết quả");
-        g.Rows.Add("010460...21ABC", "04607144353175", "INTRODUCED", "✓", "✓", "Không", "Hợp lệ");
-        g.Rows.Add("010460...21XYZ", "04607144353175", "RETIRED", "✓", "✓", "Không", "Không dùng");
-        ShowTablePage("Честный ЗНАК / KIZ", "True API + УКЭП qua CryptoPro/Rutoken; không lưu private key/PIN", g, "Kiểm tra kết nối", "Chọn УКЭП", "Quét KIZ", "Kiểm tra hàng loạt", "Kho KIZ", "Tài liệu");
-    }
+        Clear();
+        work.Controls.Add(Heading("KIZ / ЧЕСТНЫЙ ЗНАК", "Local KIZ pool + Windows certificate health. No private key or PIN is stored."));
 
-    private void ShowJobs()
-    {
-        var g = BuildGrid("Job", "Loại", "Sàn", "Tiến độ", "Trạng thái", "Chi tiết");
-        g.Rows.Add("#1042", "PRICE_UPDATE", "WB", "483/500", "VERIFYING", "17 item đang chờ");
-        g.Rows.Add("#1043", "COPY_PRODUCT", "Ozon", "31/37", "PARTIAL_SUCCESS", "6 item cần retry");
-        ShowTablePage("Jobs", "Persisted state machine cho mọi batch/write", g, "Retry lỗi", "Tạm dừng", "Tiếp tục", "Xuất log");
-    }
+        var top = new FlowLayoutPanel { Dock = DockStyle.Top, Height = 48 };
+        var input = new TextBox { Width = 470, PlaceholderText = "Paste or scan DataMatrix...", Margin = new Padding(0, 7, 8, 0) };
+        var check = Primary("CHECK / SAVE", 125);
+        var cert = Button("CERTIFICATES", 125);
+        top.Controls.Add(input); top.Controls.Add(check); top.Controls.Add(cert);
+        work.Controls.Add(top);
 
-    private void ShowHistory()
-    {
-        var g = BuildGrid("Thời gian", "Module", "Đối tượng", "Thao tác", "Kết quả");
-        g.Rows.Add(DateTime.Now.AddMinutes(-15).ToString("g"), "Giá", "WB / BLACK-XL", "3200 → 3520", "OK");
-        g.Rows.Add(DateTime.Now.AddMinutes(-9).ToString("g"), "FBS", "WB order 18473920193", "Sticker printed", "OK");
-        ShowTablePage("Lịch sử", "Audit giá, copy, KIZ, packing, chữ ký và shipment", g, "Lọc", "Xuất CSV", "Rollback giá");
+        var grid = Grid("GTIN", "Status", "Assigned", "KIZ code");
+        work.Controls.Add(grid);
+        grid.BringToFront();
+
+        void LoadRows()
+        {
+            grid.Rows.Clear();
+            foreach (var k in app.Db.Kiz()) grid.Rows.Add(k.Gtin, k.Status, k.Assigned, k.Code);
+        }
+
+        check.Click += (_, _) =>
+        {
+            var p = AppServices.ParseKiz(input.Text);
+            WriteLog(p.Message);
+            if (!p.Ok) { MessageBox.Show(p.Message, "Invalid KIZ", MessageBoxButtons.OK, MessageBoxIcon.Error); return; }
+            app.Db.UpsertKiz(input.Text.Trim(), p.Gtin, "AVAILABLE");
+            input.Clear();
+            LoadRows();
+        };
+        cert.Click += (_, _) =>
+        {
+            var list = AppServices.Certificates();
+            var textCert = list.Count == 0 ? "No certificate in CurrentUser/My." :
+                string.Join(Environment.NewLine + Environment.NewLine, list.Take(20).Select(x => $"{x.Subject}\nExpires: {x.NotAfter:d}\nPrivate key: {x.HasPrivateKey}\n{x.Thumbprint}"));
+            MessageBox.Show(textCert, "Electronic certificates", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        };
+        LoadRows();
     }
 
     private void ShowStores()
     {
-        activeNav = "Cửa hàng / API";
-        SetPage("Cài đặt cửa hàng", "Thêm hoặc cập nhật kết nối marketplace");
-        content.Controls.Add(BuildPageHeader("Cài đặt cửa hàng", "Kết nối API cho từng cửa hàng"));
+        Clear();
+        work.Controls.Add(Heading("STORES / API", "Credentials are encrypted with Windows DPAPI CurrentUser."));
 
-        var host = new Panel { Dock = DockStyle.Fill, BackColor = Bg, AutoScroll = true };
-        var card = new RoundedPanel { Radius = 14, BackColor = Surface, BorderColor = Border, BorderWidth = 1, Width = 650, Height = 600, Location = new Point(8, 0), Padding = new Padding(22) };
-        host.Controls.Add(card);
+        var split = new SplitContainer { Dock = DockStyle.Fill, SplitterDistance = 390 };
+        work.Controls.Add(split);
+        split.BringToFront();
 
-        var y = 18;
-        card.Controls.Add(LabelAt("Sàn", 18, y, true));
-        y += 30;
+        var list = new ListBox { Dock = DockStyle.Fill, Font = new Font("Segoe UI", 10) };
+        split.Panel1.Controls.Add(list);
+        var stores = app.Db.Stores().ToList();
+        foreach (var s in stores) list.Items.Add(s);
 
-        var platforms = new FlowLayoutPanel { Location = new Point(18, y), Size = new Size(610, 52), BackColor = Surface, WrapContents = false };
-        platforms.Controls.Add(PlatformButton("WB", "Wildberries", Color.FromArgb(170, 20, 173), false));
-        platforms.Controls.Add(PlatformButton("OZ", "Ozon", Color.FromArgb(16, 97, 220), true));
-        platforms.Controls.Add(PlatformButton("Я", "Yandex Market", Color.FromArgb(255, 215, 0), false));
-        card.Controls.Add(platforms);
-        y += 76;
+        var p = new Panel { Dock = DockStyle.Fill, BackColor = Color.White, AutoScroll = true, Padding = new Padding(20) };
+        split.Panel2.Controls.Add(p);
 
-        AddFormField(card, ref y, "Tên cửa hàng", "PMP Store Man");
-        AddFormField(card, ref y, "Ozon Client-Id", "4319641", "Lấy ở Ozon Seller → Cài đặt → API → Client-Id (chuỗi số)");
-        AddFormField(card, ref y, "Ozon Api-Key", "********", "UUID v4 — Ozon Seller → Cài đặt → API → Api-Key");
+        var market = new ComboBox { Left = 20, Top = 42, Width = 220, DropDownStyle = ComboBoxStyle.DropDownList, DataSource = Enum.GetValues<Marketplace>() };
+        var name = Box(p, "Store name", 20, 20, 20, 92, 340);
+        p.Controls.Add(new Label { Text = "Marketplace", Left = 20, Top = 20, AutoSize = true, ForeColor = text });
+        p.Controls.Add(market);
+        name.Top = 93;
 
-        var info = new RoundedPanel { Radius = 12, BackColor = Color.FromArgb(242, 247, 255), BorderColor = Color.FromArgb(153, 195, 255), BorderWidth = 1, Location = new Point(18, y), Size = new Size(610, 92) };
-        info.Controls.Add(new Label { Text = "Kết nối quảng cáo (tùy chọn)", AutoSize = true, ForeColor = TextMain, Font = new Font("Segoe UI", 9, FontStyle.Bold), Location = new Point(16, 15) });
-        info.Controls.Add(new Label { Text = "Kết nối Ozon Performance để đồng bộ và quản lý chiến dịch quảng cáo.", AutoSize = false, Size = new Size(570, 42), ForeColor = Color.FromArgb(91, 108, 132), Location = new Point(16, 39) });
-        card.Controls.Add(info);
-        y += 115;
+        var client = LabeledBox(p, "Ozon Client-Id", 20, 145, 340);
+        var apiKey = LabeledBox(p, "API Key (Ozon/Yandex)", 20, 205, 520, true);
+        var business = LabeledBox(p, "Yandex Business ID", 20, 265, 340);
+        var campaign = LabeledBox(p, "Yandex Campaign ID", 20, 325, 340);
+        var token = LabeledBox(p, "Wildberries Token", 20, 385, 520, true);
+        var save = Primary("SAVE STORE", 125); save.Left = 20; save.Top = 455; p.Controls.Add(save);
+        var test = Button("TEST API", 110); test.Left = 155; test.Top = 455; p.Controls.Add(test);
 
-        AddFormField(card, ref y, "Mã kết nối quảng cáo", "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx");
-
-        var save = FilledButton("Lưu kết nối", Accent, Color.White, 126);
-        save.Location = new Point(502, y + 6);
-        card.Controls.Add(save);
-
-        content.Controls.Add(host);
-        host.BringToFront();
-    }
-
-    private Button PlatformButton(string badge, string name, Color badgeColor, bool selected)
-    {
-        var b = new Button
+        long editingId = 0;
+        list.SelectedIndexChanged += (_, _) =>
         {
-            Text = "   " + badge + "   " + name, Width = 190, Height = 48, FlatStyle = FlatStyle.Flat,
-            BackColor = selected ? Color.FromArgb(235, 238, 242) : Color.FromArgb(249, 251, 253),
-            ForeColor = selected ? TextMain : Color.FromArgb(168, 176, 189), Margin = new Padding(0, 0, 8, 0),
-            TextAlign = ContentAlignment.MiddleLeft, Font = new Font("Segoe UI", 9)
+            if (list.SelectedItem is not StoreProfile s) return;
+            editingId = s.Id; market.SelectedItem = s.Marketplace; name.Text = s.Name; client.Text = s.ClientId;
+            apiKey.Text = s.ApiKey; business.Text = s.BusinessId; campaign.Text = s.CampaignId; token.Text = s.Token;
         };
-        b.FlatAppearance.BorderColor = selected ? Color.FromArgb(210, 216, 224) : Border;
-        return b;
-    }
 
-    private void AddFormField(Control parent, ref int y, string label, string value, string? hint = null)
-    {
-        parent.Controls.Add(LabelAt(label, 18, y, true));
-        y += 29;
-        var box = new TextBox { Text = value, Location = new Point(18, y), Width = 610, Height = 36, BorderStyle = BorderStyle.FixedSingle, Font = new Font("Segoe UI", 10), ForeColor = TextMain };
-        parent.Controls.Add(box);
-        y += 42;
-        if (!string.IsNullOrWhiteSpace(hint))
+        StoreProfile Read() => new(editingId, (Marketplace)market.SelectedItem!, name.Text.Trim(), client.Text.Trim(), apiKey.Text, business.Text.Trim(), campaign.Text.Trim(), token.Text, true);
+
+        save.Click += (_, _) =>
         {
-            parent.Controls.Add(new Label { Text = hint, AutoSize = true, ForeColor = TextMuted, Location = new Point(18, y), Font = new Font("Segoe UI", 8.5f) });
-            y += 31;
-        }
-        else y += 18;
+            if (string.IsNullOrWhiteSpace(name.Text)) { MessageBox.Show("Store name is required."); return; }
+            var saved = app.Db.SaveStore(Read());
+            WriteLog($"Saved store {saved.Marketplace}/{saved.Name}.");
+            RefreshStores(saved.Id);
+            ShowStores();
+        };
+        test.Click += async (_, _) =>
+        {
+            var temp = Read();
+            var r = await app.Api.TestAsync(temp);
+            WriteLog(r.Message);
+            MessageBox.Show(r.Message, r.Success ? "API OK" : "API error", MessageBoxButtons.OK, r.Success ? MessageBoxIcon.Information : MessageBoxIcon.Error);
+        };
     }
 
-    private Label LabelAt(string text, int x, int y, bool bold = false) =>
-        new() { Text = text, AutoSize = true, Location = new Point(x, y), ForeColor = TextMain, Font = new Font("Segoe UI", 9, bold ? FontStyle.Bold : FontStyle.Regular) };
-
-    private Button OutlineButton(string text, Color color, int width)
+    private TextBox Box(Control parent, string label, int left, int labelTop, int boxTop, int width)
     {
-        var b = new Button { Text = text, Width = width, Height = 34, FlatStyle = FlatStyle.Flat, BackColor = Surface, ForeColor = color, Margin = new Padding(0, 7, 8, 0), Cursor = Cursors.Hand };
-        b.FlatAppearance.BorderColor = color == Danger ? Color.FromArgb(255, 145, 160) : Border;
-        b.FlatAppearance.BorderSize = 1;
-        return b;
+        var t = new TextBox { Left = left, Top = boxTop, Width = width };
+        parent.Controls.Add(t);
+        return t;
     }
 
-    private Button FilledButton(string text, Color bg, Color fg, int width)
+    private TextBox LabeledBox(Control parent, string label, int left, int top, int width, bool password = false)
     {
-        var b = new Button { Text = text, Width = width, Height = 38, FlatStyle = FlatStyle.Flat, BackColor = bg, ForeColor = fg, Cursor = Cursors.Hand, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
-        b.FlatAppearance.BorderSize = 0;
-        return b;
+        parent.Controls.Add(new Label { Text = label, Left = left, Top = top, AutoSize = true, ForeColor = text });
+        var t = new TextBox { Left = left, Top = top + 23, Width = width, UseSystemPasswordChar = password };
+        parent.Controls.Add(t);
+        return t;
     }
 
-    private void ShowDevices()
-    {
-        var g = BuildGrid("Thiết bị", "Tên", "Profile", "Trạng thái");
-        g.Rows.Add("Scanner", "USB HID Scanner", "Auto detect", "Demo");
-        g.Rows.Add("Printer", "XPrinter 58×40", "Label default", "Demo");
-        g.Rows.Add("Scale", "COM device", "Optional", "Chưa cấu hình");
-        ShowTablePage("Thiết bị", "Scanner, printer 58×40/ZPL/PDF và cân", g, "Quét thiết bị", "In thử", "Lưu station");
-    }
+    private Label FieldLabel(string caption, int top, int left = 18) =>
+        new() { Text = caption, AutoSize = true, Left = left, Top = top, ForeColor = text, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
 
     private void ShowSettings()
     {
-        SetPage("Cài đặt", "Theme, auto-sign, sync, job limits, API environment");
-        content.Controls.Add(BuildPageHeader("Cài đặt", "Thiết lập ứng dụng"));
-
-        var card = new RoundedPanel { Dock = DockStyle.Top, Height = 320, Radius = 14, BackColor = Surface, BorderColor = Border, BorderWidth = 1, Padding = new Padding(24) };
-        card.Controls.Add(new Label
+        Clear();
+        work.Controls.Add(Heading("SETTINGS", "Runtime diagnostics."));
+        var box = new TextBox
         {
-            AutoSize = true, ForeColor = TextMain, Font = new Font("Segoe UI", 10.5f),
-            Text = "Production checklist\n\n• SQLite + migrations\n• DPAPI secrets\n• WB/Ozon/Yandex adapters\n• True API challenge signing qua CryptoPro\n• Auto-sign whitelist, không lưu PIN/private key\n• Idempotency + verify-after-write\n• Rate limiter riêng từng marketplace\n• Printer/ZPL/PDF pipeline\n• Structured audit log + rollback",
-            Location = new Point(24, 24)
-        });
-        content.Controls.Add(card);
-        card.BringToFront();
-    }
-}
-
-internal sealed class RoundedPanel : Panel
-{
-    public int Radius { get; set; } = 12;
-    public Color BorderColor { get; set; } = Color.Transparent;
-    public int BorderWidth { get; set; }
-
-    public RoundedPanel()
-    {
-        DoubleBuffered = true;
-        Resize += (_, _) => UpdateRegion();
-    }
-
-    private void UpdateRegion()
-    {
-        using var path = CreatePath(ClientRectangle, Radius);
-        Region = new Region(path);
-        Invalidate();
-    }
-
-    protected override void OnPaint(PaintEventArgs e)
-    {
-        base.OnPaint(e);
-        if (BorderWidth <= 0) return;
-        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        var rect = ClientRectangle;
-        rect.Width -= 1;
-        rect.Height -= 1;
-        using var path = CreatePath(rect, Radius);
-        using var pen = new Pen(BorderColor, BorderWidth);
-        e.Graphics.DrawPath(pen, path);
-    }
-
-    private static GraphicsPath CreatePath(Rectangle r, int radius)
-    {
-        var d = Math.Max(2, radius * 2);
-        var path = new GraphicsPath();
-        path.AddArc(r.X, r.Y, d, d, 180, 90);
-        path.AddArc(r.Right - d, r.Y, d, d, 270, 90);
-        path.AddArc(r.Right - d, r.Bottom - d, d, d, 0, 90);
-        path.AddArc(r.X, r.Bottom - d, d, d, 90, 90);
-        path.CloseFigure();
-        return path;
+            Multiline = true, ReadOnly = true, Dock = DockStyle.Top, Height = 250,
+            Font = new Font("Consolas", 10), BackColor = Color.White,
+            Text = $"Version: 0.2.0{Environment.NewLine}Database: {app.Db.DbPath}{Environment.NewLine}OS: {Environment.OSVersion}{Environment.NewLine}.NET: {Environment.Version}{Environment.NewLine}Stores: {app.Db.Stores().Count}{Environment.NewLine}Certificates: {AppServices.Certificates().Count}"
+        };
+        work.Controls.Add(box);
+        box.BringToFront();
     }
 }
