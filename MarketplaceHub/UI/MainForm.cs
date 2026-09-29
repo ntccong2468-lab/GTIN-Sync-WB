@@ -505,7 +505,7 @@ public sealed class MainForm : Form
         split.Panel2.Controls.Add(p);
 
         var market = new ComboBox { Left = 20, Top = 42, Width = 220, DropDownStyle = ComboBoxStyle.DropDownList, DataSource = Enum.GetValues<Marketplace>() };
-        var name = Box(p, "Store name", 20, 20, 20, 92, 340);
+        var name = LabeledBox(p, "Store name", 20, 82, 340);
         p.Controls.Add(new Label { Text = "Marketplace", Left = 20, Top = 20, AutoSize = true, ForeColor = text });
         p.Controls.Add(market);
         name.Top = 93;
