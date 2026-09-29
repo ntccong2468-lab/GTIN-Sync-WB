@@ -429,6 +429,9 @@ public sealed class MarketplaceGateway
                 var raw = JsonNode.Parse(p.RawJson);
                 var offer = raw?["offer"]?.DeepClone()?.AsObject() ?? throw new InvalidOperationException("Thiếu dữ liệu offer.");
                 offer["offerId"] = destinationSku;
+                if (offer["pictures"] is null && !string.IsNullOrWhiteSpace(p.ImageUrl))
+                    offer["pictures"] = new JsonArray(p.ImageUrl);
+
                 var body = new JsonObject
                 {
                     ["offerMappings"] = new JsonArray(new JsonObject { ["offer"] = offer })
@@ -467,8 +470,42 @@ public sealed class MarketplaceGateway
 
                 using var res = await http.SendAsync(Request(HttpMethod.Post, "https://content-api.wildberries.ru/content/v2/cards/upload", dst, body), ct);
                 var text = await res.Content.ReadAsStringAsync(ct);
-                return new PriceUpdateResult(res.IsSuccessStatusCode,
-                    res.IsSuccessStatusCode ? "WB đã tiếp nhận yêu cầu tạo card. Card được tạo bất đồng bộ." : $"HTTP {(int)res.StatusCode}: {Short(text)}");
+                if (!res.IsSuccessStatusCode)
+                    return new PriceUpdateResult(false, $"HTTP {(int)res.StatusCode}: {Short(text)}");
+
+                var photoLinks = (c["photos"]?.AsArray() ?? new JsonArray())
+                    .Select(x => x?["big"]?.ToString()
+                              ?? x?["c516x688"]?.ToString()
+                              ?? x?["square"]?.ToString())
+                    .Where(x => !string.IsNullOrWhiteSpace(x))
+                    .Cast<string>()
+                    .Distinct()
+                    .Take(30)
+                    .ToArray();
+
+                if (photoLinks.Length == 0 && !string.IsNullOrWhiteSpace(p.ImageUrl))
+                    photoLinks = new[] { p.ImageUrl };
+
+                if (photoLinks.Length == 0)
+                    return new PriceUpdateResult(true, "WB đã tạo card nhưng sản phẩm nguồn không có ảnh để sao chép.");
+
+                var newNmId = await WaitForWbCardAsync(dst, destinationSku, ct);
+                if (!newNmId.HasValue)
+                    return new PriceUpdateResult(true, "WB đã tiếp nhận tạo card. Chưa lấy được nmID mới để gắn ảnh ngay; hãy chạy lại sao chép ảnh sau khi card xuất hiện.");
+
+                var mediaBody = JsonSerializer.Serialize(new { nmId = newNmId.Value, data = photoLinks });
+                using var mediaRes = await http.SendAsync(Request(HttpMethod.Post, "https://content-api.wildberries.ru/content/v3/media/save", dst, mediaBody), ct);
+                var mediaText = await mediaRes.Content.ReadAsStringAsync(ct);
+                if (!mediaRes.IsSuccessStatusCode)
+                    return new PriceUpdateResult(false, $"Card WB đã tạo nhưng tải ảnh thất bại. HTTP {(int)mediaRes.StatusCode}: {Short(mediaText)}");
+
+                var verified = await VerifyWbMediaAsync(dst, newNmId.Value, ct);
+                return new PriceUpdateResult(
+                    verified,
+                    verified
+                        ? $"Đã sao chép card WB và {photoLinks.Length} ảnh."
+                        : "WB đã nhận ảnh nhưng chưa xác minh được ảnh trên card mới. Hãy đồng bộ lại sau vài phút.",
+                    newNmId.Value.ToString());
             }
 
             var infoBody = JsonSerializer.Serialize(new { offer_id = new[] { p.Sku } });
@@ -510,13 +547,160 @@ public sealed class MarketplaceGateway
 
             using var copyRes = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v1/product/import-by-sku", dst, copyBody), ct);
             var copyText = await copyRes.Content.ReadAsStringAsync(ct);
-            return new PriceUpdateResult(copyRes.IsSuccessStatusCode,
-                copyRes.IsSuccessStatusCode ? "Ozon đã tiếp nhận yêu cầu copy theo Ozon SKU." : $"HTTP {(int)copyRes.StatusCode}: {Short(copyText)}",
-                JsonNode.Parse(copyText)?["result"]?["task_id"]?.ToString());
+            if (!copyRes.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, $"HTTP {(int)copyRes.StatusCode}: {Short(copyText)}");
+
+            var taskId = JsonNode.Parse(copyText)?["result"]?["task_id"]?.ToString();
+            var imageUrls = item["images"]?.AsArray()
+                ?.Select(x => x?.ToString())
+                .Where(x => !string.IsNullOrWhiteSpace(x))
+                .Cast<string>()
+                .Distinct()
+                .ToArray() ?? Array.Empty<string>();
+
+            if (imageUrls.Length == 0 && !string.IsNullOrWhiteSpace(p.ImageUrl))
+                imageUrls = new[] { p.ImageUrl };
+
+            if (imageUrls.Length > 0)
+            {
+                var destinationProductId = await WaitForOzonProductAsync(dst, destinationSku, ct);
+                if (destinationProductId.HasValue)
+                {
+                    var picturesBody = JsonSerializer.Serialize(new
+                    {
+                        product_id = destinationProductId.Value,
+                        images = imageUrls,
+                        color_image = ""
+                    });
+                    using var picRes = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v1/product/pictures/import", dst, picturesBody), ct);
+                    var picText = await picRes.Content.ReadAsStringAsync(ct);
+                    if (!picRes.IsSuccessStatusCode)
+                        return new PriceUpdateResult(false, $"Sản phẩm Ozon đã tạo nhưng tải ảnh thất bại. HTTP {(int)picRes.StatusCode}: {Short(picText)}");
+
+                    var verified = await VerifyOzonMediaAsync(dst, destinationProductId.Value, ct);
+                    return new PriceUpdateResult(
+                        verified,
+                        verified
+                            ? $"Đã sao chép sản phẩm Ozon và {imageUrls.Length} ảnh."
+                            : "Ozon đã nhận ảnh nhưng ảnh còn đang xử lý. Hãy đồng bộ lại sau.",
+                        taskId);
+                }
+            }
+
+            return new PriceUpdateResult(true,
+                imageUrls.Length == 0
+                    ? "Ozon đã tạo sản phẩm nhưng nguồn không có ảnh để sao chép."
+                    : "Ozon đã tạo sản phẩm; chưa lấy được product_id đích để tải ảnh ngay.",
+                taskId);
         }
         catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
     }
 
+
+    private async Task<long?> WaitForWbCardAsync(StoreProfile store, string vendorCode, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var body = new JsonObject
+            {
+                ["settings"] = new JsonObject
+                {
+                    ["cursor"] = new JsonObject { ["limit"] = 100 },
+                    ["filter"] = new JsonObject
+                    {
+                        ["textSearch"] = vendorCode,
+                        ["withPhoto"] = -1
+                    }
+                }
+            }.ToJsonString();
+
+            using var res = await http.SendAsync(Request(HttpMethod.Post, "https://content-api.wildberries.ru/content/v2/get/cards/list", store, body), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (res.IsSuccessStatusCode)
+            {
+                var cards = JsonNode.Parse(text)?["cards"]?.AsArray() ?? new JsonArray();
+                var match = cards.FirstOrDefault(x => string.Equals(x?["vendorCode"]?.ToString(), vendorCode, StringComparison.OrdinalIgnoreCase));
+                if (long.TryParse(match?["nmID"]?.ToString(), out var nmId)) return nmId;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        }
+        return null;
+    }
+
+    private async Task<bool> VerifyWbMediaAsync(StoreProfile store, long nmId, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            var body = new JsonObject
+            {
+                ["settings"] = new JsonObject
+                {
+                    ["cursor"] = new JsonObject { ["limit"] = 10 },
+                    ["filter"] = new JsonObject
+                    {
+                        ["textSearch"] = nmId.ToString(),
+                        ["withPhoto"] = -1
+                    }
+                }
+            }.ToJsonString();
+
+            using var res = await http.SendAsync(Request(HttpMethod.Post, "https://content-api.wildberries.ru/content/v2/get/cards/list", store, body), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (res.IsSuccessStatusCode)
+            {
+                var card = JsonNode.Parse(text)?["cards"]?.AsArray()?.FirstOrDefault(x => x?["nmID"]?.ToString() == nmId.ToString());
+                if ((card?["photos"]?.AsArray()?.Count ?? 0) > 0) return true;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        }
+        return false;
+    }
+
+    private async Task<long?> WaitForOzonProductAsync(StoreProfile store, string offerId, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 20; attempt++)
+        {
+            var body = JsonSerializer.Serialize(new
+            {
+                filter = new { offer_id = new[] { offerId }, visibility = "ALL" },
+                last_id = "",
+                limit = 100
+            });
+
+            using var res = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v3/product/list", store, body), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (res.IsSuccessStatusCode)
+            {
+                var items = JsonNode.Parse(text)?["result"]?["items"]?.AsArray() ?? new JsonArray();
+                var match = items.FirstOrDefault(x => string.Equals(x?["offer_id"]?.ToString(), offerId, StringComparison.OrdinalIgnoreCase));
+                if (long.TryParse(match?["product_id"]?.ToString(), out var id)) return id;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        }
+        return null;
+    }
+
+    private async Task<bool> VerifyOzonMediaAsync(StoreProfile store, long productId, CancellationToken ct)
+    {
+        for (var attempt = 0; attempt < 10; attempt++)
+        {
+            using var res = await http.SendAsync(Request(
+                HttpMethod.Post,
+                "https://api-seller.ozon.ru/v2/product/pictures/info",
+                store,
+                JsonSerializer.Serialize(new { product_id = new[] { productId.ToString() } })), ct);
+
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (res.IsSuccessStatusCode)
+            {
+                var item = JsonNode.Parse(text)?["items"]?.AsArray()?.FirstOrDefault();
+                var count = (item?["primary_photo"]?.AsArray()?.Count ?? 0) + (item?["photo"]?.AsArray()?.Count ?? 0);
+                if (count > 0) return true;
+            }
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        }
+        return false;
+    }
 
     public async Task<PriceUpdateResult> PackOrderAsync(StoreProfile s, FbsOrderRow order, CancellationToken ct = default)
     {
