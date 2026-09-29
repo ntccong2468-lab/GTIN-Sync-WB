@@ -517,6 +517,107 @@ public sealed class MarketplaceGateway
         catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
     }
 
+
+    public async Task<PriceUpdateResult> PackOrderAsync(StoreProfile s, FbsOrderRow order, CancellationToken ct = default)
+    {
+        try
+        {
+            if (s.Marketplace == Marketplace.Wildberries)
+            {
+                if (!long.TryParse(order.ExternalOrderId, out var orderId))
+                    throw new InvalidOperationException("WB order ID không hợp lệ.");
+
+                using var create = await http.SendAsync(
+                    Request(HttpMethod.Post, "https://marketplace-api.wildberries.ru/api/v3/supplies", s,
+                        JsonSerializer.Serialize(new { name = "MarketplaceHub " + DateTime.Now.ToString("yyyy-MM-dd HH:mm") })), ct);
+                var createText = await create.Content.ReadAsStringAsync(ct);
+                Ensure(create, createText);
+
+                var supplyId = JsonNode.Parse(createText)?["id"]?.ToString()
+                               ?? JsonNode.Parse(createText)?["supplyId"]?.ToString();
+                if (string.IsNullOrWhiteSpace(supplyId))
+                    throw new InvalidOperationException("WB không trả supplyId.");
+
+                using var add = await http.SendAsync(
+                    Request(new HttpMethod("PATCH"), $"https://marketplace-api.wildberries.ru/api/marketplace/v3/supplies/{supplyId}/orders", s,
+                        JsonSerializer.Serialize(new { orders = new[] { orderId } })), ct);
+                var addText = await add.Content.ReadAsStringAsync(ct);
+                if (!add.IsSuccessStatusCode)
+                    return new PriceUpdateResult(false, $"Không thêm được order vào supply: HTTP {(int)add.StatusCode}: {Short(addText)}");
+
+                return new PriceUpdateResult(true, $"Đã tạo supply {supplyId} và chuyển order sang trạng thái confirm.", supplyId);
+            }
+
+            if (s.Marketplace == Marketplace.Ozon)
+            {
+                var raw = JsonNode.Parse(order.RawJson);
+                var products = raw?["products"]?.AsArray() ?? new JsonArray();
+                var packProducts = new JsonArray();
+
+                foreach (var p in products)
+                {
+                    if (!long.TryParse(p?["sku"]?.ToString(), out var productId))
+                    {
+                        if (!long.TryParse(p?["product_id"]?.ToString(), out productId))
+                            continue;
+                    }
+
+                    packProducts.Add(new JsonObject
+                    {
+                        ["product_id"] = productId,
+                        ["quantity"] = p?["quantity"]?.GetValue<int>() ?? 1
+                    });
+                }
+
+                if (packProducts.Count == 0)
+                    throw new InvalidOperationException("Không lấy được product_id Ozon từ order.");
+
+                var body = new JsonObject
+                {
+                    ["posting_number"] = order.ExternalOrderId,
+                    ["packages"] = new JsonArray(new JsonObject { ["products"] = packProducts }),
+                    ["with"] = new JsonObject { ["additional_data"] = true }
+                }.ToJsonString();
+
+                using var ship = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v4/posting/fbs/ship", s, body), ct);
+                var shipText = await ship.Content.ReadAsStringAsync(ct);
+                if (!ship.IsSuccessStatusCode)
+                    return new PriceUpdateResult(false, $"Ozon ship HTTP {(int)ship.StatusCode}: {Short(shipText)}");
+
+                await Task.Delay(1200, ct);
+                using var verify = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v3/posting/fbs/get", s,
+                    JsonSerializer.Serialize(new { posting_number = order.ExternalOrderId, with = new { analytics_data = false, financial_data = false } })), ct);
+                var verifyText = await verify.Content.ReadAsStringAsync(ct);
+                if (!verify.IsSuccessStatusCode)
+                    return new PriceUpdateResult(false, $"Ozon verify HTTP {(int)verify.StatusCode}: {Short(verifyText)}");
+
+                var status = JsonNode.Parse(verifyText)?["result"]?["status"]?.ToString() ?? "";
+                var substatus = JsonNode.Parse(verifyText)?["result"]?["substatus"]?.ToString() ?? "";
+                if (!status.Equals("awaiting_deliver", StringComparison.OrdinalIgnoreCase) &&
+                    substatus.Equals("ship_failed", StringComparison.OrdinalIgnoreCase))
+                    return new PriceUpdateResult(false, "Ozon trả ship_failed sau khi gửi lệnh đóng hàng.");
+
+                return new PriceUpdateResult(true, $"Ozon đã tiếp nhận đóng hàng. Status: {status}/{substatus}");
+            }
+
+            if (string.IsNullOrWhiteSpace(s.CampaignId))
+                throw new InvalidOperationException("Thiếu Campaign ID Yandex.");
+
+            var yBody = JsonSerializer.Serialize(new
+            {
+                order = new { status = "PROCESSING", substatus = "READY_TO_SHIP" }
+            });
+            using var y = await http.SendAsync(Request(HttpMethod.Put,
+                $"https://api.partner.market.yandex.ru/v2/campaigns/{s.CampaignId}/orders/{order.ExternalOrderId}/status",
+                s, yBody), ct);
+            var yText = await y.Content.ReadAsStringAsync(ct);
+            return new PriceUpdateResult(
+                y.IsSuccessStatusCode,
+                y.IsSuccessStatusCode ? "Yandex đã tiếp nhận trạng thái READY_TO_SHIP." : $"Yandex HTTP {(int)y.StatusCode}: {Short(yText)}");
+        }
+        catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
+    }
+
     private HttpRequestMessage Request(HttpMethod method, string url, StoreProfile s, string? json = null)
     {
         var r = new HttpRequestMessage(method, url);
