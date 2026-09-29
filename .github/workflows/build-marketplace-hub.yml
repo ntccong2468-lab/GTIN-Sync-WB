@@ -12,7 +12,7 @@ permissions:
 jobs:
   build:
     runs-on: windows-latest
-    timeout-minutes: 30
+    timeout-minutes: 35
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-dotnet@v4
@@ -24,7 +24,13 @@ jobs:
         run: dotnet build .\MarketplaceHub\MarketplaceHub.csproj -c Release --no-restore
       - name: Publish self-contained
         run: dotnet publish .\MarketplaceHub\MarketplaceHub.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true /p:PublishTrimmed=false
-      - name: Smoke launch
+      - name: Functional self-test
+        shell: powershell
+        run: |
+          $exe = Resolve-Path ".\MarketplaceHub\bin\Release\net8.0-windows\win-x64\publish\MarketplaceHub.exe"
+          $p = Start-Process $exe -ArgumentList "--self-test" -Wait -PassThru
+          if ($p.ExitCode -ne 0) { throw "Self-test failed: $($p.ExitCode)" }
+      - name: GUI smoke launch
         shell: powershell
         run: |
           $exe = Resolve-Path ".\MarketplaceHub\bin\Release\net8.0-windows\win-x64\publish\MarketplaceHub.exe"
@@ -38,15 +44,17 @@ jobs:
         shell: powershell
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" ".\MarketplaceHub\installer\MarketplaceHub.iss"
-          Get-FileHash ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.1.0-win-x64.exe" -Algorithm SHA256
+          Get-FileHash ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.2.0-win-x64.exe" -Algorithm SHA256
       - name: Silent install test
         shell: powershell
         run: |
-          $setup = Resolve-Path ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.1.0-win-x64.exe"
+          $setup = Resolve-Path ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.2.0-win-x64.exe"
           $p = Start-Process $setup -ArgumentList "/VERYSILENT","/NORESTART" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Installer failed" }
           $installed = Join-Path $env:LOCALAPPDATA "Programs\MarketplaceHub\MarketplaceHub.exe"
           if (!(Test-Path $installed)) { throw "Installed exe not found" }
+          $self = Start-Process $installed -ArgumentList "--self-test" -Wait -PassThru
+          if ($self.ExitCode -ne 0) { throw "Installed self-test failed" }
           $app = Start-Process $installed -PassThru
           Start-Sleep -Seconds 4
           if ($app.HasExited) { throw "Installed app exited unexpectedly" }
@@ -54,17 +62,17 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MarketplaceHub-Setup-0.1.0-win-x64
-          path: MarketplaceHub/dist/MarketplaceHub-Setup-0.1.0-win-x64.exe
+          name: MarketplaceHub-Setup-0.2.0-win-x64
+          path: MarketplaceHub/dist/MarketplaceHub-Setup-0.2.0-win-x64.exe
           if-no-files-found: error
-      - name: Commit verified installer to branch
+      - name: Commit verified installer
         shell: powershell
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f MarketplaceHub/dist/MarketplaceHub-Setup-0.1.0-win-x64.exe
+          git add -f MarketplaceHub/dist/MarketplaceHub-Setup-0.2.0-win-x64.exe
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
-            git commit -m "Add verified Marketplace Hub Windows installer"
+            git commit -m "Add verified Marketplace Hub 0.2.0 installer"
             git push origin HEAD:marketplace-hub-v2
           }
