@@ -1,4 +1,4 @@
-# Marketplace Hub 0.4.0
+# Marketplace Hub 0.4.1
 
 Bản Windows desktop thiết kế theo workflow WCode, toàn bộ giao diện và nhãn chức năng sử dụng tiếng Việt.
 
@@ -60,7 +60,7 @@ Tích hợp True API ký challenge tự động chỉ nên bật sau khi kiểm 
 
 ## Bộ cài
 
-`MarketplaceHub-Setup-0.4.0-win-x64.exe`
+`MarketplaceHub-Setup-0.4.1-win-x64.exe`
 
 Pipeline:
 restore → build → publish → tự kiểm tra local → mở GUI → Inno Setup → cài im lặng → tự kiểm tra sau cài → mở app sau cài → upload/commit installer.
