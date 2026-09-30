@@ -1,8 +1,8 @@
-# Marketplace Hub 0.5.1
+# Marketplace Hub 0.6.0
 
 Ứng dụng Windows desktop cho quy trình seller, giao diện tiếng Việt theo phong cách WCode: nền navy tối, điểm nhấn tím, bảng dữ liệu lớn và luồng thao tác tập trung.
 
-## Giao diện 0.5.0
+## Giao diện 0.6.0
 
 - Sidebar tối, menu tím và thanh cửa hàng cố định phía trên.
 - Dashboard, FBS, Đăng ký Znack và Cấu hình Znack đã được tinh chỉnh theo bố cục WCode.
@@ -42,23 +42,39 @@ GitHub Actions thực hiện:
 
 Bộ cài đầu ra:
 
-`MarketplaceHub/dist/MarketplaceHub-Setup-0.5.1-win-x64.exe`
+`MarketplaceHub/dist/MarketplaceHub-Setup-0.6.0-win-x64.exe`
 
 CI không có token seller thật hoặc thiết bị CryptoPro/Rutoken/УКЭП của người dùng, vì vậy các bài kiểm thử live marketplace/chữ ký số vẫn cần chạy trên máy seller có thông tin xác thực thật.
 
+## Bản 0.6.0
+
+Bản này đưa các phần quan trọng đã đối chiếu từ mã nguồn công khai `rupphi/test-wcode` vào Marketplace Hub theo cách triển khai độc lập:
+
+- Đồng bộ FBS không còn xóa cache đơn hàng khi API chỉ trả một queue con.
+- Wildberries FBS đọc đơn mới + cửa sổ 30 ngày và cập nhật supplier/wb status theo batch.
+- Ozon FBS chuyển sang `v4/posting/fbs/unfulfilled/list` với cursor và cutoff window.
+- Lưu `sync_state` và `sync_runs` để thấy lần đồng bộ, số bản ghi đọc/ghi và lỗi cuối.
+- Thêm màn hình Đơn hàng FBO/FBW có đồng bộ read-only cho Wildberries và Ozon.
+- Thêm màn hình Đóng hàng FBO dựa trên catalog local, ảnh, barcode/GTIN và số KIZ sẵn sàng.
+- Thêm Dashboard tài chính Wildberries đọc báo cáo quyết toán daily theo khoảng ngày.
+- Hàng đợi Znack được lưu SQLite để trạng thái QUEUED/READY/ERROR không mất khi đóng ứng dụng.
+- Tinh chỉnh giao diện theo token thật của WCode: #0F172A, #1E293B, #182235, #334155, #9A41FE; button radius 8 px, card radius 12 px.
+- Toàn bộ sidebar được Việt hóa: Tổng quan, Tài chính, Ánh xạ KIZ.
+- E2E self-test mở rộng kiểm tra sync state/run, FBO cache và Znack pipeline.
+
+Các luồng có mutation trả phí hoặc cần chữ ký thật như mua KIZ SUZ, CryptoPro/CAdES và `LP_INTRODUCE_GOODS` vẫn fail-closed cho đến khi chạy trên máy seller có chứng thư/token thật; bản 0.6.0 không giả lập thành công các bước đó.
 
 ## Tương thích WCode 1.1.57
 
-Bản 0.5.1 tái triển khai độc lập các hành vi công khai trong release WCode 1.1.57:
+Bản 0.6.0 tái triển khai độc lập các hành vi công khai trong WCode:
 
-- ComboBox giữ giá trị đã chọn rõ ràng và tăng chiều cao dòng.
-- Sidebar cố định icon + chữ bên trái, không nhảy vị trí khi hover.
-- Nút mềm bo tròn có trạng thái hover/pressed/disabled.
-- Đăng ký Znack dùng hàng đợi tối đa 2 worker.
-- Nút hành động Znack dùng nhãn "Đăng ký"; trạng thái hàng đợi được hiển thị rõ.
-- Tự động đưa mã vào lưu thông được coi là bắt buộc và migration dữ liệu cũ sang bật.
+- ComboBox giữ lựa chọn rõ ràng và tăng chiều cao dòng.
+- Sidebar cố định icon + chữ bên trái.
+- Nút mềm bo tròn có hover/pressed/disabled.
+- Đăng ký Znack dùng hàng đợi tối đa 2 worker và lưu trạng thái queue.
+- Tự động đưa mã vào lưu thông được coi là bắt buộc trong cấu hình local.
 - Cấu hình Znack sắp theo omsId → omsConnection → chứng thư số.
 - Hiển thị tên chủ chứng thư, INN và ngày hết hạn; parser nhận nhãn INN Nga/OID phổ biến.
 - Hộp hỗ trợ có Enter gửi, Shift+Enter xuống dòng, Esc đóng.
 
-Repo release WCode công khai chỉ chứa bộ cài và README; mã nguồn được README trỏ tới kho riêng không truy cập công khai. Vì vậy phần trên là clean-room implementation từ hành vi/release notes công khai, không sao chép mã nguồn độc quyền.
+Repo WCode công khai có mã nguồn tham chiếu tại `rupphi/test-wcode`; Marketplace Hub không sao chép cơ chế license hoặc nhận diện ứng dụng WCode và tiếp tục dùng branding riêng.
