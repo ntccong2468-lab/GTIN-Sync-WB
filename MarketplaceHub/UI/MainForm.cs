@@ -2516,7 +2516,7 @@ public sealed class MainForm : Form
         var writer = new BarcodeWriterPixelData
         {
             Format = BarcodeFormat.DATA_MATRIX,
-            Options = new ZXing.Datamatrix.Encoder.DatamatrixEncodingOptions
+            Options = new ZXing.Datamatrix.DatamatrixEncodingOptions
             {
                 Width = 300, Height = 300, Margin = 2, PureBarcode = true,
                 GS1Format = true, CompactEncoding = true
