@@ -17,7 +17,7 @@ public sealed class MarketplaceGateway
             {
                 Marketplace.Wildberries => Request(HttpMethod.Get, "https://common-api.wildberries.ru/ping", s),
                 Marketplace.Ozon => Request(HttpMethod.Post, "https://api-seller.ozon.ru/v1/seller/info", s, "{}"),
-                Marketplace.Yandex => Request(HttpMethod.Post, "https://api.partner.market.yandex.ru/v2/auth/token", s, "{}"),
+                Marketplace.Yandex => Request(HttpMethod.Get, "https://api.partner.market.yandex.ru/v2/campaigns", s),
                 _ => throw new NotSupportedException()
             };
             using var res = await http.SendAsync(req, ct);
@@ -683,12 +683,486 @@ public sealed class MarketplaceGateway
         catch (Exception ex) { return new LabelResult(false, ex.Message); }
     }
 
-    public async Task<PriceUpdateResult> CopySameMarketplaceAsync(StoreProfile src, StoreProfile dst, ProductRow p, string destinationSku, CancellationToken ct = default)
+
+    private async Task<PriceUpdateResult> CopyWbToYandexAsync(
+        StoreProfile dst, ProductRow p, string destinationSku, CancellationToken ct)
+    {
+        try
+        {
+            RequireCredentials(dst);
+            if (string.IsNullOrWhiteSpace(dst.BusinessId))
+                return new PriceUpdateResult(false, "Cửa hàng Yandex đích chưa có Business ID.");
+
+            var card = JsonNode.Parse(p.RawJson)?.AsObject()
+                       ?? throw new InvalidOperationException("Dữ liệu card WB nguồn không hợp lệ.");
+            var categoryText = card["subjectName"]?.ToString()
+                               ?? card["subjectNameTranslated"]?.ToString()
+                               ?? p.Name;
+            var category = await FindYandexCategoryAsync(dst, categoryText, p.Name, ct);
+            if (category.Id <= 0)
+                return new PriceUpdateResult(false, $"Không tự ánh xạ được danh mục Yandex cho '{categoryText}'.");
+
+            var photos = await ExternalImageLinksAsync(WbPhotoLinks(card, p.ImageUrl), ct);
+            if (photos.Count == 0)
+                return new PriceUpdateResult(false, "Card WB nguồn không có ảnh công khai có thể gửi sang Yandex.");
+
+            var brand = card["brand"]?.ToString();
+            if (string.IsNullOrWhiteSpace(brand)) brand = "Без бренда";
+            var description = card["description"]?.ToString();
+            if (string.IsNullOrWhiteSpace(description)) description = p.Name;
+
+            var offer = new JsonObject
+            {
+                ["offerId"] = destinationSku,
+                ["name"] = Limit(p.Name, 256),
+                ["marketCategoryId"] = category.Id,
+                ["category"] = category.Name,
+                ["pictures"] = new JsonArray(photos.Select(x => (JsonNode?)x).ToArray()),
+                ["vendor"] = Limit(brand, 100),
+                ["description"] = Limit(description, 6000),
+                ["vendorCode"] = destinationSku
+            };
+
+            var barcode = WbBarcode(card);
+            if (!string.IsNullOrWhiteSpace(barcode))
+                offer["barcodes"] = new JsonArray(barcode);
+
+            if (p.Price is > 0)
+                offer["basicPrice"] = new JsonObject
+                {
+                    ["value"] = p.Price.Value,
+                    ["currencyId"] = "RUR"
+                };
+
+            var body = new JsonObject
+            {
+                ["offerMappings"] = new JsonArray(new JsonObject { ["offer"] = offer }),
+                ["onlyPartnerMediaContent"] = true
+            }.ToJsonString();
+
+            using var res = await http.SendAsync(Request(HttpMethod.Post,
+                $"https://api.partner.market.yandex.ru/v2/businesses/{dst.BusinessId}/offer-mappings/update",
+                dst, body), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (!res.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, AuthFriendly(dst, res.StatusCode, text));
+
+            return new PriceUpdateResult(true,
+                $"Yandex đã nhận bài đăng '{destinationSku}'. Danh mục tự ánh xạ: {category.Name} ({category.Id}); {photos.Count} ảnh.");
+        }
+        catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
+    }
+
+    private async Task<PriceUpdateResult> CopyWbToOzonAsync(
+        StoreProfile dst, ProductRow p, string destinationSku, CancellationToken ct)
+    {
+        try
+        {
+            RequireCredentials(dst);
+            var card = JsonNode.Parse(p.RawJson)?.AsObject()
+                       ?? throw new InvalidOperationException("Dữ liệu card WB nguồn không hợp lệ.");
+            var categoryText = card["subjectName"]?.ToString()
+                               ?? card["subjectNameTranslated"]?.ToString()
+                               ?? p.Name;
+            var category = await FindOzonCategoryAsync(dst, categoryText, p.Name, ct);
+            if (category.CategoryId <= 0 || category.TypeId <= 0)
+                return new PriceUpdateResult(false, $"Không tự ánh xạ được danh mục Ozon cho '{categoryText}'.");
+
+            var attrs = await BuildOzonAttributesAsync(dst, card, p, category, ct);
+            if (!attrs.Ok)
+                return new PriceUpdateResult(false, attrs.Message);
+
+            var dims = WbDimensions(card);
+            if (!dims.Ok)
+                return new PriceUpdateResult(false,
+                    "Không thể tạo card Ozon an toàn vì card WB chưa có đủ kích thước/khối lượng đóng gói. " +
+                    "Hãy cập nhật dimensions trên WB rồi đồng bộ lại.");
+
+            if (p.Price is null or <= 0)
+                return new PriceUpdateResult(false, "Sản phẩm WB chưa có giá hợp lệ để tạo card Ozon.");
+
+            var photos = await ExternalImageLinksAsync(WbPhotoLinks(card, p.ImageUrl), ct);
+            if (photos.Count == 0)
+                return new PriceUpdateResult(false, "Card WB nguồn không có ảnh công khai có thể gửi sang Ozon.");
+
+            var item = new JsonObject
+            {
+                ["attributes"] = attrs.Attributes,
+                ["barcode"] = WbBarcode(card),
+                ["complex_attributes"] = new JsonArray(),
+                ["currency_code"] = "RUB",
+                ["depth"] = dims.DepthMm,
+                ["description_category_id"] = category.CategoryId,
+                ["dimension_unit"] = "mm",
+                ["height"] = dims.HeightMm,
+                ["images"] = new JsonArray(photos.Take(30).Select(x => (JsonNode?)x).ToArray()),
+                ["name"] = Limit(p.Name, 500),
+                ["offer_id"] = destinationSku,
+                ["old_price"] = "0",
+                ["price"] = p.Price.Value.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture),
+                ["type_id"] = category.TypeId,
+                ["weight"] = dims.WeightG,
+                ["weight_unit"] = "g",
+                ["width"] = dims.WidthMm
+            };
+
+            var body = new JsonObject
+            {
+                ["items"] = new JsonArray(item)
+            }.ToJsonString();
+
+            using var res = await http.SendAsync(Request(HttpMethod.Post,
+                "https://api-seller.ozon.ru/v3/product/import", dst, body), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (!res.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, AuthFriendly(dst, res.StatusCode, text));
+
+            var taskId = JsonNode.Parse(text)?["result"]?["task_id"]?.ToString();
+            return new PriceUpdateResult(true,
+                $"Ozon đã nhận card '{destinationSku}'. Danh mục tự ánh xạ: {category.CategoryName} / {category.TypeName}; {photos.Count} ảnh.",
+                taskId);
+        }
+        catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
+    }
+
+    private async Task<(long Id, string Name)> FindYandexCategoryAsync(
+        StoreProfile dst, string sourceCategory, string productName, CancellationToken ct)
+    {
+        using var res = await http.SendAsync(Request(HttpMethod.Post,
+            "https://api.partner.market.yandex.ru/v2/categories/tree", dst,
+            JsonSerializer.Serialize(new { language = "RU" })), ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException(AuthFriendly(dst, res.StatusCode, text));
+
+        var root = JsonNode.Parse(text)?["result"];
+        var candidates = new List<(long Id, string Name, int Score)>();
+        void Walk(JsonNode? node)
+        {
+            if (node is null) return;
+            var children = node["children"]?.AsArray();
+            if (children is null || children.Count == 0)
+            {
+                if (long.TryParse(node["id"]?.ToString(), out var id))
+                {
+                    var name = node["name"]?.ToString() ?? "";
+                    candidates.Add((id, name, CategoryScore(sourceCategory + " " + productName, name)));
+                }
+                return;
+            }
+            foreach (var child in children) Walk(child);
+        }
+        Walk(root);
+        var best = candidates.OrderByDescending(x => x.Score).ThenBy(x => x.Name.Length).FirstOrDefault();
+        return best.Score > 0 ? (best.Id, best.Name) : (0, "");
+    }
+
+    private async Task<OzonCategoryMatch> FindOzonCategoryAsync(
+        StoreProfile dst, string sourceCategory, string productName, CancellationToken ct)
+    {
+        using var res = await http.SendAsync(Request(HttpMethod.Post,
+            "https://api-seller.ozon.ru/v1/description-category/tree", dst,
+            JsonSerializer.Serialize(new { language = "RU" })), ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException(AuthFriendly(dst, res.StatusCode, text));
+
+        var result = JsonNode.Parse(text)?["result"]?.AsArray() ?? new JsonArray();
+        var candidates = new List<OzonCategoryMatch>();
+        void Walk(JsonNode? node, long inheritedCategoryId, string inheritedCategoryName)
+        {
+            if (node is null) return;
+            var disabled = bool.TryParse(node["disabled"]?.ToString(), out var d) && d;
+            if (disabled) return;
+
+            var categoryId = long.TryParse(node["description_category_id"]?.ToString(), out var parsedCategory)
+                ? parsedCategory : inheritedCategoryId;
+            var categoryName = node["category_name"]?.ToString();
+            if (string.IsNullOrWhiteSpace(categoryName)) categoryName = inheritedCategoryName;
+            var typeId = long.TryParse(node["type_id"]?.ToString(), out var parsedType) ? parsedType : 0;
+            var typeName = node["type_name"]?.ToString() ?? "";
+
+            if (categoryId > 0 && typeId > 0)
+            {
+                var score = CategoryScore(sourceCategory + " " + productName, categoryName + " " + typeName);
+                candidates.Add(new OzonCategoryMatch(categoryId, typeId, categoryName, typeName, score));
+            }
+
+            foreach (var child in node["children"]?.AsArray() ?? new JsonArray())
+                Walk(child, categoryId, categoryName);
+        }
+        foreach (var node in result) Walk(node, 0, "");
+        return candidates.OrderByDescending(x => x.Score).ThenBy(x => x.CategoryName.Length + x.TypeName.Length)
+            .FirstOrDefault() ?? new OzonCategoryMatch(0, 0, "", "", 0);
+    }
+
+    private async Task<(bool Ok, string Message, JsonArray Attributes)> BuildOzonAttributesAsync(
+        StoreProfile dst, JsonObject card, ProductRow product, OzonCategoryMatch category, CancellationToken ct)
+    {
+        using var res = await http.SendAsync(Request(HttpMethod.Post,
+            "https://api-seller.ozon.ru/v1/description-category/attribute", dst,
+            JsonSerializer.Serialize(new
+            {
+                description_category_id = category.CategoryId,
+                type_id = category.TypeId,
+                language = "RU"
+            })), ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+        if (!res.IsSuccessStatusCode)
+            return (false, AuthFriendly(dst, res.StatusCode, text), new JsonArray());
+
+        var defs = JsonNode.Parse(text)?["result"]?.AsArray() ?? new JsonArray();
+        var output = new JsonArray();
+        var missing = new List<string>();
+
+        foreach (var def in defs)
+        {
+            var required = bool.TryParse(def?["is_required"]?.ToString(), out var req) && req;
+            if (!required) continue;
+            if (!long.TryParse(def?["id"]?.ToString(), out var id)) continue;
+
+            var name = def?["name"]?.ToString() ?? "";
+            var value = MapWbValueForOzon(card, product, category, name);
+            var dictionaryId = long.TryParse(def?["dictionary_id"]?.ToString(), out var dict) ? dict : 0;
+            var complexId = long.TryParse(def?["attribute_complex_id"]?.ToString(), out var cx) ? cx : 0;
+
+            if (string.IsNullOrWhiteSpace(value))
+            {
+                missing.Add(name);
+                continue;
+            }
+
+            var values = new JsonArray();
+            if (dictionaryId > 0)
+            {
+                using var search = await http.SendAsync(Request(HttpMethod.Post,
+                    "https://api-seller.ozon.ru/v1/description-category/attribute/values/search", dst,
+                    JsonSerializer.Serialize(new
+                    {
+                        attribute_id = id,
+                        description_category_id = category.CategoryId,
+                        type_id = category.TypeId,
+                        value,
+                        limit = 20
+                    })), ct);
+                var searchText = await search.Content.ReadAsStringAsync(ct);
+                if (!search.IsSuccessStatusCode)
+                {
+                    missing.Add(name);
+                    continue;
+                }
+
+                var options = JsonNode.Parse(searchText)?["result"]?.AsArray() ?? new JsonArray();
+                var best = options
+                    .Select(x => new
+                    {
+                        Node = x,
+                        Score = CategoryScore(value, x?["value"]?.ToString() ?? "")
+                    })
+                    .OrderByDescending(x => x.Score)
+                    .FirstOrDefault()?.Node;
+                if (best is null || !long.TryParse(best["id"]?.ToString(), out var optionId))
+                {
+                    missing.Add(name);
+                    continue;
+                }
+                values.Add(new JsonObject
+                {
+                    ["dictionary_value_id"] = optionId,
+                    ["value"] = best["value"]?.ToString() ?? value
+                });
+            }
+            else
+            {
+                values.Add(new JsonObject { ["value"] = value });
+            }
+
+            output.Add(new JsonObject
+            {
+                ["complex_id"] = complexId,
+                ["id"] = id,
+                ["values"] = values
+            });
+        }
+
+        if (missing.Count > 0)
+            return (false,
+                "Ozon yêu cầu thêm thuộc tính mà WB chưa cung cấp đủ: " +
+                string.Join(", ", missing.Distinct().Take(12)) +
+                ". Hãy bổ sung các thuộc tính này trên card WB rồi đồng bộ lại.",
+                output);
+
+        return (true, "OK", output);
+    }
+
+    private static string MapWbValueForOzon(
+        JsonObject card, ProductRow product, OzonCategoryMatch category, string ozonName)
+    {
+        var n = ozonName.ToLowerInvariant();
+        if (n.Contains("бренд") || n.Contains("brand")) return card["brand"]?.ToString() ?? "Нет бренда";
+        if (n.Contains("тип") || n.Contains("вид товара")) return !string.IsNullOrWhiteSpace(category.TypeName) ? category.TypeName : category.CategoryName;
+        if (n.Contains("модель") || n.Contains("название")) return product.Name;
+        if (n.Contains("артикул")) return product.Sku;
+        if (n.Contains("цвет")) return FindWbCharacteristic(card, "цвет", "color");
+        if (n.Contains("пол") || n.Contains("гендер")) return FindWbCharacteristic(card, "пол", "gender");
+        if (n.Contains("размер")) return FindWbCharacteristic(card, "размер", "size");
+        if (n.Contains("материал") || n.Contains("состав")) return FindWbCharacteristic(card, "материал", "состав", "fabric");
+        if (n.Contains("страна")) return FindWbCharacteristic(card, "страна", "country");
+        if (n.Contains("описан") || n.Contains("аннотац")) return card["description"]?.ToString() ?? product.Name;
+
+        var byName = FindWbCharacteristic(card, ozonName);
+        return byName;
+    }
+
+    private static string FindWbCharacteristic(JsonObject card, params string[] names)
+    {
+        foreach (var c in card["characteristics"]?.AsArray() ?? new JsonArray())
+        {
+            var n = c?["name"]?.ToString() ?? "";
+            if (!names.Any(x => n.Contains(x, StringComparison.OrdinalIgnoreCase) ||
+                                x.Contains(n, StringComparison.OrdinalIgnoreCase))) continue;
+            var value = c?["value"];
+            if (value is JsonArray arr)
+                return string.Join(", ", arr.Select(x => x?.ToString()).Where(x => !string.IsNullOrWhiteSpace(x)));
+            return value?.ToString() ?? "";
+        }
+        return "";
+    }
+
+    private static (bool Ok, int WidthMm, int HeightMm, int DepthMm, int WeightG) WbDimensions(JsonObject card)
+    {
+        var d = card["dimensions"];
+        decimal Read(string key) => decimal.TryParse(d?[key]?.ToString(),
+            System.Globalization.NumberStyles.Any, System.Globalization.CultureInfo.InvariantCulture, out var v) ? v : 0;
+
+        var width = Read("width");
+        var height = Read("height");
+        var depth = Read("length");
+        if (depth <= 0) depth = Read("depth");
+        var weightKg = Read("weightBrutto");
+        if (weightKg <= 0) weightKg = Read("weight");
+
+        if (width <= 0 || height <= 0 || depth <= 0 || weightKg <= 0)
+            return (false, 0, 0, 0, 0);
+
+        return (true,
+            Math.Max(1, (int)Math.Round(width * 10m)),
+            Math.Max(1, (int)Math.Round(height * 10m)),
+            Math.Max(1, (int)Math.Round(depth * 10m)),
+            Math.Max(1, (int)Math.Round(weightKg * 1000m)));
+    }
+
+    private static IReadOnlyList<string> WbPhotoLinks(JsonObject card, string fallback)
+    {
+        var links = new List<string>();
+        foreach (var photo in card["photos"]?.AsArray() ?? new JsonArray())
+        {
+            var link = photo?["big"]?.ToString()
+                       ?? photo?["c516x688"]?.ToString()
+                       ?? photo?["square"]?.ToString();
+            if (!string.IsNullOrWhiteSpace(link)) links.Add(link);
+        }
+        if (links.Count == 0 && !string.IsNullOrWhiteSpace(fallback)) links.Add(fallback);
+        return links.Distinct(StringComparer.OrdinalIgnoreCase).Take(30).ToList();
+    }
+
+    private async Task<IReadOnlyList<string>> ExternalImageLinksAsync(
+        IReadOnlyList<string> links, CancellationToken ct)
+    {
+        var result = new List<string>();
+        foreach (var original in links)
+        {
+            var url = original.Trim();
+            if (url.EndsWith(".webp", StringComparison.OrdinalIgnoreCase))
+            {
+                var jpg = url[..^5] + ".jpg";
+                try
+                {
+                    using var probe = new HttpRequestMessage(HttpMethod.Get, jpg);
+                    using var res = await http.SendAsync(probe, HttpCompletionOption.ResponseHeadersRead, ct);
+                    if (res.IsSuccessStatusCode &&
+                        (res.Content.Headers.ContentType?.MediaType?.StartsWith("image/", StringComparison.OrdinalIgnoreCase) ?? false))
+                        url = jpg;
+                }
+                catch { }
+            }
+            result.Add(url);
+        }
+        return result.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
+    }
+
+    private static string WbBarcode(JsonObject card)
+    {
+        foreach (var size in card["sizes"]?.AsArray() ?? new JsonArray())
+            foreach (var sku in size?["skus"]?.AsArray() ?? new JsonArray())
+            {
+                var value = sku?.ToString() ?? "";
+                if (value.Length is >= 8 and <= 14 && value.All(char.IsDigit)) return value;
+            }
+        return "";
+    }
+
+    private static int CategoryScore(string source, string target)
+    {
+        static string[] Tokens(string value) => value
+            .ToLowerInvariant()
+            .Replace("ё", "е")
+            .Split(new[] { ' ', '-', '_', '/', '\\', ',', '.', '(', ')', '[', ']', ':' },
+                StringSplitOptions.RemoveEmptyEntries)
+            .Where(x => x.Length >= 3)
+            .Distinct()
+            .ToArray();
+
+        var a = Tokens(source);
+        var b = Tokens(target);
+        if (a.Length == 0 || b.Length == 0) return 0;
+        var score = a.Count(x => b.Any(y => y.Equals(x, StringComparison.OrdinalIgnoreCase))) * 10;
+        var src = string.Join(" ", a);
+        var dst = string.Join(" ", b);
+        if (dst.Contains(src, StringComparison.OrdinalIgnoreCase) || src.Contains(dst, StringComparison.OrdinalIgnoreCase))
+            score += 50;
+        return score;
+    }
+
+    private static string Limit(string value, int max) =>
+        string.IsNullOrWhiteSpace(value) ? "" : value.Length <= max ? value : value[..max];
+
+    private static void RequireCredentials(StoreProfile s)
+    {
+        if (s.Marketplace == Marketplace.Wildberries && string.IsNullOrWhiteSpace(s.Token))
+            throw new InvalidOperationException("Cửa hàng Wildberries chưa có Token API. Hãy mở Cài đặt và lưu token trước.");
+        if (s.Marketplace == Marketplace.Ozon &&
+            (string.IsNullOrWhiteSpace(s.ClientId) || string.IsNullOrWhiteSpace(s.ApiKey)))
+            throw new InvalidOperationException("Cửa hàng Ozon đích thiếu Client-Id hoặc Api-Key.");
+        if (s.Marketplace == Marketplace.Yandex && string.IsNullOrWhiteSpace(s.ApiKey))
+            throw new InvalidOperationException("Cửa hàng Yandex đích chưa có API Key.");
+    }
+
+    private static string AuthFriendly(StoreProfile store, System.Net.HttpStatusCode status, string body)
+    {
+        if ((int)status == 401 || (int)status == 403)
+            return $"{store.Marketplace} từ chối thông tin API (HTTP {(int)status}). " +
+                   "Hãy kiểm tra token/API key của đúng cửa hàng đích và quyền quản lý sản phẩm. " +
+                   Short(body);
+        return $"HTTP {(int)status}: {Short(body)}";
+    }
+
+    private sealed record OzonCategoryMatch(
+        long CategoryId, long TypeId, string CategoryName, string TypeName, int Score);
+
+
+    public async Task<PriceUpdateResult> CopyListingAsync(StoreProfile src, StoreProfile dst, ProductRow p, string destinationSku, CancellationToken ct = default)
     {
         try
         {
             if (src.Marketplace != dst.Marketplace)
-                return new PriceUpdateResult(false, "Copy khác sàn cần category/attribute mapper trước khi publish.");
+            {
+                if (src.Marketplace == Marketplace.Wildberries && dst.Marketplace == Marketplace.Ozon)
+                    return await CopyWbToOzonAsync(dst, p, destinationSku, ct);
+                if (src.Marketplace == Marketplace.Wildberries && dst.Marketplace == Marketplace.Yandex)
+                    return await CopyWbToYandexAsync(dst, p, destinationSku, ct);
+                return new PriceUpdateResult(false, "Hiện luồng copy khác sàn hỗ trợ trực tiếp WB → Ozon và WB → Yandex Market.");
+            }
 
             if (src.Marketplace == Marketplace.Yandex)
             {
@@ -1177,6 +1651,7 @@ public sealed class MarketplaceGateway
 
     private HttpRequestMessage Request(HttpMethod method, string url, StoreProfile s, string? json = null)
     {
+        RequireCredentials(s);
         var r = new HttpRequestMessage(method, url);
         if (s.Marketplace == Marketplace.Wildberries)
         {

@@ -1,41 +1,23 @@
-# Marketplace Hub 0.6.2
+# Marketplace Hub 0.6.3
 
-Bản Windows desktop cho seller Wildberries, Ozon và Yandex Market, giao diện tiếng Việt theo phong cách dark navy/tím.
+Bản sửa lỗi tập trung vào sao chép WB → Ozon/Yandex, ảnh sản phẩm và thao tác chọn đơn FBS.
 
-## Sửa lỗi và tái cấu trúc 0.6.2
+## 0.6.3
 
-- **Chọn đơn mới FBS:** checkbox trong bảng FBS đã chuyển sang trạng thái chỉnh sửa được, commit ngay khi bấm. Có thể chọn nhiều đơn mới rồi bấm **Tạo shipment**.
-- **Shipment Wildberries:** ứng dụng tạo supply, thêm tối đa 100 order vào supply và chuyển order sang `confirm`. Với đơn cần KIZ, ứng dụng chuẩn bị KIZ trước, tạo shipment rồi gắn SGTIN vào order WB sau khi order đã ở `confirm`.
-- **Nhãn WB:** nhãn PNG 58×40 được tải từ WB và có thể gửi trực tiếp tới máy in mặc định. Có nút **In nhãn đã chọn** và **In nhãn dán WB** ở màn hình Supply.
-- **Tự động mua KIZ:** nếu kho local thiếu KIZ, ứng dụng có thể dùng CryptoPro + chứng thư đã chọn + omsId/omsConnection để xác thực, tạo order SUZ, chờ mã sẵn sàng, tải KIZ và lưu vào SQLite. Nếu kết quả POST tạo order không chắc chắn do lỗi mạng/server, ứng dụng chặn tự động mua lại để tránh bị trừ tiền hai lần.
-- **Ảnh sản phẩm:** sửa cách đọc URL ảnh cho WB/Ozon/Yandex, bổ sung fallback đọc từ RawJson, User-Agent và cache ảnh. Các màn FBS, Supply, FBO, Znack, Thay đổi giá và xem trước Sao chép bài đăng dùng chung bộ tải ảnh mới.
-- **Thay đổi giá:** tách khỏi mục Thiết kế mẫu thành một mục riêng ở sidebar.
-- **Sao chép bài đăng:** tách thành một mục riêng ở sidebar, có xem trước ảnh sản phẩm nguồn.
-- **Đồng bộ Ozon:** thêm luồng riêng Sản phẩm → FBS → FBO/FBW, hiển thị lần đồng bộ và lỗi gần nhất theo từng cửa hàng.
-- **Đồng bộ Yandex Market:** thêm luồng riêng Sản phẩm → Đơn hàng, có paging sản phẩm bằng pageToken.
-- Sidebar được chuyển sang vùng cuộn để các module mới không chồng lên Lịch sử in/Cài đặt.
+- Thêm luồng **WB → Yandex Market**: dùng dữ liệu card WB đã đồng bộ, tự tìm danh mục lá Yandex, chuyển tên/mô tả/brand/barcode/giá/ảnh và tạo offer ở Business đích.
+- Thêm luồng **WB → Ozon**: tự đọc cây danh mục + type Ozon, ánh xạ danh mục theo card WB, lấy danh sách thuộc tính bắt buộc và cố gắng ánh xạ từ characteristics WB trước khi gửi `/v3/product/import`.
+- Copy khác sàn **không gọi lại API WB nguồn** nếu card đã nằm trong SQLite, vì vậy token WB nguồn không còn là điều kiện để copy card đã đồng bộ sang Ozon/Yandex.
+- Lỗi 401/403 được đổi thành thông báo rõ cửa hàng nào thiếu/sai token/API key hoặc thiếu quyền quản lý sản phẩm.
+- Yandex kiểm tra API chuyển sang `GET /v2/campaigns`.
+- Ảnh WB hiện thường là **WebP**; UI chuyển sang bộ giải mã SkiaSharp nên ảnh WebP/JPG/PNG hiển thị được trong FBS, Supply, FBO, Znack, Thay đổi giá và Sao chép bài đăng.
+- Khi gửi ảnh WB sang Ozon/Yandex, ứng dụng thử URL `.jpg` tương ứng nếu nguồn là `.webp`, rồi fallback sang link gốc.
+- Màn **Đơn mới FBS** có checkbox **Chọn tất cả đơn mới đang hiển thị**.
+- Giữ nguyên cơ chế tạo shipment, in nhãn WB, KIZ, đồng bộ Ozon/Yandex và các chức năng 0.6.2.
 
-## An toàn KIZ
+### Lưu ý khi copy WB → Ozon
 
-Tự động mua KIZ là thao tác thật trên SUZ khi máy seller có CryptoPro, chứng thư hợp lệ và cấu hình OMS thật. Ứng dụng không lưu PIN/private key. Bản này **mua và tải KIZ + gắn SGTIN vào đơn WB**; bước pháp lý đưa mã vào lưu thông qua `LP_INTRODUCE_GOODS` vẫn là pipeline riêng và chưa được coi là hoàn tất chỉ vì đã tải KIZ.
+Ozon bắt buộc category/type, dimensions và một số thuộc tính theo từng danh mục. Ứng dụng không tự bịa dữ liệu. Nếu WB thiếu một thuộc tính bắt buộc hoặc kích thước/khối lượng đóng gói, app sẽ nêu tên trường còn thiếu thay vì gửi dữ liệu sai sang Ozon.
 
-## Nền tảng
+## Bộ cài
 
-- SQLite local + DPAPI bảo vệ token/API key.
-- Multi-store Wildberries, Ozon, Yandex.
-- FBS cache lịch sử + sync state/run.
-- FBO/FBW WB + Ozon.
-- Dashboard tài chính WB.
-- KIZ pool / mapping / gán order.
-- Znack + Windows certificate/CryptoPro.
-- Sao chép listing cùng marketplace và đồng bộ ảnh khi API đích hỗ trợ.
-
-## Kiểm thử bộ cài
-
-GitHub Actions chạy:
-
-`restore → build Release → publish self-contained → E2E self-test → GUI smoke → Inno Setup → silent install → self-test sau cài → GUI smoke sau cài → upload artifact → commit installer`
-
-Bộ cài:
-
-`MarketplaceHub/dist/MarketplaceHub-Setup-0.6.2-win-x64.exe`
+`MarketplaceHub/dist/MarketplaceHub-Setup-0.6.3-win-x64.exe`

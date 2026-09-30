@@ -1,5 +1,6 @@
 using MarketplaceHub.Core;
 using MarketplaceHub.Services;
+using SkiaSharp;
 using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
@@ -683,10 +684,20 @@ public sealed class MainForm : Form
         var printLabels = ActionButton("In nhãn đã chọn", 155);
         printLabels.Top = 145; printLabels.Anchor = AnchorStyles.Top | AnchorStyles.Right; work.Controls.Add(printLabels);
 
+        var selectAll = new CheckBox
+        {
+            Text = "Chọn tất cả đơn mới đang hiển thị",
+            Left = 4, Top = 187, AutoSize = true,
+            ForeColor = Color.White, BackColor = C.Main,
+            Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
+        };
+        work.Controls.Add(selectAll);
+        var changingSelectAll = false;
+
         var card = CardPanel();
-        card.Left = 4; card.Top = 205;
+        card.Left = 4; card.Top = 225;
         card.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        card.Width = work.ClientSize.Width - 55; card.Height = work.ClientSize.Height - 235;
+        card.Width = work.ClientSize.Width - 55; card.Height = work.ClientSize.Height - 255;
         work.Controls.Add(card);
 
         var grid = FbsGrid(); grid.Dock = DockStyle.Fill; card.Controls.Add(grid);
@@ -699,6 +710,10 @@ public sealed class MainForm : Form
             StyleTab(packTab, value == "pack");
             StyleTab(shipTab, value == "ship");
             createShipment.Visible = value == "new";
+            selectAll.Visible = value == "new";
+            changingSelectAll = true;
+            selectAll.Checked = false;
+            changingSelectAll = false;
             LoadRows();
         }
 
@@ -732,6 +747,14 @@ public sealed class MainForm : Form
                 if (!string.IsNullOrWhiteSpace(image)) _ = LoadImageAsync(grid, row, 2, image);
             }
         }
+
+        selectAll.CheckedChanged += (_, _) =>
+        {
+            if (changingSelectAll || mode != "new") return;
+            foreach (DataGridViewRow row in grid.Rows)
+                if (!row.IsNewRow) row.Cells[0].Value = selectAll.Checked;
+            grid.EndEdit();
+        };
 
         newTab.Click += (_, _) => SetMode("new");
         packTab.Click += (_, _) => SetMode("pack");
@@ -804,7 +827,7 @@ public sealed class MainForm : Form
             createShipment.Left = work.ClientSize.Width - createShipment.Width - 30;
             printLabels.Left = createShipment.Left - printLabels.Width - 12;
             card.Width = work.ClientSize.Width - 55;
-            card.Height = Math.Max(260, work.ClientSize.Height - 235);
+            card.Height = Math.Max(260, work.ClientSize.Height - 255);
         };
 
         LoadRows();
@@ -1694,10 +1717,8 @@ public sealed class MainForm : Form
             try
             {
                 var bytes = await GetImageBytesAsync(url);
-                using var ms = new MemoryStream(bytes);
-                using var temp = Image.FromStream(ms);
                 picture.Image?.Dispose();
-                picture.Image = new Bitmap(temp);
+                picture.Image = DecodeProductImage(bytes);
             }
             catch { picture.Image?.Dispose(); picture.Image = null; }
         }
@@ -1710,7 +1731,7 @@ public sealed class MainForm : Form
             var p = app.Db.Product(a.Id, sourceSku.Text.Trim()); if (p is null) { ShowInfo("Không tìm thấy SKU nguồn."); return; }
             if (string.IsNullOrWhiteSpace(destSku.Text)) { ShowInfo("Hãy nhập SKU đích."); return; }
             run.Enabled = false;
-            var result = await app.Api.CopySameMarketplaceAsync(a, b, p, destSku.Text.Trim());
+            var result = await app.Api.CopyListingAsync(a, b, p, destSku.Text.Trim());
             run.Enabled = true;
             app.Db.Audit("Sao chép", result.Success ? "Đã gửi" : "Lỗi", result.Message);
             ShowInfo(result.Message);
@@ -1918,15 +1939,27 @@ public sealed class MainForm : Form
         return bytes;
     }
 
+
+    private static Bitmap DecodeProductImage(byte[] bytes)
+    {
+        using var bitmap = SKBitmap.Decode(bytes)
+            ?? throw new InvalidOperationException("Không giải mã được ảnh sản phẩm.");
+        using var image = SKImage.FromBitmap(bitmap);
+        using var data = image.Encode(SKEncodedImageFormat.Png, 92);
+        using var ms = new MemoryStream(data.ToArray());
+        using var temp = Image.FromStream(ms);
+        return new Bitmap(temp);
+    }
+
+
+
     private async Task LoadImageAsync(DataGridView grid, int row, int column, string url)
     {
         try
         {
             if (string.IsNullOrWhiteSpace(url)) return;
             var bytes = await GetImageBytesAsync(url);
-            using var ms = new MemoryStream(bytes);
-            using var temp = Image.FromStream(ms);
-            var img = new Bitmap(temp);
+            var img = DecodeProductImage(bytes);
             if (!grid.IsDisposed && row >= 0 && row < grid.Rows.Count && column >= 0 && column < grid.Columns.Count)
             {
                 var old = grid.Rows[row].Cells[column].Value as Image;
