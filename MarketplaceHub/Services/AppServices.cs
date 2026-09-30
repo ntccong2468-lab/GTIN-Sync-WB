@@ -136,12 +136,47 @@ public sealed class AppServices
         if (string.IsNullOrWhiteSpace(config.CertificateThumbprint))
             return (false, $"Thiếu {missing} KIZ. Hãy chọn chứng thư số CryptoPro có private key.", available);
 
-        Db.UpsertZnakPipeline(storeId, sku, gtin, "BUYING", "", $"Tự động mua {missing} KIZ");
+        var persisted = Db.ZnakPipelines(storeId)
+            .FirstOrDefault(x => x.Sku.Equals(sku, StringComparison.OrdinalIgnoreCase)
+                              && x.Gtin.Equals(gtin, StringComparison.OrdinalIgnoreCase));
+        if (persisted is not null &&
+            (persisted.Stage == "BUYING" || persisted.Stage == "CREATE_AMBIGUOUS") &&
+            string.IsNullOrWhiteSpace(persisted.ExternalOrderId))
+        {
+            return (false,
+                "Yêu cầu mua KIZ trước có kết quả không chắc chắn. Ứng dụng chặn tự động mua lại để tránh trừ tiền hai lần. Hãy đối soát SUZ trước.",
+                available);
+        }
+
         try
         {
             var token = await GetSuzTokenAsync(config, ct);
-            var orderId = await CreateSuzOrderAsync(config, token, gtin, missing, ct);
-            Db.UpsertZnakPipeline(storeId, sku, gtin, "POLLING", orderId, "Đang chờ SUZ cấp mã");
+            var orderId = persisted is not null && persisted.Stage == "POLLING" &&
+                          !string.IsNullOrWhiteSpace(persisted.ExternalOrderId)
+                ? persisted.ExternalOrderId
+                : "";
+
+            if (string.IsNullOrWhiteSpace(orderId))
+            {
+                Db.UpsertZnakPipeline(storeId, sku, gtin, "BUYING", "", $"Tự động mua {missing} KIZ");
+                try
+                {
+                    orderId = await CreateSuzOrderAsync(config, token, gtin, missing, ct);
+                }
+                catch (Exception ex) when (
+                    ex is HttpRequestException ||
+                    ex is TaskCanceledException ||
+                    ex is TimeoutException ||
+                    ex.Message.Contains("HTTP 5", StringComparison.OrdinalIgnoreCase))
+                {
+                    Db.UpsertZnakPipeline(storeId, sku, gtin, "CREATE_AMBIGUOUS", "", ex.Message);
+                    Db.Audit("Znack", "Mua KIZ chưa xác định", $"{gtin}:{ex.Message}");
+                    return (false,
+                        "Kết quả tạo order SUZ chưa xác định do lỗi mạng/server. Ứng dụng không tự tạo lại để tránh mua trùng. Hãy đối soát SUZ.",
+                        available);
+                }
+                Db.UpsertZnakPipeline(storeId, sku, gtin, "POLLING", orderId, "Đang chờ SUZ cấp mã");
+            }
 
             var ready = await WaitSuzCodesReadyAsync(config, token, orderId, ct);
             if (!ready.Ok)
