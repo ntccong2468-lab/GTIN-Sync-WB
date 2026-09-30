@@ -283,32 +283,7 @@ public sealed class AppServices
                 return db.AuditRows(100).Any(x => x.Module == "SelfTest" && x.Detail == marker);
             });
 
-            Check("09. Xóa cửa hàng và dữ liệu sản phẩm/FBS liên quan", () =>
-            {
-                if (createdStore is null) return false;
-                var id = createdStore.Id;
-                db.DeleteStore(id);
-                createdStore = null;
-                return db.Stores().All(x => x.Id != id)
-                       && db.Products(id).Count == 0
-                       && db.Orders(id).Count == 0;
-            });
-
-            Check("10. Đọc kho chứng thư Windows không làm ứng dụng lỗi", () =>
-            {
-                _ = Certificates();
-                return true;
-            });
-
-            Check("11. Parser INN chứng thư nhận nhãn Nga/OID", () =>
-            {
-                return ExtractInn("CN=Тест, ИНН ФЛ=123456789012")
-                       == "123456789012"
-                       && ExtractInn("CN=Test, OID.1.2.643.3.131.1.1=7701234567")
-                       == "7701234567";
-            });
-
-            Check("12. Sync run/state được lưu và đọc lại", () =>
+            Check("09. Sync run/state được lưu và đọc lại", () =>
             {
                 if (createdStore is null) return false;
                 var run = db.StartSyncRun(createdStore.Id, "selftest");
@@ -319,7 +294,7 @@ public sealed class AppServices
                 return state.Cursor == "cursor-1" && latest is not null && latest.Success && latest.WrittenCount == 2;
             });
 
-            Check("13. FBO cache và Znack pipeline tồn tại qua vòng đọc", () =>
+            Check("10. FBO cache và Znack pipeline tồn tại qua vòng đọc", () =>
             {
                 if (createdStore is null) return false;
                 db.ReplaceFboSupplies(createdStore.Id, Marketplace.Wildberries, new[]
@@ -329,6 +304,34 @@ public sealed class AppServices
                 db.UpsertZnakPipeline(createdStore.Id, "SKU-SELFTEST", "46012345678902", "QUEUED", "", "selftest");
                 return db.FboSupplies(createdStore.Id).Any(x => x.OrderId == "PRE-1")
                        && db.ZnakPipelines(createdStore.Id).Any(x => x.Sku == "SKU-SELFTEST" && x.Stage == "QUEUED");
+            });
+
+            Check("11. Đọc kho chứng thư Windows không làm ứng dụng lỗi", () =>
+            {
+                _ = Certificates();
+                return true;
+            });
+
+            Check("12. Parser INN chứng thư nhận nhãn Nga/OID", () =>
+            {
+                return ExtractInn("CN=Тест, ИНН ФЛ=123456789012")
+                       == "123456789012"
+                       && ExtractInn("CN=Test, OID.1.2.643.3.131.1.1=7701234567")
+                       == "7701234567";
+            });
+
+            Check("13. Xóa cửa hàng và toàn bộ dữ liệu liên quan", () =>
+            {
+                if (createdStore is null) return false;
+                var id = createdStore.Id;
+                db.DeleteStore(id);
+                createdStore = null;
+                return db.Stores().All(x => x.Id != id)
+                       && db.Products(id).Count == 0
+                       && db.Orders(id).Count == 0
+                       && db.FboSupplies(id).Count == 0
+                       && db.ZnakPipelines(id).Count == 0
+                       && db.SyncRuns(id, 10).Count == 0;
             });
         }
         finally
