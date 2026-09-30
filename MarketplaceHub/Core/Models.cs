@@ -24,6 +24,9 @@ public sealed record ZnakConfig(
     string CertificateThumbprint,
     string CertificateSubject,
     string AutoSignMode,
-    bool Enabled);
+    bool Enabled,
+    string OmsId,
+    string OmsConnection,
+    bool AutoCirculation);
 
 public sealed record AuditRow(DateTimeOffset At, string Module, string Action, string Detail);
