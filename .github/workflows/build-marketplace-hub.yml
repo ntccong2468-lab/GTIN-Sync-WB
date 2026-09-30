@@ -90,7 +90,7 @@ jobs:
           path: MarketplaceHub/dist/MarketplaceHub-Setup-0.7.1-win-x64.exe
           if-no-files-found: error
       - name: Commit verified installer
-        if: github.ref == 'refs/heads/marketplace-hub-v2'
+        if: github.ref == 'refs/heads/marketplace-hub-v2' || github.ref == 'refs/heads/fix/dashboard-fbs-stability'
         shell: powershell
         run: |
           git config user.name "github-actions[bot]"
@@ -99,7 +99,7 @@ jobs:
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
             git commit -m "Add verified Marketplace Hub 0.7.1 installer"
-            git fetch origin marketplace-hub-v2
-            git rebase origin/marketplace-hub-v2
-            git push origin HEAD:marketplace-hub-v2
+            git fetch origin $env:GITHUB_REF_NAME
+            git rebase "origin/$env:GITHUB_REF_NAME"
+            git push origin "HEAD:$env:GITHUB_REF_NAME"
           }

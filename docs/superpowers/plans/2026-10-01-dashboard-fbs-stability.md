@@ -35,12 +35,12 @@ Files: MarketplaceHub/UI/MainForm.cs; tests/MarketplaceHub.UI/*; .github/workflo
 - [x] Run Windows baseline: 1/6 UI cases passed; five failures reproduced.
 - [x] Dispose controls, preserve row identity, limit decoding and thumbnail/cache memory, commit checkbox edits and wrap toolbar controls.
 - [x] Make report date filters update the chart; mark operational counts as current and stack finance at narrow widths.
-- [ ] Run Windows UI suite, inspect the generated screenshots, and complete a final independent code review.
+- [x] 11/11 Windows UI/encoding regressions pass; final Report/FBS/Sync screenshots inspected; independent review findings addressed.
 
 ### Task 3: Deliver the verified Windows build
 Files: MarketplaceHub/MarketplaceHub.csproj; MarketplaceHub/installer/MarketplaceHub.iss; MarketplaceHub/README.md; .github/workflows/build-marketplace-hub.yml.
 - [x] Require both suites before packaging 0.7.1.
-- [ ] Build and test installed EXE on a Windows runner.
+- [x] Windows release run 36791393116 passed: 12/12 API, 11/11 UI, 14/14 self-test, published and installed GUI startup, silent installation.
 - [ ] Deliver the installer and GitHub review link; state unverified live seller API / physical printer boundaries accurately.
 
 
@@ -50,4 +50,4 @@ Independent reviewer: `release_review` at commit 18cd5fa. Findings fixed: stale 
 
 Additional baseline failures reproduced on Windows: manual order sync bypassed the full-sync store gate; plain DataMatrix lacked GS1 FNC1. All partial/full sync entrypoints now share one gate. Printed KIZ encoding uses the legacy ZXing encoder with exactly one leading ASCII GS/FNC1. Local decode reproduced a CompactEncoding corruption of an internal GS after a C40 run; the legacy path passes both raw/scanner-prefixed payload checks.
 
-Final Windows run and screenshot verification are pending before delivery. Live seller credentials and physical printers are outside the fixture/CI environment. Ozon/Yandex settlement adapters remain explicitly unsupported; no estimated totals are substituted.
+Final Windows run 36791393116 passed on 40948b6. Screenshot verification complete. Installer retention/delivery is being completed; subsequent workflow-only packaging has identical application code. Live seller credentials and physical printers are outside the fixture/CI environment. Ozon/Yandex settlement adapters remain explicitly unsupported; no estimated totals are substituted.
