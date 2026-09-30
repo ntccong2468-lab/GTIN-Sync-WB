@@ -69,8 +69,9 @@ public sealed class MainForm : Form
 
         var menu = new FlowLayoutPanel
         {
-            Left = 13, Top = 225, Width = 244, Height = 465,
-            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = C.Side
+            Left = 13, Top = 225, Width = 244, Height = 410,
+            FlowDirection = FlowDirection.TopDown, WrapContents = false, AutoScroll = true, BackColor = C.Side,
+            Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left
         };
         p.Controls.Add(menu);
 
@@ -102,6 +103,7 @@ public sealed class MainForm : Form
         p.Resize += (_, _) =>
         {
             printHistory.Top = Math.Max(650, p.ClientSize.Height - 230);
+            menu.Height = Math.Max(230, printHistory.Top - menu.Top - 12);
             settings.Top = p.ClientSize.Height - 100;
             statusLabel.Top = p.ClientSize.Height - 32;
         };
