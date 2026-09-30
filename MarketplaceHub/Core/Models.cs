@@ -29,4 +29,12 @@ public sealed record ZnakConfig(
     string OmsConnection,
     bool AutoCirculation);
 
+public sealed record CertificateInfo(
+    string Subject,
+    string Thumbprint,
+    DateTime NotAfter,
+    bool HasPrivateKey,
+    string OwnerName,
+    string Inn);
+
 public sealed record AuditRow(DateTimeOffset At, string Module, string Action, string Detail);
