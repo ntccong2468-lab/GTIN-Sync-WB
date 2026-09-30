@@ -41,7 +41,7 @@ Files: MarketplaceHub/UI/MainForm.cs; tests/MarketplaceHub.UI/*; .github/workflo
 Files: MarketplaceHub/MarketplaceHub.csproj; MarketplaceHub/installer/MarketplaceHub.iss; MarketplaceHub/README.md; .github/workflows/build-marketplace-hub.yml.
 - [x] Require both suites before packaging 0.7.1.
 - [x] Windows release run 36791393116 passed: 12/12 API, 11/11 UI, 14/14 self-test, published and installed GUI startup, silent installation.
-- [ ] Deliver the installer and GitHub review link; state unverified live seller API / physical printer boundaries accurately.
+- [x] Deliver the retained 0.7.1 installer and PR #2. SHA256 f01733fd7efa43fdd92f282f1f706373277023018da25c2ac1f6689897e60670 matches Windows release output. Live seller API / physical printer boundaries documented.
 
 
 ## Final review and additional reproductions
@@ -50,4 +50,4 @@ Independent reviewer: `release_review` at commit 18cd5fa. Findings fixed: stale 
 
 Additional baseline failures reproduced on Windows: manual order sync bypassed the full-sync store gate; plain DataMatrix lacked GS1 FNC1. All partial/full sync entrypoints now share one gate. Printed KIZ encoding uses the legacy ZXing encoder with exactly one leading ASCII GS/FNC1. Local decode reproduced a CompactEncoding corruption of an internal GS after a C40 run; the legacy path passes both raw/scanner-prefixed payload checks.
 
-Final Windows run 36791393116 passed on 40948b6. Screenshot verification complete. Installer retention/delivery is being completed; subsequent workflow-only packaging has identical application code. Live seller credentials and physical printers are outside the fixture/CI environment. Ozon/Yandex settlement adapters remain explicitly unsupported; no estimated totals are substituted.
+Final Windows run 36791393116 passed on 40948b6. Screenshot verification complete. Retention run 36792007564 also passed every check and committed the verified installer at e20316a. Subsequent workflow-only packaging has identical application code. Live seller credentials and physical printers are outside the fixture/CI environment. Ozon/Yandex settlement adapters remain explicitly unsupported; no estimated totals are substituted.
