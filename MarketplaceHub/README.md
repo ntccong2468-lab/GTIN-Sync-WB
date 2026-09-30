@@ -1,66 +1,47 @@
-# Marketplace Hub 0.4.1
+# Marketplace Hub 0.5.0
 
-Bản Windows desktop thiết kế theo workflow WCode, toàn bộ giao diện và nhãn chức năng sử dụng tiếng Việt.
+Ứng dụng Windows desktop cho quy trình seller, giao diện tiếng Việt theo phong cách WCode: nền navy tối, điểm nhấn tím, bảng dữ liệu lớn và luồng thao tác tập trung.
 
-## Giao diện
+## Giao diện 0.5.0
 
-- Sidebar tối dạng công cụ kho.
-- Khu vực làm việc sáng, bảng dữ liệu lớn.
-- Thanh chọn cửa hàng + kiểm tra API cố định phía trên.
-- Nhật ký hoạt động ở cạnh dưới.
-- Toàn bộ nút/menu/hướng dẫn bằng tiếng Việt.
-- Các trạng thái thô do marketplace trả về vẫn được giữ trong dữ liệu kỹ thuật để đối chiếu lỗi.
+- Sidebar tối, menu tím và thanh cửa hàng cố định phía trên.
+- Dashboard, FBS, Đăng ký Znack và Cấu hình Znack đã được tinh chỉnh theo bố cục WCode.
+- Toàn bộ nhãn điều khiển do ứng dụng quản lý sử dụng tiếng Việt; dữ liệu sản phẩm gốc từ marketplace vẫn được giữ nguyên.
+- Bảng FBS có ảnh sản phẩm, Order ID, sản phẩm, giá và bộ lọc trạng thái.
+- Đăng ký Znack có ảnh, thuộc tính, barcode/GTIN, trạng thái và thao tác.
+- Hỗ trợ hiển thị tốt hơn ở DPI 100%/125%.
 
-## Mục chính
+## Chức năng chính
 
-- Tổng quan.
-- Đóng hàng FBS:
-  - Đơn chờ đóng.
-  - Quét & đóng hàng.
-  - Nhãn & in.
-  - Lô giao hàng.
-- Mã KIZ.
-- Sản phẩm.
-- Giá sản phẩm.
-- Sao chép bài đăng.
-- Đăng ký Честный ЗНАК.
-- Cấu hình Честный ЗНАК.
-- Cửa hàng / API.
-- Lịch sử.
-- Cài đặt.
+- Tổng quan/Dashboard.
+- Đóng hàng FBS: đồng bộ đơn, lọc Đơn mới / Đang đóng gói / Đang giao, đóng hàng và tải nhãn.
+- Đóng hàng FBO và Đơn hàng FBO.
+- KIZ Mapping / DataMatrix.
+- Sản phẩm, giá và sao chép bài đăng.
+- Đăng ký Znack (Честный ЗНАК).
+- Cấu hình Znack và chứng thư số.
+- Cửa hàng / API, lịch sử in, nhật ký thao tác và cài đặt.
 
-## Chức năng hoạt động
+## Đồng bộ và dữ liệu
 
 - SQLite local database.
 - Mã hóa token/API key bằng Windows DPAPI.
-- Kết nối nhiều cửa hàng WB/Ozon/Yandex.
-- Kiểm tra API.
-- Đồng bộ sản phẩm.
-- Đồng bộ đơn FBS.
-- Thay giá có xác nhận và tính nhanh theo %.
-- Sao chép listing cùng marketplace.
-- Quét DataMatrix/KIZ và lưu kho KIZ.
-- Đóng hàng FBS theo adapter từng sàn.
-- Tải nhãn WB/Ozon/Yandex.
-- Đăng ký Честный ЗНАК: kiểm tra chứng thư và mở cổng đăng ký chính thức.
-- Cấu hình Честный ЗНАК:
-  - INN doanh nghiệp.
-  - Production/Test.
-  - Chọn chứng thư có private key.
-  - Chế độ ký thủ công/bán tự động/tự động theo danh sách cho phép.
-  - Lưu cấu hình vào SQLite.
-  - Kiểm tra hiệu lực chứng thư.
-- Lịch sử thao tác.
+- Kết nối nhiều cửa hàng Wildberries, Ozon và Yandex.
+- Kiểm tra API, đồng bộ sản phẩm và đơn FBS.
+- Thay giá có xác nhận.
+- Sao chép listing cùng marketplace và chuyển ảnh nguồn khi API đích hỗ trợ.
+- Quét/lưu KIZ, kiểm tra KIZ sẵn sàng trước thao tác FBS cần mã.
+- Tải nhãn theo adapter marketplace.
+- Cấu hình Znack lưu cục bộ; không lưu private key hoặc PIN chứng thư.
 
-## Giới hạn kiểm thử
+## Kiểm thử và bộ cài
 
-GitHub Actions không có token seller thật, CryptoPro/Rutoken hoặc УКЭП của seller. Vì vậy CI xác minh được build/cài/chạy và các chức năng cục bộ, nhưng không thể acceptance-test tài khoản marketplace hoặc chữ ký thật của người dùng.
+GitHub Actions thực hiện:
 
-Tích hợp True API ký challenge tự động chỉ nên bật sau khi kiểm thử trực tiếp trên máy Windows có CryptoPro/Rutoken/УКЭП thật.
+`restore → build Release → publish self-contained win-x64 → self-test → GUI smoke test → Inno Setup → silent install → self-test sau cài → GUI smoke sau cài → upload artifact → commit installer đã xác minh`.
 
-## Bộ cài
+Bộ cài đầu ra:
 
-`MarketplaceHub-Setup-0.4.1-win-x64.exe`
+`MarketplaceHub/dist/MarketplaceHub-Setup-0.5.0-win-x64.exe`
 
-Pipeline:
-restore → build → publish → tự kiểm tra local → mở GUI → Inno Setup → cài im lặng → tự kiểm tra sau cài → mở app sau cài → upload/commit installer.
+CI không có token seller thật hoặc thiết bị CryptoPro/Rutoken/УКЭП của người dùng, vì vậy các bài kiểm thử live marketplace/chữ ký số vẫn cần chạy trên máy seller có thông tin xác thực thật.
