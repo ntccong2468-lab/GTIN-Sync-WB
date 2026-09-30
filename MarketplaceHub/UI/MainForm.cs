@@ -1,5 +1,6 @@
 using MarketplaceHub.Core;
 using MarketplaceHub.Services;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Drawing.Drawing2D;
 using System.Text.Json.Nodes;
@@ -14,6 +15,9 @@ public sealed class MainForm : Form
     private readonly Label statusLabel = new() { AutoSize = true, ForeColor = C.Green, Font = new Font("Segoe UI", 9, FontStyle.Bold) };
     private readonly RoundedButton syncButton = new() { Text = "↻  Đồng bộ", Width = 175, Height = 44 };
     private readonly HttpClient imageHttp = new() { Timeout = TimeSpan.FromSeconds(15) };
+    private readonly SemaphoreSlim znakWorkers = new(2, 2);
+    private readonly ConcurrentDictionary<string, string> znakQueueStatus = new(StringComparer.OrdinalIgnoreCase);
+    private volatile bool znakQueuePaused;
 
     public MainForm(AppServices services)
     {
@@ -106,6 +110,7 @@ public sealed class MainForm : Form
         storePicker.Left = 20; storePicker.Top = 8; storePicker.Height = 68;
         storePicker.BackColor = C.Card; storePicker.ForeColor = Color.White;
         storePicker.Font = new Font("Segoe UI", 11);
+        ConfigureDarkCombo(storePicker);
         storePicker.SelectedIndexChanged += (_, _) => UpdateSyncButton();
         p.Controls.Add(storePicker);
 
@@ -119,7 +124,9 @@ public sealed class MainForm : Form
 
         var help = NavButton("⌕  Hỗ trợ", C.Purple, 118);
         help.Anchor = AnchorStyles.Top | AnchorStyles.Right; help.Top = 20;
-        help.Click += (_, _) => Process.Start(new ProcessStartInfo("https://github.com/ntccong2468-lab/GTIN-Sync-WB") { UseShellExecute = true });
+        help.TextAlign = ContentAlignment.MiddleCenter;
+        help.Padding = Padding.Empty;
+        help.Click += (_, _) => ShowSupportDialog();
         p.Controls.Add(help);
 
         p.Resize += (_, _) =>
@@ -143,9 +150,10 @@ public sealed class MainForm : Form
     {
         return new RoundedButton
         {
-            Text = text, Width = width, Height = 45, Radius = 10,
+            Text = text, Width = width, Height = 45, Radius = 11,
             BackColor = bg, ForeColor = Color.White, BorderColor = bg,
-            Font = new Font("Segoe UI", 10, FontStyle.Bold), Cursor = Cursors.Hand
+            Font = new Font("Segoe UI", 10, FontStyle.Bold), Cursor = Cursors.Hand,
+            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 10, 0)
         };
     }
 
@@ -153,9 +161,10 @@ public sealed class MainForm : Form
     {
         return new RoundedButton
         {
-            Text = text, Width = width, Height = 42, Radius = 9,
+            Text = text, Width = width, Height = 42, Radius = 11,
             BackColor = C.Side, ForeColor = Color.White, BorderColor = C.Border,
-            Font = new Font("Segoe UI", 10, FontStyle.Bold), Cursor = Cursors.Hand
+            Font = new Font("Segoe UI", 10, FontStyle.Bold), Cursor = Cursors.Hand,
+            TextAlign = ContentAlignment.MiddleLeft, Padding = new Padding(16, 0, 10, 0)
         };
     }
 
@@ -173,7 +182,7 @@ public sealed class MainForm : Form
     {
         return new RoundedButton
         {
-            Text = text, Width = width, Height = 42, Radius = 9,
+            Text = text, Width = width, Height = 42, Radius = 11,
             BackColor = purple ? C.Purple : C.Card,
             ForeColor = Color.White,
             BorderColor = purple ? C.Purple : C.Border,
@@ -280,11 +289,33 @@ public sealed class MainForm : Form
 
     private ComboBox DarkCombo(int width)
     {
-        return new ComboBox
+        var combo = new ComboBox
         {
             Width = width, Height = 44, DropDownStyle = ComboBoxStyle.DropDownList,
             BackColor = C.Card, ForeColor = Color.White, FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 10)
+        };
+        ConfigureDarkCombo(combo);
+        return combo;
+    }
+
+    private void ConfigureDarkCombo(ComboBox combo)
+    {
+        combo.DrawMode = DrawMode.OwnerDrawFixed;
+        combo.ItemHeight = 30;
+        combo.IntegralHeight = false;
+        combo.DropDownHeight = 240;
+        combo.DrawItem += (_, e) =>
+        {
+            if (e.Index < 0) return;
+            var selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
+            using var bg = new SolidBrush(selected ? C.Purple : C.Card);
+            e.Graphics.FillRectangle(bg, e.Bounds);
+            var value = combo.GetItemText(combo.Items[e.Index]);
+            var rect = new Rectangle(e.Bounds.X + 9, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 18), e.Bounds.Height);
+            TextRenderer.DrawText(e.Graphics, value, combo.Font, rect, Color.White,
+                TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
+            e.DrawFocusRectangle();
         };
     }
 
@@ -524,44 +555,71 @@ public sealed class MainForm : Form
 
         var search = DarkText("Tìm tên, article, barcode hoặc nmID...", 380); search.Left = 4; search.Top = 66; work.Controls.Add(search);
         var category = DarkCombo(160); category.Left = 394; category.Top = 66; category.Items.AddRange(new object[] { "Danh mục", "Tất cả" }); category.SelectedIndex = 0; work.Controls.Add(category);
-        var status = DarkCombo(225); status.Left = 564; status.Top = 66; status.Items.AddRange(new object[] { "Tất cả trạng thái", "Chưa tạo", "Đã xếp hàng" }); status.SelectedIndex = 0; work.Controls.Add(status);
+        var status = DarkCombo(225); status.Left = 564; status.Top = 66; status.Items.AddRange(new object[] { "Tất cả trạng thái", "Chưa tạo", "Đã xếp hàng", "Sẵn sàng gửi", "Lỗi" }); status.SelectedIndex = 0; work.Controls.Add(status);
         var clear = ActionButton("Xóa bộ lọc", 125); clear.Left = 799; clear.Top = 66; clear.Click += (_, _) => { search.Clear(); status.SelectedIndex = 0; }; work.Controls.Add(clear);
 
         var card = CardPanel();
         card.Left = 4; card.Top = 138; card.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        card.Width = work.ClientSize.Width - 55; card.Height = work.ClientSize.Height - 210; work.Controls.Add(card);
+        card.Width = work.ClientSize.Width - 55; card.Height = work.ClientSize.Height - 230; work.Controls.Add(card);
 
         var grid = ZnakGrid(); grid.Dock = DockStyle.Fill; card.Controls.Add(grid);
-        var footer = new Label { Text = "", AutoSize = true, Left = 4, Top = work.ClientSize.Height - 55, ForeColor = C.Muted, Anchor = AnchorStyles.Left | AnchorStyles.Bottom };
+        var footer = new Label { Text = "", AutoSize = true, Left = 4, Top = work.ClientSize.Height - 60, ForeColor = C.Muted, Anchor = AnchorStyles.Left | AnchorStyles.Bottom };
         work.Controls.Add(footer);
 
-        async void LoadRows()
+        var registerSelected = ActionButton("Đăng ký đã chọn", 175, true);
+        registerSelected.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+        work.Controls.Add(registerSelected);
+
+        var continueQueue = ActionButton("Tiếp tục hàng đợi", 175);
+        continueQueue.Anchor = AnchorStyles.Right | AnchorStyles.Bottom;
+        continueQueue.Visible = znakQueuePaused;
+        continueQueue.Click += (_, _) => { znakQueuePaused = false; continueQueue.Visible = false; };
+        work.Controls.Add(continueQueue);
+
+        void LoadRows()
         {
             grid.Rows.Clear();
             var s = CurrentStore(); if (s is null) return;
             var products = app.Db.Products(s.Id);
             var q = search.Text.Trim();
+            var filter = status.SelectedItem?.ToString() ?? "Tất cả trạng thái";
             foreach (var p in products)
             {
                 if (!string.IsNullOrWhiteSpace(q) && !p.Sku.Contains(q, StringComparison.OrdinalIgnoreCase) && !p.Name.Contains(q, StringComparison.OrdinalIgnoreCase) && !p.ExternalId.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
+                var current = znakQueueStatus.TryGetValue(p.Sku, out var state) ? state : "Chưa tạo";
+                if (filter != "Tất cả trạng thái" && !current.Equals(filter, StringComparison.OrdinalIgnoreCase)) continue;
                 var meta = ProductMeta(p);
-                var row = grid.Rows.Add(false, null, p.Name, meta.Gender, meta.Color, meta.Size, meta.Barcode, "Chưa tạo", "Tạo...");
+                var row = grid.Rows.Add(false, null, p.Name, meta.Gender, meta.Color, meta.Size, meta.Barcode, current, "Đăng ký");
                 grid.Rows[row].Tag = p;
                 grid.Rows[row].Height = 104;
                 if (!string.IsNullOrWhiteSpace(p.ImageUrl)) _ = LoadImageAsync(grid, row, 1, p.ImageUrl);
             }
-            footer.Text = $"Sản phẩm: {grid.Rows.Count}  •  Chưa tạo: {grid.Rows.Count}";
+            footer.Text = $"Sản phẩm: {grid.Rows.Count}  •  Hàng đợi sử dụng tối đa 2 worker";
         }
 
-        grid.CellContentClick += (_, e) =>
+        grid.CellContentClick += async (_, e) =>
         {
             if (e.RowIndex < 0 || e.ColumnIndex != 8) return;
             if (grid.Rows[e.RowIndex].Tag is not ProductRow p) return;
-            var z = app.Db.GetZnakConfig();
-            if (!z.Enabled) { ShowInfo("Hãy bật và lưu Cấu hình Znack trước."); return; }
-            app.Db.Audit("Đăng ký Znack", "Đã xếp hàng", $"{p.Sku}:{ProductMeta(p).Barcode}");
-            grid.Rows[e.RowIndex].Cells[7].Value = "Đã xếp hàng";
-            ShowInfo($"Đã xếp hàng đăng ký cho SKU {p.Sku}. Việc gửi thật cần True API/CryptoPro trên máy seller.");
+            await QueueZnakRegistrationAsync(new[] { p });
+            continueQueue.Visible = znakQueuePaused;
+            LoadRows();
+        };
+
+        registerSelected.Click += async (_, _) =>
+        {
+            var selected = grid.Rows.Cast<DataGridViewRow>()
+                .Where(r => r.Cells[0].Value is bool b && b)
+                .Select(r => r.Tag as ProductRow)
+                .Where(p => p is not null)
+                .Cast<ProductRow>()
+                .ToList();
+            if (selected.Count == 0) { ShowInfo("Hãy chọn ít nhất một sản phẩm."); return; }
+            registerSelected.Enabled = false;
+            await QueueZnakRegistrationAsync(selected);
+            registerSelected.Enabled = true;
+            continueQueue.Visible = znakQueuePaused;
+            LoadRows();
         };
 
         search.TextChanged += (_, _) => LoadRows();
@@ -572,11 +630,69 @@ public sealed class MainForm : Form
             sync.Left = work.ClientSize.Width - sync.Width - 30;
             docs.Left = sync.Left - docs.Width - 12;
             card.Width = work.ClientSize.Width - 55;
-            card.Height = Math.Max(300, work.ClientSize.Height - 210);
-            footer.Top = work.ClientSize.Height - 55;
+            card.Height = Math.Max(300, work.ClientSize.Height - 230);
+            footer.Top = work.ClientSize.Height - 60;
+            registerSelected.Left = work.ClientSize.Width - registerSelected.Width - 30;
+            registerSelected.Top = work.ClientSize.Height - registerSelected.Height - 16;
+            continueQueue.Left = registerSelected.Left - continueQueue.Width - 12;
+            continueQueue.Top = registerSelected.Top;
         };
 
         LoadRows();
+    }
+
+    private async Task QueueZnakRegistrationAsync(IReadOnlyList<ProductRow> products)
+    {
+        var z = app.Db.GetZnakConfig();
+        if (!z.Enabled || string.IsNullOrWhiteSpace(z.OmsId) || string.IsNullOrWhiteSpace(z.OmsConnection))
+        {
+            ShowInfo("Hãy hoàn tất omsId, omsConnection và lưu Cấu hình Znack trước.");
+            return;
+        }
+        if (string.IsNullOrWhiteSpace(z.CertificateThumbprint))
+        {
+            ShowInfo("Hãy chọn chứng thư số có private key trước khi đăng ký.");
+            return;
+        }
+
+        znakQueuePaused = false;
+        foreach (var p in products)
+        {
+            znakQueueStatus[p.Sku] = "Đã xếp hàng";
+            app.Db.Audit("Đăng ký Znack", "Đã xếp hàng", $"{p.Sku}:{ProductMeta(p).Barcode}");
+        }
+
+        var tasks = products.Select(async p =>
+        {
+            await znakWorkers.WaitAsync();
+            try
+            {
+                var meta = ProductMeta(p);
+                if (string.IsNullOrWhiteSpace(meta.Barcode))
+                    throw new InvalidOperationException("Sản phẩm chưa có Barcode WB / GTIN.");
+
+                // Hàng đợi 2 worker được chuẩn bị theo hành vi WCode 1.1.57.
+                // Gửi thật sang True API cần endpoint/tài khoản OMS hợp lệ trên máy seller.
+                znakQueueStatus[p.Sku] = "Sẵn sàng gửi";
+                app.Db.Audit("Đăng ký Znack", "Sẵn sàng gửi", $"{p.Sku}:{meta.Barcode}");
+                await Task.Yield();
+            }
+            catch (Exception ex)
+            {
+                znakQueueStatus[p.Sku] = "Lỗi";
+                znakQueuePaused = true;
+                app.Db.Audit("Đăng ký Znack", "Lỗi", $"{p.Sku}:{ex.Message}");
+            }
+            finally
+            {
+                znakWorkers.Release();
+            }
+        }).ToArray();
+
+        await Task.WhenAll(tasks);
+        ShowInfo(znakQueuePaused
+            ? "Hàng đợi đã tạm dừng vì có lỗi. Nút Tiếp tục hàng đợi sẽ xuất hiện."
+            : $"Đã chuẩn bị {products.Count} sản phẩm bằng hàng đợi tối đa 2 worker. Gửi thật cần True API/CryptoPro hợp lệ.");
     }
 
     private DataGridView ZnakGrid()
@@ -645,31 +761,37 @@ public sealed class MainForm : Form
         var z = app.Db.GetZnakConfig();
         host.Controls.Add(new Label { Text = "Cài đặt cơ bản", AutoSize = true, Left = 18, Top = 20, ForeColor = Color.White, Font = new Font("Segoe UI", 11, FontStyle.Bold) });
 
-        var omsId = LabeledDark(host, "omsId", z.OmsId, 18, 64, 960);
-        var omsConnection = LabeledDark(host, "omsConnection", z.OmsConnection, 18, 124, 960);
+        var omsId = LabeledDark(host, "omsId", z.OmsId, 18, 64, 900);
+        var omsConnection = LabeledDark(host, "omsConnection", z.OmsConnection, 18, 124, 900);
 
-        var sig = CardPanel(); sig.Left = 18; sig.Top = 200; sig.Width = host.Width - 45; sig.Height = 235; sig.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right; host.Controls.Add(sig);
-        sig.Controls.Add(new Label { Text = "Chữ ký số", AutoSize = true, Left = 16, Top = 16, ForeColor = Color.White, Font = new Font("Segoe UI", 11, FontStyle.Bold) });
+        host.Controls.Add(new Label { Text = "Chữ ký số", AutoSize = true, Left = 18, Top = 205, ForeColor = Color.White, Font = new Font("Segoe UI", 11, FontStyle.Bold) });
 
         var certs = AppServices.Certificates().Where(x => x.HasPrivateKey).ToList();
-        var certBox = DarkCombo(Math.Max(500, sig.Width - 45)); certBox.Left = 16; certBox.Top = 58; certBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
-        foreach (var c in certs) certBox.Items.Add(new CertificateItem(c.Subject, c.Thumbprint, c.NotAfter, c.HasPrivateKey));
+        var certBox = DarkCombo(Math.Max(500, host.Width - 65));
+        certBox.Left = 18; certBox.Top = 238; certBox.Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right;
+        foreach (var c in certs) certBox.Items.Add(new CertificateItem(c.Subject, c.Thumbprint, c.NotAfter, c.HasPrivateKey, c.OwnerName, c.Inn));
         certBox.DisplayMember = nameof(CertificateItem.Display);
         var selected = certBox.Items.Cast<CertificateItem>().ToList().FindIndex(x => x.Thumbprint.Equals(z.CertificateThumbprint, StringComparison.OrdinalIgnoreCase));
         if (selected >= 0) certBox.SelectedIndex = selected; else if (certBox.Items.Count > 0) certBox.SelectedIndex = 0;
-        sig.Controls.Add(certBox);
+        host.Controls.Add(certBox);
 
-        var check = ActionButton("Kiểm tra chữ ký", 168, true); check.Left = 16; check.Top = 126; sig.Controls.Add(check);
-        var verified = new Label { Text = "", AutoSize = true, Left = 16, Top = 184, ForeColor = C.Muted }; sig.Controls.Add(verified);
+        var check = ActionButton("Kiểm tra chữ ký", 168, true); check.Left = 18; check.Top = 300; host.Controls.Add(check);
+        var verified = new Label { Text = "", AutoSize = true, Left = 205, Top = 311, ForeColor = C.Muted }; host.Controls.Add(verified);
         check.Click += (_, _) =>
         {
             if (certBox.SelectedItem is not CertificateItem c) { verified.Text = "CHƯA CÓ CHỨNG THƯ"; verified.ForeColor = Color.OrangeRed; return; }
-            verified.Text = c.NotAfter > DateTime.Now ? "ĐÃ XÁC MINH" : "CHỨNG THƯ HẾT HẠN";
+            verified.Text = c.NotAfter > DateTime.Now
+                ? $"ĐÃ XÁC MINH · {c.OwnerName}{(string.IsNullOrWhiteSpace(c.Inn) ? "" : $" · INN {c.Inn}")}"
+                : "CHỨNG THƯ HẾT HẠN";
             verified.ForeColor = c.NotAfter > DateTime.Now ? C.Green : Color.OrangeRed;
         };
 
-        var auto = new CheckBox { Text = "Tự động đưa vào lưu thông sau khi tải mã", Left = 18, Top = 465, Width = 390, ForeColor = Color.White, BackColor = C.Card, Checked = z.AutoCirculation, Font = new Font("Segoe UI", 10) };
-        host.Controls.Add(auto);
+        host.Controls.Add(new Label
+        {
+            Text = "Tự động đưa mã vào lưu thông sau khi tải mã: BẮT BUỘC",
+            AutoSize = true, Left = 18, Top = 370, ForeColor = C.Green,
+            Font = new Font("Segoe UI", 10, FontStyle.Bold)
+        });
 
         var save = ActionButton("Lưu cài đặt", 130, true); save.Anchor = AnchorStyles.Bottom | AnchorStyles.Right; host.Controls.Add(save);
         host.Resize += (_, _) => save.Location = new Point(host.ClientSize.Width - save.Width - 20, host.ClientSize.Height - save.Height - 18);
@@ -679,8 +801,8 @@ public sealed class MainForm : Form
             var c = certBox.SelectedItem as CertificateItem;
             app.Db.SaveZnakConfig(new ZnakConfig(
                 z.Inn, z.Environment, c?.Thumbprint ?? "", c?.Subject ?? "",
-                z.AutoSignMode, true, omsId.Text.Trim(), omsConnection.Text.Trim(), auto.Checked));
-            ShowInfo("Đã lưu cấu hình Znack.");
+                z.AutoSignMode, true, omsId.Text.Trim(), omsConnection.Text.Trim(), true));
+            ShowInfo("Đã lưu cấu hình Znack. Tự động đưa mã vào lưu thông luôn được bật.");
         };
     }
 
@@ -947,6 +1069,71 @@ public sealed class MainForm : Form
         catch { return new ProductMetaValue("", "", "", ""); }
     }
 
+    private void ShowSupportDialog()
+    {
+        using var dialog = new Form
+        {
+            Text = "Hỗ trợ Marketplace Hub",
+            Width = 620,
+            Height = 420,
+            StartPosition = FormStartPosition.CenterParent,
+            BackColor = C.Main,
+            ForeColor = Color.White,
+            KeyPreview = true,
+            FormBorderStyle = FormBorderStyle.FixedDialog,
+            MaximizeBox = false,
+            MinimizeBox = false
+        };
+
+        var info = new Label
+        {
+            Text = "Mô tả vấn đề. Enter để gửi, Shift+Enter để xuống dòng.",
+            Left = 18, Top = 18, Width = 560, ForeColor = C.Muted
+        };
+        dialog.Controls.Add(info);
+
+        var editor = new TextBox
+        {
+            Left = 18, Top = 52, Width = 568, Height = 255,
+            Multiline = true, ScrollBars = ScrollBars.Vertical,
+            BackColor = C.Card, ForeColor = Color.White,
+            BorderStyle = BorderStyle.FixedSingle
+        };
+        dialog.Controls.Add(editor);
+
+        var send = ActionButton("➤  Gửi", 110, true);
+        send.Left = 476; send.Top = 320;
+        dialog.Controls.Add(send);
+
+        void Submit()
+        {
+            var body = editor.Text.Trim();
+            if (string.IsNullOrWhiteSpace(body)) return;
+            app.Db.Audit("Hỗ trợ", "Yêu cầu", body.Length > 500 ? body[..500] : body);
+            var url = "https://github.com/ntccong2468-lab/GTIN-Sync-WB/issues/new?title="
+                      + Uri.EscapeDataString("Hỗ trợ Marketplace Hub")
+                      + "&body=" + Uri.EscapeDataString(body);
+            Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
+            dialog.Close();
+        }
+
+        send.Click += (_, _) => Submit();
+        editor.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter && !e.Shift)
+            {
+                e.SuppressKeyPress = true;
+                Submit();
+            }
+        };
+        dialog.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Escape) dialog.Close();
+        };
+
+        dialog.ShowDialog(this);
+    }
+
     private void ShowInfo(string message) => MessageBox.Show(message, "Marketplace Hub", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
     private static bool IsNew(string status) =>
@@ -983,9 +1170,16 @@ public sealed class MainForm : Form
         "Failed" => "Lỗi", "Upsert" => "Cập nhật", "Database" => "Cơ sở dữ liệu", _ => s
     };
 
-    private sealed record CertificateItem(string Subject, string Thumbprint, DateTime NotAfter, bool HasPrivateKey)
+    private sealed record CertificateItem(
+        string Subject,
+        string Thumbprint,
+        DateTime NotAfter,
+        bool HasPrivateKey,
+        string OwnerName,
+        string Inn)
     {
-        public string Display => $"{Thumbprint} / Hết hạn: {NotAfter:dd.MM.yyyy}";
+        public string Display =>
+            $"{OwnerName}{(string.IsNullOrWhiteSpace(Inn) ? "" : $" · INN {Inn}")} · Hết hạn {NotAfter:dd.MM.yyyy}";
     }
 
     private sealed record ProductMetaValue(string Gender, string Color, string Size, string Barcode);
@@ -1048,8 +1242,10 @@ internal sealed class RoundedPanel : Panel
 
 internal sealed class RoundedButton : Button
 {
-    public int Radius { get; set; } = 9;
+    public int Radius { get; set; } = 11;
     public Color BorderColor { get; set; } = Color.Transparent;
+    private bool hovered;
+    private bool pressed;
 
     public RoundedButton()
     {
@@ -1057,6 +1253,10 @@ internal sealed class RoundedButton : Button
         FlatAppearance.BorderSize = 0;
         UseVisualStyleBackColor = false;
         Resize += (_, _) => UpdateShape();
+        MouseEnter += (_, _) => { hovered = true; Invalidate(); };
+        MouseLeave += (_, _) => { hovered = false; pressed = false; Invalidate(); };
+        MouseDown += (_, e) => { if (e.Button == MouseButtons.Left) { pressed = true; Invalidate(); } };
+        MouseUp += (_, _) => { pressed = false; Invalidate(); };
     }
 
     private void UpdateShape()
@@ -1070,13 +1270,32 @@ internal sealed class RoundedButton : Button
     {
         pevent.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         using var path = RoundedPanel.RoundRect(new Rectangle(0, 0, Width - 1, Height - 1), Radius);
-        using var brush = new SolidBrush(BackColor);
+        var fill = !Enabled ? ControlPaint.Dark(BackColor, 0.25f)
+                 : pressed ? ControlPaint.Dark(BackColor, 0.08f)
+                 : hovered ? ControlPaint.Light(BackColor, 0.08f)
+                 : BackColor;
+        using var brush = new SolidBrush(fill);
         pevent.Graphics.FillPath(brush, path);
         if (BorderColor != Color.Transparent)
         {
             using var pen = new Pen(BorderColor);
             pevent.Graphics.DrawPath(pen, path);
         }
-        TextRenderer.DrawText(pevent.Graphics, Text, Font, ClientRectangle, ForeColor, TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
+
+        var rect = new Rectangle(
+            ClientRectangle.X + Padding.Left,
+            ClientRectangle.Y + Padding.Top,
+            Math.Max(0, ClientRectangle.Width - Padding.Horizontal),
+            Math.Max(0, ClientRectangle.Height - Padding.Vertical));
+
+        var flags = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
+        if (TextAlign is ContentAlignment.MiddleLeft or ContentAlignment.TopLeft or ContentAlignment.BottomLeft)
+            flags |= TextFormatFlags.Left;
+        else if (TextAlign is ContentAlignment.MiddleRight or ContentAlignment.TopRight or ContentAlignment.BottomRight)
+            flags |= TextFormatFlags.Right;
+        else
+            flags |= TextFormatFlags.HorizontalCenter;
+
+        TextRenderer.DrawText(pevent.Graphics, Text, Font, rect, Enabled ? ForeColor : Color.FromArgb(150, ForeColor), flags);
     }
 }
