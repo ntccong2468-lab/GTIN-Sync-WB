@@ -2760,10 +2760,10 @@ public sealed class MainForm : Form
         new[] { "new", "awaiting_packaging", "PROCESSING/STARTED", "PROCESSING/CONFIRMED" }.Contains(status, StringComparer.OrdinalIgnoreCase);
 
     private static bool IsPacking(string status) =>
-        new[] { "confirm", "assembling", "PROCESSING/PACKING", "PROCESSING/READY_FOR_DELIVERY" }.Contains(status, StringComparer.OrdinalIgnoreCase);
+        new[] { "confirm", "assembling", "awaiting_deliver", "PROCESSING/PACKING", "PROCESSING/READY_FOR_DELIVERY", "PROCESSING/READY_TO_SHIP" }.Contains(status, StringComparer.OrdinalIgnoreCase);
 
     private static bool IsShipping(string status) =>
-        new[] { "complete", "awaiting_deliver", "delivering", "deliver", "PROCESSING/READY_TO_SHIP", "DELIVERY/", "PICKUP/" }.Contains(status, StringComparer.OrdinalIgnoreCase);
+        new[] { "complete", "delivering", "deliver", "DELIVERY/", "PICKUP/" }.Contains(status, StringComparer.OrdinalIgnoreCase);
 
     protected override void Dispose(bool disposing)
     {

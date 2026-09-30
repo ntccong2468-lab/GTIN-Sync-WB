@@ -39,6 +39,7 @@ Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh
 - Không ghi đơn WB thành “mới” khi API trạng thái lỗi; chỉ coi Ozon ship thành công sau khi đọc lại trạng thái.
 - KIZ Ozon phải được xác nhận cho từng product_id / exemplar_id đã gửi, đủ mọi đơn vị; trạng thái thiếu, chờ hay từ chối đều chặn đóng đơn.
 - Với đơn có nhiều dòng, chọn một dòng vẫn kiểm tra toàn bộ sản phẩm và số KIZ bắt buộc trước khi đóng posting.
+- Đơn Ozon `awaiting_deliver` và Yandex `PROCESSING/READY_TO_SHIP` ở nhóm Đang đóng gói, để chọn in nhãn ngay sau khi đóng đơn; đang vận chuyển mới ở nhóm Đang giao.
 - Nhãn tải về phải là PDF/PNG thật trước khi chuyển sang in.
 - Nhãn KIZ dùng GS1 DataMatrix với FNC1, giữ nguyên AI và ký tự GS; kiểm thử giải mã lại ảnh sinh ra trước khi in.
 

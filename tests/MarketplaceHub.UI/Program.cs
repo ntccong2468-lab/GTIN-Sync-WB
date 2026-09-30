@@ -45,8 +45,11 @@ internal static class Program
                 if (picker.Items[i] is StoreProfile s && s.Id == store.Id) picker.SelectedIndex = i;
             form.Show();
             Application.DoEvents();
-            Check("Yandex READY_TO_SHIP appears only in shipping tab", () =>
-                Expect(!State("IsNew", "PROCESSING/READY_TO_SHIP") && !State("IsPacking", "PROCESSING/READY_TO_SHIP") && State("IsShipping", "PROCESSING/READY_TO_SHIP"), "READY_TO_SHIP is shown in multiple tabs."));
+            Check("Packed Ozon and Yandex orders remain available for label printing", () =>
+            {
+                foreach (var state in new[] { "awaiting_deliver", "PROCESSING/READY_TO_SHIP" })
+                    Expect(!State("IsNew", state) && State("IsPacking", state) && !State("IsShipping", state), "Packed order is absent from packing or shown in multiple tabs.");
+            });
             Check("Delivered orders are absent from active shipping tab", () =>
                 Expect(!State("IsShipping", "delivered"), "Delivered order is still active."));
             Check("Old page controls are disposed on navigation", () =>
