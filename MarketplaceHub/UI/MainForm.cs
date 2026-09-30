@@ -255,7 +255,7 @@ public sealed class MainForm : Form
         g.ColumnHeadersDefaultCellStyle.ForeColor = Color.White;
         g.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
         g.DefaultCellStyle.BackColor = C.Card;
-        g.DefaultCellStyle.AlternatingBackColor = C.RowAlt;
+        g.AlternatingRowsDefaultCellStyle.BackColor = C.RowAlt;
         g.DefaultCellStyle.ForeColor = Color.White;
         g.DefaultCellStyle.SelectionBackColor = Color.FromArgb(40, 53, 73);
         g.DefaultCellStyle.SelectionForeColor = Color.White;
