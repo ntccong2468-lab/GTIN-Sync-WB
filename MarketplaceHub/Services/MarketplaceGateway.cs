@@ -283,51 +283,146 @@ public sealed class MarketplaceGateway
     {
         if (s.Marketplace == Marketplace.Wildberries)
         {
-            using var res = await http.SendAsync(Request(HttpMethod.Get, "https://marketplace-api.wildberries.ru/api/v3/orders/new", s), ct);
-            var text = await res.Content.ReadAsStringAsync(ct);
-            Ensure(res, text);
-            var arr = JsonNode.Parse(text)?["orders"]?.AsArray() ?? new JsonArray();
-            return arr.Where(x => x is not null).Select(x =>
-                new FbsOrderRow(
-                    s.Id,
-                    s.Marketplace,
-                    x!["id"]?.ToString() ?? "",
-                    x["article"]?.ToString() ?? "",
-                    x["article"]?.ToString() ?? "",
-                    1,
-                    "new",
-                    x["requiredMeta"]?.AsArray()?.Any(m => string.Equals(m?.ToString(), "sgtin", StringComparison.OrdinalIgnoreCase)) ?? false,
-                    x.ToJsonString())).ToList();
+            var byId = new Dictionary<string, JsonNode>(StringComparer.OrdinalIgnoreCase);
+
+            async Task ReadOrdersUrl(string url)
+            {
+                using var res = await http.SendAsync(Request(HttpMethod.Get, url, s), ct);
+                var text = await res.Content.ReadAsStringAsync(ct);
+                Ensure(res, text);
+                var root = JsonNode.Parse(text);
+                foreach (var node in root?["orders"]?.AsArray() ?? new JsonArray())
+                {
+                    var id = node?["id"]?.ToString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(id) && node is not null) byId[id] = node.DeepClone();
+                }
+            }
+
+            await ReadOrdersUrl("https://marketplace-api.wildberries.ru/api/v3/orders/new");
+
+            var now = DateTimeOffset.UtcNow;
+            var from = now.AddDays(-30).ToUnixTimeSeconds();
+            var to = now.ToUnixTimeSeconds();
+            long next = 0;
+            for (var page = 0; page < 200; page++)
+            {
+                using var res = await http.SendAsync(Request(HttpMethod.Get,
+                    $"https://marketplace-api.wildberries.ru/api/v3/orders?limit=1000&next={next}&dateFrom={from}&dateTo={to}", s), ct);
+                var text = await res.Content.ReadAsStringAsync(ct);
+                Ensure(res, text);
+                var root = JsonNode.Parse(text);
+                var arr = root?["orders"]?.AsArray() ?? new JsonArray();
+                foreach (var node in arr)
+                {
+                    var id = node?["id"]?.ToString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(id) && node is not null) byId[id] = node.DeepClone();
+                }
+                var parsedNext = long.TryParse(root?["next"]?.ToString(), out var n) ? n : next;
+                if (arr.Count < 1000 || parsedNext == next) break;
+                next = parsedNext;
+            }
+
+            var statusById = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            var ids = byId.Keys.Where(x => long.TryParse(x, out _)).Select(long.Parse).ToArray();
+            foreach (var batch in ids.Chunk(1000))
+            {
+                using var res = await http.SendAsync(Request(HttpMethod.Post,
+                    "https://marketplace-api.wildberries.ru/api/v3/orders/status", s,
+                    JsonSerializer.Serialize(new { orders = batch })), ct);
+                var text = await res.Content.ReadAsStringAsync(ct);
+                if (!res.IsSuccessStatusCode) continue;
+                foreach (var st in JsonNode.Parse(text)?["orders"]?.AsArray() ?? new JsonArray())
+                {
+                    var id = st?["id"]?.ToString() ?? "";
+                    var supplier = st?["supplierStatus"]?.ToString() ?? "";
+                    var wb = st?["wbStatus"]?.ToString() ?? "";
+                    if (!string.IsNullOrWhiteSpace(id))
+                        statusById[id] = !string.IsNullOrWhiteSpace(supplier) ? supplier : wb;
+                }
+            }
+
+            return byId.Select(kv =>
+            {
+                var x = kv.Value;
+                var sku = x?["article"]?.ToString()
+                          ?? x?["skus"]?.AsArray()?.FirstOrDefault()?.ToString()
+                          ?? "";
+                var status = statusById.TryGetValue(kv.Key, out var st) && !string.IsNullOrWhiteSpace(st) ? st : "new";
+                var needsKiz = x?["requiredMeta"]?.AsArray()?.Any(m =>
+                    string.Equals(m?.ToString(), "sgtin", StringComparison.OrdinalIgnoreCase)) ?? false;
+                return new FbsOrderRow(
+                    s.Id, s.Marketplace, kv.Key, sku, sku, 1, status, needsKiz,
+                    x?.ToJsonString() ?? "{}");
+            }).ToList();
         }
 
         if (s.Marketplace == Marketplace.Ozon)
         {
-            var since = DateTimeOffset.UtcNow.AddDays(-14).ToString("O");
-            var to = DateTimeOffset.UtcNow.AddDays(1).ToString("O");
-            var body = JsonSerializer.Serialize(new { dir = "ASC", filter = new { since, to, status = "awaiting_packaging" }, limit = 1000, offset = 0 });
-            using var res = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v3/posting/fbs/list", s, body), ct);
-            var text = await res.Content.ReadAsStringAsync(ct);
-            Ensure(res, text);
+            var result = new Dictionary<string, List<FbsOrderRow>>(StringComparer.OrdinalIgnoreCase);
+            var cutoffFrom = DateTimeOffset.UtcNow.AddDays(-180).ToString("O");
+            var cutoffTo = DateTimeOffset.UtcNow.AddDays(180).ToString("O");
+            var cursor = "";
 
-            var postings = JsonNode.Parse(text)?["result"]?["postings"]?.AsArray() ?? new JsonArray();
-            var list = new List<FbsOrderRow>();
-            foreach (var post in postings)
+            for (var page = 0; page < 20000; page++)
             {
-                var markingRequired = post?["requirements"]?["products_requiring_gtd"]?.AsArray()?.Count > 0
-                                      || post?["requirements"]?["products_requiring_country"]?.AsArray()?.Count > 0;
-                foreach (var item in post?["products"]?.AsArray() ?? new JsonArray())
-                    list.Add(new FbsOrderRow(
-                        s.Id,
-                        s.Marketplace,
-                        post?["posting_number"]?.ToString() ?? "",
-                        item?["offer_id"]?.ToString() ?? "",
-                        item?["name"]?.ToString() ?? "",
-                        item?["quantity"]?.GetValue<int>() ?? 1,
-                        post?["status"]?.ToString() ?? "",
-                        markingRequired,
-                        post?.ToJsonString() ?? "{}"));
+                var body = JsonSerializer.Serialize(new
+                {
+                    filter = new { cutoff_from = cutoffFrom, cutoff_to = cutoffTo },
+                    with = new { analytics_data = false, barcodes = false, financial_data = false, legal_info = false },
+                    sort_dir = "asc",
+                    translit = false,
+                    cursor,
+                    limit = 100
+                });
+
+                using var res = await http.SendAsync(Request(HttpMethod.Post,
+                    "https://api-seller.ozon.ru/v4/posting/fbs/unfulfilled/list", s, body), ct);
+                var text = await res.Content.ReadAsStringAsync(ct);
+                Ensure(res, text);
+                var root = JsonNode.Parse(text);
+                var postings = root?["result"]?["postings"]?.AsArray()
+                               ?? root?["postings"]?.AsArray()
+                               ?? new JsonArray();
+
+                foreach (var post in postings)
+                {
+                    var number = post?["posting_number"]?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(number)) continue;
+                    var rows = new List<FbsOrderRow>();
+                    var requirementIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+                    foreach (var reqName in new[] { "products_requiring_gtd", "products_requiring_country", "products_requiring_jw_uin" })
+                        foreach (var id in post?["requirements"]?[reqName]?.AsArray() ?? new JsonArray())
+                            if (id is not null) requirementIds.Add(id.ToString());
+
+                    foreach (var item in post?["products"]?.AsArray() ?? new JsonArray())
+                    {
+                        var offer = item?["offer_id"]?.ToString() ?? "";
+                        var productId = item?["product_id"]?.ToString() ?? item?["sku"]?.ToString() ?? "";
+                        rows.Add(new FbsOrderRow(
+                            s.Id,
+                            s.Marketplace,
+                            number,
+                            offer,
+                            item?["name"]?.ToString() ?? offer,
+                            item?["quantity"]?.GetValue<int>() ?? 1,
+                            post?["status"]?.ToString() ?? "",
+                            requirementIds.Contains(productId) || requirementIds.Contains(offer),
+                            post?.ToJsonString() ?? "{}"));
+                    }
+                    result[number] = rows;
+                }
+
+                var next = root?["result"]?["cursor"]?.ToString()
+                           ?? root?["cursor"]?.ToString()
+                           ?? "";
+                var hasNext = root?["result"]?["has_next"]?.GetValue<bool?>()
+                              ?? root?["has_next"]?.GetValue<bool?>()
+                              ?? !string.IsNullOrWhiteSpace(next);
+                if (!hasNext || postings.Count == 0 || string.IsNullOrWhiteSpace(next) || next == cursor) break;
+                cursor = next;
             }
-            return list;
+
+            return result.Values.SelectMany(x => x).ToList();
         }
 
         if (string.IsNullOrWhiteSpace(s.CampaignId)) throw new InvalidOperationException("Thiếu Campaign ID Yandex.");
@@ -339,15 +434,13 @@ public sealed class MarketplaceGateway
                      ?? JsonNode.Parse(yText)?["result"]?["orders"]?.AsArray()
                      ?? new JsonArray();
 
-        var result = new List<FbsOrderRow>();
+        var yResult = new List<FbsOrderRow>();
         foreach (var order in orders)
         {
             var status = order?["status"]?.ToString() ?? "";
             var sub = order?["substatus"]?.ToString() ?? "";
-            if (!status.Equals("PROCESSING", StringComparison.OrdinalIgnoreCase)) continue;
-
             foreach (var item in order?["items"]?.AsArray() ?? new JsonArray())
-                result.Add(new FbsOrderRow(
+                yResult.Add(new FbsOrderRow(
                     s.Id,
                     s.Marketplace,
                     order?["id"]?.ToString() ?? "",
@@ -358,8 +451,164 @@ public sealed class MarketplaceGateway
                     false,
                     order?.ToJsonString() ?? "{}"));
         }
+        return yResult;
+    }
 
-        return result;
+    public async Task<IReadOnlyList<FboSupplyRow>> SyncFboSuppliesAsync(StoreProfile s, CancellationToken ct = default)
+    {
+        if (s.Marketplace == Marketplace.Wildberries)
+        {
+            var rows = new List<FboSupplyRow>();
+            for (var offset = 0; offset < 5000; offset += 100)
+            {
+                using var req = RequestWbRawAuth(HttpMethod.Post,
+                    $"https://supplies-api.wildberries.ru/api/v1/supplies?limit=100&offset={offset}", s, "{}");
+                using var res = await http.SendAsync(req, ct);
+                var text = await res.Content.ReadAsStringAsync(ct);
+                Ensure(res, text);
+                var root = JsonNode.Parse(text);
+                var arr = root?["supplies"]?.AsArray()
+                          ?? root?["result"]?["supplies"]?.AsArray()
+                          ?? (root is JsonArray a ? a : new JsonArray());
+                foreach (var x in arr)
+                {
+                    var preorder = x?["preorderID"]?.ToString() ?? "";
+                    var supply = x?["supplyID"]?.ToString() ?? "";
+                    var orderId = !string.IsNullOrWhiteSpace(preorder) ? preorder : supply;
+                    if (string.IsNullOrWhiteSpace(orderId)) continue;
+                    var status = x?["statusID"]?.ToString() ?? "";
+                    var warehouse = x?["warehouseName"]?.ToString()
+                                   ?? x?["plannedWarehouseName"]?.ToString()
+                                   ?? "";
+                    var planned = x?["supplyDate"]?.ToString()
+                                  ?? x?["plannedDate"]?.ToString()
+                                  ?? "";
+                    rows.Add(new FboSupplyRow(
+                        s.Id, s.Marketplace, orderId, supply, status, warehouse, planned,
+                        ParseInt(x?["quantity"]), ParseInt(x?["acceptedQuantity"]),
+                        x?.ToJsonString() ?? "{}"));
+                }
+                if (arr.Count < 100) break;
+            }
+            return rows;
+        }
+
+        if (s.Marketplace == Marketplace.Ozon)
+        {
+            var ids = new List<string>();
+            var cursor = "";
+            var states = new[]
+            {
+                "DATA_FILLING", "READY_TO_SUPPLY", "ACCEPTED_AT_SUPPLY_WAREHOUSE", "IN_TRANSIT",
+                "ACCEPTANCE_AT_STORAGE_WAREHOUSE", "REPORTS_CONFIRMATION_AWAITING", "REPORT_REJECTED",
+                "COMPLETED", "REJECTED_AT_SUPPLY_WAREHOUSE", "CANCELLED", "OVERDUE"
+            };
+            for (var page = 0; page < 100; page++)
+            {
+                var body = JsonSerializer.Serialize(new
+                {
+                    filter = new { states },
+                    last_id = cursor,
+                    limit = 100,
+                    sort_by = "ORDER_STATE_UPDATED_AT",
+                    sort_dir = "DESC"
+                });
+                using var res = await http.SendAsync(Request(HttpMethod.Post,
+                    "https://api-seller.ozon.ru/v3/supply-order/list", s, body), ct);
+                var text = await res.Content.ReadAsStringAsync(ct);
+                Ensure(res, text);
+                var root = JsonNode.Parse(text);
+                foreach (var id in root?["order_ids"]?.AsArray() ?? root?["result"]?["order_ids"]?.AsArray() ?? new JsonArray())
+                    if (id is not null && !string.IsNullOrWhiteSpace(id.ToString())) ids.Add(id.ToString());
+                var next = root?["last_id"]?.ToString() ?? root?["result"]?["last_id"]?.ToString() ?? "";
+                if (string.IsNullOrWhiteSpace(next) || next == cursor) break;
+                cursor = next;
+            }
+
+            var rows = new List<FboSupplyRow>();
+            foreach (var batch in ids.Distinct().Chunk(50))
+            {
+                using var res = await http.SendAsync(Request(HttpMethod.Post,
+                    "https://api-seller.ozon.ru/v3/supply-order/get", s,
+                    JsonSerializer.Serialize(new { order_ids = batch })), ct);
+                var text = await res.Content.ReadAsStringAsync(ct);
+                Ensure(res, text);
+                var root = JsonNode.Parse(text);
+                var orders = root?["orders"]?.AsArray()
+                             ?? root?["result"]?["orders"]?.AsArray()
+                             ?? root?["items"]?.AsArray()
+                             ?? new JsonArray();
+                foreach (var x in orders)
+                {
+                    var orderId = x?["order_id"]?.ToString() ?? x?["order_number"]?.ToString() ?? "";
+                    if (string.IsNullOrWhiteSpace(orderId)) continue;
+                    var supplies = x?["supplies"]?.AsArray() ?? new JsonArray();
+                    var first = supplies.FirstOrDefault();
+                    var supplyId = first?["supply_id"]?.ToString() ?? "";
+                    var warehouse = x?["drop_off_warehouse"]?["name"]?.ToString()
+                                   ?? first?["storage_warehouse"]?["name"]?.ToString()
+                                   ?? "";
+                    var planned = x?["timeslot"]?["timeslot"]?["from"]?.ToString()
+                                  ?? x?["state_updated_date"]?.ToString()
+                                  ?? "";
+                    rows.Add(new FboSupplyRow(
+                        s.Id, s.Marketplace, orderId, supplyId,
+                        x?["state"]?.ToString() ?? first?["state"]?.ToString() ?? "",
+                        warehouse, planned, 0, 0, x?.ToJsonString() ?? "{}"));
+                }
+            }
+            return rows;
+        }
+
+        return Array.Empty<FboSupplyRow>();
+    }
+
+    public async Task<FinanceSnapshot> ReadFinanceAsync(StoreProfile s, DateTime from, DateTime to, CancellationToken ct = default)
+    {
+        if (s.Marketplace != Marketplace.Wildberries)
+            throw new NotSupportedException("Bản 0.6.0 chỉ đọc quyết toán tài chính trực tiếp cho Wildberries.");
+
+        decimal revenue = 0, payout = 0, delivery = 0, storage = 0, acceptance = 0;
+        decimal deductions = 0, penalties = 0, additional = 0, cashback = 0;
+        var count = 0;
+        var fromText = from.ToString("yyyy-MM-dd");
+        var toText = to.ToString("yyyy-MM-dd");
+
+        for (var offset = 0; offset < 50000; offset += 1000)
+        {
+            var body = JsonSerializer.Serialize(new
+            {
+                dateFrom = fromText + "T00:00:00+03:00",
+                dateTo = toText + "T23:59:59+03:00",
+                period = "daily",
+                limit = 1000,
+                offset
+            });
+            using var req = RequestWbRawAuth(HttpMethod.Post,
+                "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/list", s, body);
+            using var res = await http.SendAsync(req, ct);
+            if ((int)res.StatusCode == 204) break;
+            var text = await res.Content.ReadAsStringAsync(ct);
+            Ensure(res, text);
+            var arr = JsonNode.Parse(text) as JsonArray ?? new JsonArray();
+            foreach (var x in arr)
+            {
+                revenue += ParseDecimal(x?["retailAmountSum"]?.ToString()) ?? 0;
+                payout += ParseDecimal(x?["forPaySum"]?.ToString()) ?? 0;
+                delivery += ParseDecimal(x?["deliveryServiceSum"]?.ToString()) ?? 0;
+                storage += ParseDecimal(x?["paidStorageSum"]?.ToString()) ?? 0;
+                acceptance += ParseDecimal(x?["paidAcceptanceSum"]?.ToString()) ?? 0;
+                deductions += ParseDecimal(x?["deductionSum"]?.ToString()) ?? 0;
+                penalties += ParseDecimal(x?["penaltySum"]?.ToString()) ?? 0;
+                additional += ParseDecimal(x?["additionalPaymentSum"]?.ToString()) ?? 0;
+                cashback += ParseDecimal(x?["cashbackAmountSum"]?.ToString()) ?? 0;
+                count++;
+            }
+            if (arr.Count < 1000) break;
+        }
+
+        return new FinanceSnapshot("RUB", revenue, payout, delivery, storage, acceptance,
+            deductions, penalties, additional, cashback, count, fromText, toText);
     }
 
     public async Task<LabelResult> DownloadLabelAsync(StoreProfile s, string orderId, CancellationToken ct = default)
@@ -801,6 +1050,17 @@ public sealed class MarketplaceGateway
         }
         catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
     }
+
+    private HttpRequestMessage RequestWbRawAuth(HttpMethod method, string url, StoreProfile s, string? json = null)
+    {
+        var r = new HttpRequestMessage(method, url);
+        r.Headers.TryAddWithoutValidation("Authorization", s.Token);
+        if (json is not null) r.Content = new StringContent(json, Encoding.UTF8, "application/json");
+        return r;
+    }
+
+    private static int ParseInt(JsonNode? value) =>
+        int.TryParse(value?.ToString(), out var parsed) ? parsed : 0;
 
     private HttpRequestMessage Request(HttpMethod method, string url, StoreProfile s, string? json = null)
     {
