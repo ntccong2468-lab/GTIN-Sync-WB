@@ -439,8 +439,7 @@ public sealed class AppServices
 
     private static string TrimDiagnostic(string value)
     {
-        value = (value ?? "").Replace("", " ").Replace("
-", " ").Trim();
+        value = (value ?? "").Replace("\r", " ").Replace("\n", " ").Trim();
         return value.Length > 500 ? value[..500] : value;
     }
 
