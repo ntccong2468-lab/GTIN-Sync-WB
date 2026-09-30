@@ -387,31 +387,33 @@ ON CONFLICT(code) DO UPDATE SET gtin=$g,status=$s,assigned_order=$o,updated_at=$
         return count;
     }
 
-    public bool AssignAvailableKiz(string gtin, string orderId)
+    public string? FindAvailableKiz(string gtin)
     {
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
-        using var tx = c.BeginTransaction();
-        string? code = null;
-        using (var pick = c.CreateCommand())
-        {
-            pick.Transaction = tx;
-            pick.CommandText = "SELECT code FROM kiz_pool WHERE gtin=$g AND status='AVAILABLE' ORDER BY updated_at LIMIT 1";
-            pick.Parameters.AddWithValue("$g", gtin);
-            code = pick.ExecuteScalar()?.ToString();
-        }
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT code FROM kiz_pool WHERE gtin=$g AND status='AVAILABLE' ORDER BY updated_at LIMIT 1";
+        cmd.Parameters.AddWithValue("$g", gtin);
+        return cmd.ExecuteScalar()?.ToString();
+    }
+
+    public void MarkKizAssigned(string code, string orderId)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "UPDATE kiz_pool SET status='ASSIGNED',assigned_order=$o,updated_at=$at WHERE code=$c";
+        cmd.Parameters.AddWithValue("$o", orderId);
+        cmd.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+        cmd.Parameters.AddWithValue("$c", code);
+        if (cmd.ExecuteNonQuery() > 0) Audit("KIZ", "Đã gán", $"{orderId}:{code[..Math.Min(18, code.Length)]}");
+    }
+
+    public bool AssignAvailableKiz(string gtin, string orderId)
+    {
+        var code = FindAvailableKiz(gtin);
         if (string.IsNullOrWhiteSpace(code)) return false;
-        using (var upd = c.CreateCommand())
-        {
-            upd.Transaction = tx;
-            upd.CommandText = "UPDATE kiz_pool SET status='ASSIGNED',assigned_order=$o,updated_at=$at WHERE code=$c";
-            upd.Parameters.AddWithValue("$o", orderId);
-            upd.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
-            upd.Parameters.AddWithValue("$c", code);
-            upd.ExecuteNonQuery();
-        }
-        tx.Commit();
-        Audit("KIZ", "Đã gán", $"{gtin}:{orderId}");
+        MarkKizAssigned(code, orderId);
         return true;
     }
 
