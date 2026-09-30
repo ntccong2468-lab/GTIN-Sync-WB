@@ -69,14 +69,15 @@ foreach (var status in new[] { "awaiting_packaging", "awaiting_deliver" })
         var packed = await api.PackOrderAsync(Store(Marketplace.Ozon), order);
         Expect(packed.Success == (status == "awaiting_deliver"), "Ship success must be verified by the posting state.");
     });
-foreach (var lastState in new[] { "pending", "passed" })
+foreach (var lastState in new[] { "pending", "passed", "absent", "missing" })
     await Check("Ozon waits for every KIZ exemplar: " + lastState, async () =>
     {
+        var confirmation = lastState == "absent" ? "{\"exemplar_id\":1,\"status\":\"passed\"}" : lastState == "missing" ? "{\"exemplar_id\":1,\"status\":\"passed\"},{\"exemplar_id\":2}" : "{\"exemplar_id\":1,\"status\":\"passed\"},{\"exemplar_id\":2,\"status\":\"" + lastState + "\"}";
         var api = Api(r => r.RequestUri!.AbsolutePath switch
         {
             "/v3/posting/fbs/get" => Json("{\"result\":{\"requirements\":{\"products_requiring_mandatory_mark\":[100]},\"products\":[{\"product_id\":100,\"offer_id\":\"A\",\"quantity\":2}]}}"),
             "/v6/fbs/posting/product/exemplar/create-or-get" => Json("{\"products\":[{\"product_id\":100,\"exemplars\":[{\"exemplar_id\":1},{\"exemplar_id\":2}]}]}"),
-            "/v5/fbs/posting/product/exemplar/status" => Json("{\"products\":[{\"product_id\":100,\"exemplars\":[{\"exemplar_id\":1,\"status\":\"passed\"},{\"exemplar_id\":2,\"status\":\"" + lastState + "\"}]}]}"),
+            "/v5/fbs/posting/product/exemplar/status" => Json("{\"products\":[{\"product_id\":100,\"exemplars\":[" + confirmation + "]}]}"),
             _ => Json("{}")
         });
         using var timeout = new CancellationTokenSource(TimeSpan.FromMilliseconds(300));
@@ -112,7 +113,7 @@ await Check("Yandex complete box sends one CIS per unit without removing items",
         new Dictionary<string, IReadOnlyList<string>> { ["A"] = new[] { "code1", "code2" } });
     Expect(result.Success && boxChecked, "Invalid box layout/CIS count.");
 });
-Console.WriteLine($"{10 - failures.Count}/10 contracts passed");
+Console.WriteLine($"{12 - failures.Count}/12 contracts passed");
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;
 
 sealed class FixtureHttp(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler
