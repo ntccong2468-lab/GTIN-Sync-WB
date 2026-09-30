@@ -1051,6 +1051,29 @@ public sealed class MarketplaceGateway
         catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
     }
 
+    public async Task<PriceUpdateResult> DeliverSupplyAsync(StoreProfile store, string supplyId, CancellationToken ct = default)
+    {
+        try
+        {
+            if (store.Marketplace != Marketplace.Wildberries)
+                return new PriceUpdateResult(false, "Chuyển lô sang giao hàng trực tiếp hiện chỉ áp dụng cho Wildberries.");
+            if (string.IsNullOrWhiteSpace(supplyId))
+                return new PriceUpdateResult(false, "Không tìm thấy mã supply của lô.");
+
+            using var res = await http.SendAsync(Request(new HttpMethod("PATCH"),
+                $"https://marketplace-api.wildberries.ru/api/v3/supplies/{Uri.EscapeDataString(supplyId)}/deliver",
+                store, "{}"), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (!res.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, $"WB deliver HTTP {(int)res.StatusCode}: {Short(text)}");
+            return new PriceUpdateResult(true, $"Đã chuyển supply {supplyId} sang giao hàng.", supplyId);
+        }
+        catch (Exception ex)
+        {
+            return new PriceUpdateResult(false, ex.Message);
+        }
+    }
+
     private HttpRequestMessage RequestWbRawAuth(HttpMethod method, string url, StoreProfile s, string? json = null)
     {
         var r = new HttpRequestMessage(method, url);
