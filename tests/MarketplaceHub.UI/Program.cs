@@ -166,9 +166,23 @@ internal static class Program
                 Pump(partial); Pump(full);
                 Expect(blocked && requests == 1, "Manual order sync bypassed the store lock used by background sync.");
             });
+            Check("KIZ barcode is GS1 DataMatrix with exact separator payload", () =>
+            {
+                const string code = "010460123456789321serialABCDEFG\u001d91ABCD\u001d92proof";
+                foreach (var input in new[] { code, "\u001d" + code })
+                {
+                    var pixels = (ZXing.Rendering.PixelData)typeof(MainForm)
+                        .GetMethod("CreateKizBarcode", BindingFlags.Static | BindingFlags.NonPublic)!
+                        .Invoke(null, new[] { input })!;
+                    var result = new ZXing.BarcodeReaderGeneric().Decode(pixels.Pixels, pixels.Width, pixels.Height,
+                        ZXing.RGBLuminanceSource.BitmapFormat.BGRA32);
+                    Expect(result is not null && result.RawBytes[0] == 232 && result.Text.TrimStart('\u001d') == code,
+                        "KIZ must start with FNC1 and preserve the full AI/GS data without duplicating scanner prefixes.");
+                }
+            });
         }
         finally { app.Db.DeleteStore(store.Id); }
-        Console.WriteLine($"{10 - failures.Count}/10 UI regressions passed");
+        Console.WriteLine($"{11 - failures.Count}/11 UI regressions passed");
         return failures.Count == 0 ? 0 : 1;
     }
 }

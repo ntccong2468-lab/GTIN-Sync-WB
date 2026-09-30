@@ -2506,23 +2506,22 @@ public sealed class MainForm : Form
         }
     }
 
+    private static ZXing.Rendering.PixelData CreateKizBarcode(string code)
+    {
+        var writer = new BarcodeWriterPixelData
+        {
+            Format = BarcodeFormat.DATA_MATRIX,
+            Options = new EncodingOptions { Width = 300, Height = 300, Margin = 2, PureBarcode = true }
+        };
+        return writer.Write(code);
+    }
+
     private bool PrintKizLabel(string code, string orderId, Marketplace marketplace, out string error)
     {
         error = "";
         try
         {
-            var writer = new BarcodeWriterPixelData
-            {
-                Format = BarcodeFormat.DATA_MATRIX,
-                Options = new EncodingOptions
-                {
-                    Width = 300,
-                    Height = 300,
-                    Margin = 2,
-                    PureBarcode = true
-                }
-            };
-            var pixels = writer.Write(code);
+            var pixels = CreateKizBarcode(code);
             using var matrix = new Bitmap(pixels.Width, pixels.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
             var data = matrix.LockBits(
                 new Rectangle(0, 0, matrix.Width, matrix.Height),

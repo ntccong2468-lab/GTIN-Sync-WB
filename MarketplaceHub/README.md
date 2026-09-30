@@ -1,4 +1,4 @@
-# Marketplace Hub 0.7.0
+# Marketplace Hub 0.7.1
 
 Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh, nền mint, card trắng bo tròn và bố cục báo cáo trực quan.
 
@@ -27,4 +27,24 @@ Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh
 
 ## Bộ cài
 
-`MarketplaceHub/dist/MarketplaceHub-Setup-0.7.0-win-x64.exe`
+`MarketplaceHub-Setup-0.7.1-win-x64.exe`
+
+
+## Sửa lỗi 0.7.1
+
+- Bố cục Báo cáo co giãn: ở cửa sổ hẹp, tài chính xuống dưới biểu đồ; bộ lọc ngày không chồng nút đồng bộ. KPI vận hành ghi rõ trạng thái hiện tại, biểu đồ theo khoảng ngày đã chọn.
+- Bảng FBS dùng nền chọn mint, cột sản phẩm luôn còn chỗ đọc, thanh thao tác tự xuống dòng. Tên nhãn trong chi tiết theo đúng WB / Ozon / Yandex.
+- Tự đồng bộ cửa hàng bật mỗi 60 giây. Các luồng đồng bộ cùng cửa hàng dùng chung khóa, gồm cập nhật đơn riêng và đồng bộ toàn bộ.
+- Khi đổi trang, các điều khiển và ảnh cũ được giải phóng; kết quả chậm không thay trang mới. Tải/giải mã ảnh tối đa bốn luồng; ảnh trong bảng giới hạn 160 px, cache dữ liệu ảnh tối đa 64 MiB.
+- Không ghi đơn WB thành “mới” khi API trạng thái lỗi; chỉ coi Ozon ship thành công sau khi đọc lại trạng thái.
+- KIZ Ozon phải được xác nhận cho từng product_id / exemplar_id đã gửi, đủ mọi đơn vị; trạng thái thiếu, chờ hay từ chối đều chặn đóng đơn.
+- Với đơn có nhiều dòng, chọn một dòng vẫn kiểm tra toàn bộ sản phẩm và số KIZ bắt buộc trước khi đóng posting.
+- Nhãn tải về phải là PDF/PNG thật trước khi chuyển sang in.
+
+## Kiểm tra và giới hạn
+
+Các dự án `tests/MarketplaceHub.Contracts` và `tests/MarketplaceHub.UI` dùng HTTP giả lập, không gọi tài khoản bán hàng. CI Windows chạy cả hai trước khi đóng bộ cài; EXE đã publish và EXE sau cài đặt đều phải qua self-test và khởi động giao diện.
+
+Báo cáo quyết toán trực tiếp hiện hỗ trợ WB. Ozon / Yandex hiển thị dữ liệu sản phẩm, đơn hàng và lịch sử đồng bộ; chưa có adapter quyết toán cho hai sàn này.
+
+In nhãn PDF sử dụng lệnh Print của ứng dụng PDF mặc định trên Windows. Máy cần có ứng dụng PDF hỗ trợ in và máy in đã cấu hình. Kiểm thử CI không xác nhận bản in vật lý hay quyền/token API thật của người bán. KIZ bắt buộc cần GTIN hợp lệ và mã sẵn có, hoặc cấu hình SUZ / chứng thư CryptoPro để mua mã.

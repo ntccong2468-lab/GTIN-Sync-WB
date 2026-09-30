@@ -17,7 +17,10 @@ public sealed class AppServices
     private readonly HttpClient znakHttp = new() { Timeout = TimeSpan.FromSeconds(45) };
     private readonly ConcurrentDictionary<long, SemaphoreSlim> syncLocks = new();
 
-    public async Task<(bool Ok, string Message)> SyncProductsAsync(StoreProfile store, CancellationToken ct = default)
+    public Task<(bool Ok, string Message)> SyncProductsAsync(StoreProfile store, CancellationToken ct = default) =>
+        RunStoreSyncAsync(store, () => SyncProductsCoreAsync(store, ct), ct);
+
+    private async Task<(bool Ok, string Message)> SyncProductsCoreAsync(StoreProfile store, CancellationToken ct)
     {
         var run = Db.StartSyncRun(store.Id, "products");
         try
@@ -36,7 +39,10 @@ public sealed class AppServices
         }
     }
 
-    public async Task<(bool Ok, string Message)> SyncOrdersAsync(StoreProfile store, CancellationToken ct = default)
+    public Task<(bool Ok, string Message)> SyncOrdersAsync(StoreProfile store, CancellationToken ct = default) =>
+        RunStoreSyncAsync(store, () => SyncOrdersCoreAsync(store, ct), ct);
+
+    private async Task<(bool Ok, string Message)> SyncOrdersCoreAsync(StoreProfile store, CancellationToken ct)
     {
         var run = Db.StartSyncRun(store.Id, "fbs_orders");
         try
@@ -55,7 +61,10 @@ public sealed class AppServices
         }
     }
 
-    public async Task<(bool Ok, string Message)> SyncFboSuppliesAsync(StoreProfile store, CancellationToken ct = default)
+    public Task<(bool Ok, string Message)> SyncFboSuppliesAsync(StoreProfile store, CancellationToken ct = default) =>
+        RunStoreSyncAsync(store, () => SyncFboSuppliesCoreAsync(store, ct), ct);
+
+    private async Task<(bool Ok, string Message)> SyncFboSuppliesCoreAsync(StoreProfile store, CancellationToken ct)
     {
         var run = Db.StartSyncRun(store.Id, "fbo_supplies");
         try
@@ -75,39 +84,54 @@ public sealed class AppServices
     }
 
 
-    public async Task<(bool Ok, string Message)> SyncStoreAsync(
+    private async Task<(bool Ok, string Message)> RunStoreSyncAsync(
         StoreProfile store,
-        CancellationToken ct = default)
+        Func<Task<(bool Ok, string Message)>> operation,
+        CancellationToken ct)
     {
         var gate = syncLocks.GetOrAdd(store.Id, _ => new SemaphoreSlim(1, 1));
-        if (!await gate.WaitAsync(0, ct))
-            return (false, $"Cửa hàng {store.Name} đang có một luồng đồng bộ khác chạy.");
-
+        var entered = false;
         try
         {
+            entered = await gate.WaitAsync(0, ct);
+            if (!entered) return (false, $"Cửa hàng {store.Name} đang có một luồng đồng bộ khác chạy.");
+            return await operation();
+        }
+        catch (OperationCanceledException) when (ct.IsCancellationRequested)
+        {
+            return (false, "Đã hủy đồng bộ.");
+        }
+        finally
+        {
+            if (entered) gate.Release();
+        }
+    }
+
+    public Task<(bool Ok, string Message)> SyncStoreAsync(
+        StoreProfile store,
+        CancellationToken ct = default) => RunStoreSyncAsync(store, async () =>
+        {
             var messages = new List<string>();
-            var products = await SyncProductsAsync(store, ct);
+            ct.ThrowIfCancellationRequested();
+            var products = await SyncProductsCoreAsync(store, ct);
             messages.Add("Sản phẩm: " + products.Message);
 
-            var orders = await SyncOrdersAsync(store, ct);
+            ct.ThrowIfCancellationRequested();
+            var orders = await SyncOrdersCoreAsync(store, ct);
             messages.Add("FBS: " + orders.Message);
 
             var ok = products.Ok && orders.Ok;
             if (store.Marketplace is Marketplace.Wildberries or Marketplace.Ozon)
             {
-                var fbo = await SyncFboSuppliesAsync(store, ct);
+                ct.ThrowIfCancellationRequested();
+                var fbo = await SyncFboSuppliesCoreAsync(store, ct);
                 messages.Add("FBO/FBW: " + fbo.Message);
                 ok &= fbo.Ok;
             }
 
             Db.Audit("Đồng bộ", ok ? "Hoàn tất" : "Có lỗi", $"{store.Marketplace}:{store.Name}");
             return (ok, string.Join(Environment.NewLine, messages));
-        }
-        finally
-        {
-            gate.Release();
-        }
-    }
+        }, ct);
 
 
 
