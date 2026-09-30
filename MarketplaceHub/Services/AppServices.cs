@@ -13,24 +13,78 @@ public sealed class AppServices
 
     public async Task<(bool Ok, string Message)> SyncProductsAsync(StoreProfile store, CancellationToken ct = default)
     {
+        var run = Db.StartSyncRun(store.Id, "products");
         try
         {
             var rows = await Api.SyncProductsAsync(store, ct);
             Db.ReplaceProducts(store.Id, store.Marketplace, rows);
+            Db.SaveSyncState(store.Id, "products", "", "", "", "");
+            Db.FinishSyncRun(run, true, rows.Count, rows.Count);
             return (true, $"Đã đồng bộ {rows.Count} sản phẩm.");
         }
-        catch (Exception ex) { return (false, ex.Message); }
+        catch (Exception ex)
+        {
+            Db.SaveSyncState(store.Id, "products", "", "", "", ex.Message);
+            Db.FinishSyncRun(run, false, 0, 0, ex.Message);
+            return (false, ex.Message);
+        }
     }
 
     public async Task<(bool Ok, string Message)> SyncOrdersAsync(StoreProfile store, CancellationToken ct = default)
     {
+        var run = Db.StartSyncRun(store.Id, "fbs_orders");
         try
         {
             var rows = await Api.SyncFbsAsync(store, ct);
-            Db.ReplaceOrders(store.Id, store.Marketplace, rows);
-            return (true, $"Đã đồng bộ {rows.Count} dòng đơn FBS.");
+            var written = Db.UpsertOrders(store.Id, store.Marketplace, rows);
+            Db.SaveSyncState(store.Id, "fbs_orders", "", DateTimeOffset.UtcNow.AddDays(-30).ToString("O"), DateTimeOffset.UtcNow.ToString("O"), "");
+            Db.FinishSyncRun(run, true, rows.Count, written);
+            return (true, $"Đã đồng bộ {written} dòng đơn FBS và giữ lại trạng thái lịch sử trong cache.");
         }
-        catch (Exception ex) { return (false, ex.Message); }
+        catch (Exception ex)
+        {
+            Db.SaveSyncState(store.Id, "fbs_orders", "", "", "", ex.Message);
+            Db.FinishSyncRun(run, false, 0, 0, ex.Message);
+            return (false, ex.Message);
+        }
+    }
+
+    public async Task<(bool Ok, string Message)> SyncFboSuppliesAsync(StoreProfile store, CancellationToken ct = default)
+    {
+        var run = Db.StartSyncRun(store.Id, "fbo_supplies");
+        try
+        {
+            var rows = await Api.SyncFboSuppliesAsync(store, ct);
+            Db.ReplaceFboSupplies(store.Id, store.Marketplace, rows);
+            Db.SaveSyncState(store.Id, "fbo_supplies", "", "", "", "");
+            Db.FinishSyncRun(run, true, rows.Count, rows.Count);
+            return (true, $"Đã đồng bộ {rows.Count} yêu cầu nhập kho FBO/FBW.");
+        }
+        catch (Exception ex)
+        {
+            Db.SaveSyncState(store.Id, "fbo_supplies", "", "", "", ex.Message);
+            Db.FinishSyncRun(run, false, 0, 0, ex.Message);
+            return (false, ex.Message);
+        }
+    }
+
+    public async Task<(bool Ok, string Message, FinanceSnapshot? Snapshot)> ReadFinanceAsync(
+        StoreProfile store, DateTime from, DateTime to, CancellationToken ct = default)
+    {
+        var run = Db.StartSyncRun(store.Id, "finance");
+        try
+        {
+            var snapshot = await Api.ReadFinanceAsync(store, from, to, ct);
+            Db.SaveSyncState(store.Id, "finance", "", from.ToString("yyyy-MM-dd"), to.ToString("yyyy-MM-dd"), "");
+            Db.FinishSyncRun(run, true, snapshot.ReportCount, snapshot.ReportCount);
+            return (true, $"Đã đọc {snapshot.ReportCount} báo cáo quyết toán.", snapshot);
+        }
+        catch (Exception ex)
+        {
+            Db.SaveSyncState(store.Id, "finance", "", from.ToString("yyyy-MM-dd"), to.ToString("yyyy-MM-dd"), ex.Message);
+            Db.FinishSyncRun(run, false, 0, 0, ex.Message);
+            return (false, ex.Message, null);
+        }
     }
 
     public async Task<PriceUpdateResult> ChangePriceAsync(StoreProfile store, ProductRow product, decimal price, CancellationToken ct = default)
@@ -252,6 +306,29 @@ public sealed class AppServices
                        == "123456789012"
                        && ExtractInn("CN=Test, OID.1.2.643.3.131.1.1=7701234567")
                        == "7701234567";
+            });
+
+            Check("12. Sync run/state được lưu và đọc lại", () =>
+            {
+                if (createdStore is null) return false;
+                var run = db.StartSyncRun(createdStore.Id, "selftest");
+                db.SaveSyncState(createdStore.Id, "selftest", "cursor-1", "from", "to", "");
+                db.FinishSyncRun(run, true, 2, 2);
+                var state = db.SyncState(createdStore.Id, "selftest");
+                var latest = db.SyncRuns(createdStore.Id, 10).FirstOrDefault(x => x.Id == run);
+                return state.Cursor == "cursor-1" && latest is not null && latest.Success && latest.WrittenCount == 2;
+            });
+
+            Check("13. FBO cache và Znack pipeline tồn tại qua vòng đọc", () =>
+            {
+                if (createdStore is null) return false;
+                db.ReplaceFboSupplies(createdStore.Id, Marketplace.Wildberries, new[]
+                {
+                    new FboSupplyRow(createdStore.Id, Marketplace.Wildberries, "PRE-1", "SUP-1", "READY", "Kho kiểm thử", "2026-09-30", 10, 2, "{}")
+                });
+                db.UpsertZnakPipeline(createdStore.Id, "SKU-SELFTEST", "46012345678902", "QUEUED", "", "selftest");
+                return db.FboSupplies(createdStore.Id).Any(x => x.OrderId == "PRE-1")
+                       && db.ZnakPipelines(createdStore.Id).Any(x => x.Sku == "SKU-SELFTEST" && x.Stage == "QUEUED");
             });
         }
         finally
