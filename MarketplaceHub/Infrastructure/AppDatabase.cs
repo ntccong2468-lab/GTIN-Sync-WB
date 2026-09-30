@@ -90,9 +90,43 @@ CREATE TABLE IF NOT EXISTS znak_config(
  certificate_thumbprint TEXT NOT NULL DEFAULT '',
  certificate_subject TEXT NOT NULL DEFAULT '',
  auto_sign_mode TEXT NOT NULL DEFAULT 'Thủ công',
- enabled INTEGER NOT NULL DEFAULT 0
+ enabled INTEGER NOT NULL DEFAULT 0,
+ oms_id TEXT NOT NULL DEFAULT '',
+ oms_connection TEXT NOT NULL DEFAULT '',
+ auto_circulation INTEGER NOT NULL DEFAULT 0
 );";
         cmd.ExecuteNonQuery();
+        EnsureZnakColumns(c);
+    }
+
+    private static void EnsureZnakColumns(SqliteConnection c)
+    {
+        var columns = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        using (var q = c.CreateCommand())
+        {
+            q.CommandText = "PRAGMA table_info(znak_config)";
+            using var r = q.ExecuteReader();
+            while (r.Read()) columns.Add(r.GetString(1));
+        }
+
+        if (!columns.Contains("oms_id"))
+        {
+            using var a = c.CreateCommand();
+            a.CommandText = "ALTER TABLE znak_config ADD COLUMN oms_id TEXT NOT NULL DEFAULT ''";
+            a.ExecuteNonQuery();
+        }
+        if (!columns.Contains("oms_connection"))
+        {
+            using var a = c.CreateCommand();
+            a.CommandText = "ALTER TABLE znak_config ADD COLUMN oms_connection TEXT NOT NULL DEFAULT ''";
+            a.ExecuteNonQuery();
+        }
+        if (!columns.Contains("auto_circulation"))
+        {
+            using var a = c.CreateCommand();
+            a.CommandText = "ALTER TABLE znak_config ADD COLUMN auto_circulation INTEGER NOT NULL DEFAULT 0";
+            a.ExecuteNonQuery();
+        }
     }
 
     public IReadOnlyList<StoreProfile> Stores()
@@ -292,10 +326,10 @@ ON CONFLICT(code) DO UPDATE SET gtin=$g,status=$s,assigned_order=$o,updated_at=$
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
         using var cmd = c.CreateCommand();
-        cmd.CommandText = "SELECT inn,environment,certificate_thumbprint,certificate_subject,auto_sign_mode,enabled FROM znak_config WHERE id=1";
+        cmd.CommandText = "SELECT inn,environment,certificate_thumbprint,certificate_subject,auto_sign_mode,enabled,oms_id,oms_connection,auto_circulation FROM znak_config WHERE id=1";
         using var r = cmd.ExecuteReader();
-        if (!r.Read()) return new ZnakConfig("", "Production", "", "", "Thủ công", false);
-        return new ZnakConfig(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetInt64(5) == 1);
+        if (!r.Read()) return new ZnakConfig("", "Production", "", "", "Thủ công", false, "", "", false);
+        return new ZnakConfig(r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetInt64(5) == 1, r.GetString(6), r.GetString(7), r.GetInt64(8) == 1);
     }
 
     public void SaveZnakConfig(ZnakConfig z)
@@ -303,15 +337,18 @@ ON CONFLICT(code) DO UPDATE SET gtin=$g,status=$s,assigned_order=$o,updated_at=$
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
         using var cmd = c.CreateCommand();
-        cmd.CommandText = @"INSERT INTO znak_config(id,inn,environment,certificate_thumbprint,certificate_subject,auto_sign_mode,enabled)
-VALUES(1,$i,$e,$t,$s,$a,$n)
-ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,certificate_subject=$s,auto_sign_mode=$a,enabled=$n";
+        cmd.CommandText = @"INSERT INTO znak_config(id,inn,environment,certificate_thumbprint,certificate_subject,auto_sign_mode,enabled,oms_id,oms_connection,auto_circulation)
+VALUES(1,$i,$e,$t,$s,$a,$n,$o,$c,$r)
+ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,certificate_subject=$s,auto_sign_mode=$a,enabled=$n,oms_id=$o,oms_connection=$c,auto_circulation=$r";
         cmd.Parameters.AddWithValue("$i", z.Inn.Trim());
         cmd.Parameters.AddWithValue("$e", z.Environment);
         cmd.Parameters.AddWithValue("$t", z.CertificateThumbprint);
         cmd.Parameters.AddWithValue("$s", z.CertificateSubject);
         cmd.Parameters.AddWithValue("$a", z.AutoSignMode);
         cmd.Parameters.AddWithValue("$n", z.Enabled ? 1 : 0);
+        cmd.Parameters.AddWithValue("$o", z.OmsId);
+        cmd.Parameters.AddWithValue("$c", z.OmsConnection);
+        cmd.Parameters.AddWithValue("$r", z.AutoCirculation ? 1 : 0);
         cmd.ExecuteNonQuery();
         Audit("Честный ЗНАК", "Lưu cấu hình", $"{z.Inn}:{z.Environment}:{z.AutoSignMode}");
     }
@@ -331,6 +368,44 @@ ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,ce
             result.Add(new AuditRow(at, r.GetString(1), r.GetString(2), r.GetString(3)));
         }
         return result;
+    }
+
+    public void DeleteStore(long id)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var tx = c.BeginTransaction();
+
+        using (var p = c.CreateCommand())
+        {
+            p.Transaction = tx;
+            p.CommandText = "DELETE FROM products WHERE store_id=$id";
+            p.Parameters.AddWithValue("$id", id);
+            p.ExecuteNonQuery();
+        }
+        using (var o = c.CreateCommand())
+        {
+            o.Transaction = tx;
+            o.CommandText = "DELETE FROM fbs_orders WHERE store_id=$id";
+            o.Parameters.AddWithValue("$id", id);
+            o.ExecuteNonQuery();
+        }
+        using (var h = c.CreateCommand())
+        {
+            h.Transaction = tx;
+            h.CommandText = "DELETE FROM price_history WHERE store_id=$id";
+            h.Parameters.AddWithValue("$id", id);
+            h.ExecuteNonQuery();
+        }
+        using (var st = c.CreateCommand())
+        {
+            st.Transaction = tx;
+            st.CommandText = "DELETE FROM stores WHERE id=$id";
+            st.Parameters.AddWithValue("$id", id);
+            st.ExecuteNonQuery();
+        }
+        tx.Commit();
+        Audit("Cửa hàng", "Xóa", id.ToString());
     }
 
     public void Audit(string module, string action, string detail)
