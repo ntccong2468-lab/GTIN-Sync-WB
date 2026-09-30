@@ -1,5 +1,4 @@
 using MarketplaceHub.Core;
-using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -92,7 +91,7 @@ public sealed class MarketplaceGateway
                 sku,
                 x["title"]?.ToString() ?? sku,
                 price,
-                x["photos"]?[0]?["big"]?.ToString() ?? "",
+                FirstImageUrl(x["photos"]),
                 x.ToJsonString());
         }).ToList();
     }
@@ -170,7 +169,7 @@ public sealed class MarketplaceGateway
                 var sku = x?["offer_id"]?.ToString() ?? external;
                 decimal? price = ParseDecimal(x?["price"]?.ToString());
                 var name = x?["name"]?.ToString() ?? sku;
-                var image = x?["images"]?.AsArray()?.FirstOrDefault()?.ToString() ?? "";
+                var image = FirstImageUrl(x?["images"]);
                 result.Add(new ProductRow(s.Id, s.Marketplace, external, sku, name, price, image, x?.ToJsonString() ?? "{}"));
             }
         }
@@ -182,28 +181,47 @@ public sealed class MarketplaceGateway
     {
         if (string.IsNullOrWhiteSpace(s.BusinessId)) throw new InvalidOperationException("Thiếu Business ID.");
 
-        var body = JsonSerializer.Serialize(new { limit = 1000 });
-        using var res = await http.SendAsync(Request(HttpMethod.Post, $"https://api.partner.market.yandex.ru/v2/businesses/{s.BusinessId}/offer-mappings", s, body), ct);
-        var text = await res.Content.ReadAsStringAsync(ct);
-        Ensure(res, text);
+        var result = new List<ProductRow>();
+        string? pageToken = null;
 
-        var arr = JsonNode.Parse(text)?["result"]?["offerMappings"]?.AsArray() ?? new JsonArray();
-        return arr.Where(x => x is not null).Select(x =>
+        for (var page = 0; page < 10000; page++)
         {
-            var offer = x!["offer"];
-            var sku = offer?["offerId"]?.ToString() ?? "";
-            var price = ParseDecimal(offer?["basicPrice"]?["value"]?.ToString())
-                        ?? ParseDecimal(offer?["price"]?["value"]?.ToString());
-            return new ProductRow(
-                s.Id,
-                s.Marketplace,
-                x["mapping"]?["marketSku"]?.ToString() ?? sku,
-                sku,
-                offer?["name"]?.ToString() ?? sku,
-                price,
-                offer?["pictures"]?.AsArray()?.FirstOrDefault()?.ToString() ?? "",
-                x.ToJsonString());
-        }).ToList();
+            var url = $"https://api.partner.market.yandex.ru/v2/businesses/{s.BusinessId}/offer-mappings?limit=100";
+            if (!string.IsNullOrWhiteSpace(pageToken))
+                url += "&pageToken=" + Uri.EscapeDataString(pageToken);
+
+            using var res = await http.SendAsync(Request(HttpMethod.Post, url, s, "{}"), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            Ensure(res, text);
+
+            var root = JsonNode.Parse(text);
+            var arr = root?["result"]?["offerMappings"]?.AsArray() ?? new JsonArray();
+            foreach (var x in arr.Where(x => x is not null))
+            {
+                var offer = x!["offer"];
+                var sku = offer?["offerId"]?.ToString() ?? "";
+                var price = ParseDecimal(offer?["basicPrice"]?["value"]?.ToString())
+                            ?? ParseDecimal(offer?["price"]?["value"]?.ToString());
+                result.Add(new ProductRow(
+                    s.Id,
+                    s.Marketplace,
+                    x["mapping"]?["marketSku"]?.ToString() ?? sku,
+                    sku,
+                    offer?["name"]?.ToString() ?? sku,
+                    price,
+                    FirstImageUrl(offer?["pictures"] ?? x?["mediaFiles"]?["pictures"]),
+                    x.ToJsonString()));
+            }
+
+            var next = root?["result"]?["paging"]?["nextPageToken"]?.ToString()
+                       ?? root?["result"]?["nextPageToken"]?.ToString()
+                       ?? root?["paging"]?["nextPageToken"]?.ToString()
+                       ?? "";
+            if (arr.Count == 0 || string.IsNullOrWhiteSpace(next) || next == pageToken) break;
+            pageToken = next;
+        }
+
+        return result;
     }
 
     public async Task<PriceUpdateResult> UpdatePriceAsync(StoreProfile s, ProductRow p, decimal newPrice, CancellationToken ct = default)
@@ -957,28 +975,7 @@ public sealed class MarketplaceGateway
         {
             if (s.Marketplace == Marketplace.Wildberries)
             {
-                if (!long.TryParse(order.ExternalOrderId, out var orderId))
-                    throw new InvalidOperationException("WB order ID không hợp lệ.");
-
-                using var create = await http.SendAsync(
-                    Request(HttpMethod.Post, "https://marketplace-api.wildberries.ru/api/v3/supplies", s,
-                        JsonSerializer.Serialize(new { name = "MarketplaceHub " + DateTime.Now.ToString("yyyy-MM-dd HH:mm") })), ct);
-                var createText = await create.Content.ReadAsStringAsync(ct);
-                Ensure(create, createText);
-
-                var supplyId = JsonNode.Parse(createText)?["id"]?.ToString()
-                               ?? JsonNode.Parse(createText)?["supplyId"]?.ToString();
-                if (string.IsNullOrWhiteSpace(supplyId))
-                    throw new InvalidOperationException("WB không trả supplyId.");
-
-                using var add = await http.SendAsync(
-                    Request(new HttpMethod("PATCH"), $"https://marketplace-api.wildberries.ru/api/marketplace/v3/supplies/{supplyId}/orders", s,
-                        JsonSerializer.Serialize(new { orders = new[] { orderId } })), ct);
-                var addText = await add.Content.ReadAsStringAsync(ct);
-                if (!add.IsSuccessStatusCode)
-                    return new PriceUpdateResult(false, $"Không thêm được order vào supply: HTTP {(int)add.StatusCode}: {Short(addText)}");
-
-                return new PriceUpdateResult(true, $"Đã tạo supply {supplyId} và chuyển order sang trạng thái confirm.", supplyId);
+                return await CreateShipmentAsync(s, new[] { order }, ct);
             }
 
             if (s.Marketplace == Marketplace.Ozon)
@@ -1051,6 +1048,99 @@ public sealed class MarketplaceGateway
         catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
     }
 
+    public async Task<PriceUpdateResult> CreateShipmentAsync(
+        StoreProfile store,
+        IReadOnlyList<FbsOrderRow> orders,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (orders.Count == 0) return new PriceUpdateResult(false, "Chưa chọn đơn hàng.");
+
+            if (store.Marketplace != Marketplace.Wildberries)
+            {
+                var messages = new List<string>();
+                foreach (var order in orders)
+                {
+                    var r = await PackOrderAsync(store, order, ct);
+                    messages.Add($"{order.ExternalOrderId}: {r.Message}");
+                    if (!r.Success) return new PriceUpdateResult(false, string.Join(Environment.NewLine, messages));
+                }
+                return new PriceUpdateResult(true, string.Join(Environment.NewLine, messages));
+            }
+
+            var ids = orders
+                .Select(x => long.TryParse(x.ExternalOrderId, out var id) ? id : 0)
+                .Where(x => x > 0)
+                .Distinct()
+                .ToArray();
+            if (ids.Length == 0) return new PriceUpdateResult(false, "Không có WB order ID hợp lệ.");
+            if (ids.Length > 100) return new PriceUpdateResult(false, "WB chỉ cho thêm tối đa 100 đơn vào supply trong một request.");
+
+            using var create = await http.SendAsync(
+                Request(HttpMethod.Post, "https://marketplace-api.wildberries.ru/api/v3/supplies", store,
+                    JsonSerializer.Serialize(new { name = "MarketplaceHub " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") })), ct);
+            var createText = await create.Content.ReadAsStringAsync(ct);
+            Ensure(create, createText);
+
+            var supplyId = JsonNode.Parse(createText)?["id"]?.ToString()
+                           ?? JsonNode.Parse(createText)?["supplyId"]?.ToString();
+            if (string.IsNullOrWhiteSpace(supplyId))
+                return new PriceUpdateResult(false, "WB đã tạo supply nhưng không trả supplyId.");
+
+            using var add = await http.SendAsync(
+                Request(new HttpMethod("PATCH"),
+                    $"https://marketplace-api.wildberries.ru/api/marketplace/v3/supplies/{Uri.EscapeDataString(supplyId)}/orders",
+                    store,
+                    JsonSerializer.Serialize(new { orders = ids })), ct);
+            var addText = await add.Content.ReadAsStringAsync(ct);
+            if (!add.IsSuccessStatusCode)
+                return new PriceUpdateResult(false,
+                    $"Đã tạo supply {supplyId} nhưng không thêm được đơn. HTTP {(int)add.StatusCode}: {Short(addText)}",
+                    supplyId);
+
+            return new PriceUpdateResult(
+                true,
+                $"Đã tạo shipment {supplyId} và thêm {ids.Length} đơn. Các đơn đã chuyển sang confirm.",
+                supplyId);
+        }
+        catch (Exception ex)
+        {
+            return new PriceUpdateResult(false, ex.Message);
+        }
+    }
+
+    public async Task<PriceUpdateResult> AttachWbSgtinAsync(
+        StoreProfile store,
+        string orderId,
+        string code,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (store.Marketplace != Marketplace.Wildberries)
+                return new PriceUpdateResult(false, "SGTIN chỉ được gắn trực tiếp bằng luồng WB FBS.");
+            if (!long.TryParse(orderId, out var parsedId))
+                return new PriceUpdateResult(false, "WB order ID không hợp lệ.");
+            if (string.IsNullOrWhiteSpace(code))
+                return new PriceUpdateResult(false, "Mã KIZ/SGTIN trống.");
+
+            using var res = await http.SendAsync(
+                Request(HttpMethod.Put,
+                    $"https://marketplace-api.wildberries.ru/api/v3/orders/{parsedId}/meta/sgtin",
+                    store,
+                    JsonSerializer.Serialize(new { sgtins = new[] { code.Trim() } })), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (!res.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, $"WB SGTIN HTTP {(int)res.StatusCode}: {Short(text)}");
+            return new PriceUpdateResult(true, "WB đã nhận mã KIZ/SGTIN cho đơn.", orderId);
+        }
+        catch (Exception ex)
+        {
+            return new PriceUpdateResult(false, ex.Message);
+        }
+    }
+
     public async Task<PriceUpdateResult> DeliverSupplyAsync(StoreProfile store, string supplyId, CancellationToken ct = default)
     {
         try
@@ -1089,7 +1179,11 @@ public sealed class MarketplaceGateway
     {
         var r = new HttpRequestMessage(method, url);
         if (s.Marketplace == Marketplace.Wildberries)
-            r.Headers.Authorization = new AuthenticationHeaderValue("Bearer", s.Token);
+        {
+            var token = (s.Token ?? "").Trim();
+            if (token.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase)) token = token[7..].Trim();
+            r.Headers.TryAddWithoutValidation("Authorization", token);
+        }
         else if (s.Marketplace == Marketplace.Ozon)
         {
             r.Headers.TryAddWithoutValidation("Client-Id", s.ClientId);
@@ -1100,6 +1194,50 @@ public sealed class MarketplaceGateway
 
         if (json is not null) r.Content = new StringContent(json, Encoding.UTF8, "application/json");
         return r;
+    }
+
+    private static string FirstImageUrl(JsonNode? node)
+    {
+        if (node is null) return "";
+
+        if (node is JsonValue)
+        {
+            var value = node.ToString().Trim().Trim('"');
+            return Uri.TryCreate(value, UriKind.Absolute, out var uri) &&
+                   (uri.Scheme == Uri.UriSchemeHttp || uri.Scheme == Uri.UriSchemeHttps)
+                ? value
+                : "";
+        }
+
+        if (node is JsonArray array)
+        {
+            foreach (var item in array)
+            {
+                var url = FirstImageUrl(item);
+                if (!string.IsNullOrWhiteSpace(url)) return url;
+            }
+            return "";
+        }
+
+        if (node is JsonObject obj)
+        {
+            foreach (var key in new[] { "url", "file_name", "image_url", "big", "c516x688", "square", "primary_photo", "photo" })
+            {
+                if (obj[key] is not null)
+                {
+                    var url = FirstImageUrl(obj[key]);
+                    if (!string.IsNullOrWhiteSpace(url)) return url;
+                }
+            }
+
+            foreach (var child in obj)
+            {
+                var url = FirstImageUrl(child.Value);
+                if (!string.IsNullOrWhiteSpace(url)) return url;
+            }
+        }
+
+        return "";
     }
 
     private static decimal? ParseDecimal(string? value)
