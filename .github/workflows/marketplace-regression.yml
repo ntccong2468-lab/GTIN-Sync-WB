@@ -1,0 +1,27 @@
+name: Marketplace Hub regression tests
+on:
+  push:
+    branches: ["fix/dashboard-fbs-stability", "marketplace-hub-v2"]
+    paths: ["MarketplaceHub/**", "tests/MarketplaceHub.*/**", ".github/workflows/marketplace-regression.yml", "!MarketplaceHub/dist/**"]
+  pull_request:
+    branches: ["marketplace-hub-v2"]
+jobs:
+  regression:
+    runs-on: windows-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - name: API contracts
+        run: dotnet run --project tests/MarketplaceHub.Contracts -c Release
+      - name: UI navigation and layout
+        if: always()
+        env:
+          MARKETPLACE_SCREENSHOTS: ${{ github.workspace }}/screenshots
+        run: dotnet run --project tests/MarketplaceHub.UI -c Release
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: MarketplaceHub-UI-screenshots
+          path: screenshots/*.png
