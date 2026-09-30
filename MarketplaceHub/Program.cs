@@ -5,6 +5,9 @@ namespace MarketplaceHub;
 
 internal static class Program
 {
+    private static string CrashReportPath =>
+        Path.Combine(Path.GetTempPath(), "MarketplaceHub-gui-crash.txt");
+
     [STAThread]
     static void Main(string[] args)
     {
@@ -16,6 +19,31 @@ internal static class Program
         }
 
         ApplicationConfiguration.Initialize();
-        Application.Run(new MainForm(new AppServices()));
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.CatchException);
+        Application.ThreadException += (_, e) => WriteCrash("ThreadException", e.Exception);
+        AppDomain.CurrentDomain.UnhandledException += (_, e) =>
+            WriteCrash("UnhandledException", e.ExceptionObject as Exception ?? new Exception(e.ExceptionObject?.ToString() ?? "Unknown"));
+
+        try
+        {
+            if (File.Exists(CrashReportPath)) File.Delete(CrashReportPath);
+            Application.Run(new MainForm(new AppServices()));
+        }
+        catch (Exception ex)
+        {
+            WriteCrash("Main", ex);
+            Environment.ExitCode = 10;
+        }
+    }
+
+    private static void WriteCrash(string source, Exception ex)
+    {
+        try
+        {
+            File.AppendAllText(
+                CrashReportPath,
+                $"[{DateTimeOffset.Now:O}] {source}{Environment.NewLine}{ex}{Environment.NewLine}{new string('-', 80)}{Environment.NewLine}");
+        }
+        catch { }
     }
 }
