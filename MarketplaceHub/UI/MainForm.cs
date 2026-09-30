@@ -2516,13 +2516,11 @@ public sealed class MainForm : Form
         var writer = new BarcodeWriterPixelData
         {
             Format = BarcodeFormat.DATA_MATRIX,
-            Options = new ZXing.Datamatrix.DatamatrixEncodingOptions
-            {
-                Width = 300, Height = 300, Margin = 2, PureBarcode = true,
-                GS1Format = true, CompactEncoding = true
-            }
+            Options = new EncodingOptions { Width = 300, Height = 300, Margin = 2, PureBarcode = true }
         };
-        return writer.Write(code.StartsWith('\u001d') ? code[1..] : code);
+        // The legacy encoder maps ASCII GS to FNC1. CompactEncoding in ZXing 0.16.10
+        // corrupts a GS after some C40 runs; keep this path and its decode regression.
+        return writer.Write("\u001d" + (code.StartsWith('\u001d') ? code[1..] : code));
     }
 
     private bool PrintKizLabel(string code, string orderId, Marketplace marketplace, out string error)

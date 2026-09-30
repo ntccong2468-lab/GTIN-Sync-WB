@@ -48,6 +48,6 @@ Files: MarketplaceHub/MarketplaceHub.csproj; MarketplaceHub/installer/Marketplac
 
 Independent reviewer: `release_review` at commit 18cd5fa. Findings fixed: stale FBS detail / sync callbacks and incomplete Ozon exemplar confirmations. Added regressions reproduced all four failures before corrections.
 
-Additional baseline failures reproduced on Windows: manual order sync bypassed the full-sync store gate; plain DataMatrix lacked GS1 FNC1. All partial/full sync entrypoints now share one gate. Printed KIZ encoding uses compact GS1 DataMatrix, preserving GS separators and stripping only an optional scanner prefix.
+Additional baseline failures reproduced on Windows: manual order sync bypassed the full-sync store gate; plain DataMatrix lacked GS1 FNC1. All partial/full sync entrypoints now share one gate. Printed KIZ encoding uses the legacy ZXing encoder with exactly one leading ASCII GS/FNC1. Local decode reproduced a CompactEncoding corruption of an internal GS after a C40 run; the legacy path passes both raw/scanner-prefixed payload checks.
 
 Final Windows run and screenshot verification are pending before delivery. Live seller credentials and physical printers are outside the fixture/CI environment. Ozon/Yandex settlement adapters remain explicitly unsupported; no estimated totals are substituted.
