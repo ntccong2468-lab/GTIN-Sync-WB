@@ -46,11 +46,11 @@ jobs:
         shell: powershell
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" ".\MarketplaceHub\installer\MarketplaceHub.iss"
-          Get-FileHash ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.6.1-win-x64.exe" -Algorithm SHA256
+          Get-FileHash ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.6.2-win-x64.exe" -Algorithm SHA256
       - name: Silent install test
         shell: powershell
         run: |
-          $setup = Resolve-Path ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.6.1-win-x64.exe"
+          $setup = Resolve-Path ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.6.2-win-x64.exe"
           $p = Start-Process $setup -ArgumentList "/VERYSILENT","/NORESTART" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Installer failed" }
           $installed = Join-Path $env:LOCALAPPDATA "Programs\MarketplaceHub\MarketplaceHub.exe"
@@ -66,18 +66,18 @@ jobs:
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
         with:
-          name: MarketplaceHub-Setup-0.6.1-win-x64
-          path: MarketplaceHub/dist/MarketplaceHub-Setup-0.6.1-win-x64.exe
+          name: MarketplaceHub-Setup-0.6.2-win-x64
+          path: MarketplaceHub/dist/MarketplaceHub-Setup-0.6.2-win-x64.exe
           if-no-files-found: error
       - name: Commit verified installer
         shell: powershell
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f MarketplaceHub/dist/MarketplaceHub-Setup-0.6.1-win-x64.exe
+          git add -f MarketplaceHub/dist/MarketplaceHub-Setup-0.6.2-win-x64.exe
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
-            git commit -m "Add verified Marketplace Hub 0.6.1 installer"
+            git commit -m "Add verified Marketplace Hub 0.6.2 installer"
             git fetch origin marketplace-hub-v2
             git rebase origin/marketplace-hub-v2
             git push origin HEAD:marketplace-hub-v2
