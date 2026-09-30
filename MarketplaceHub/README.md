@@ -40,6 +40,7 @@ Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh
 - KIZ Ozon phải được xác nhận cho từng product_id / exemplar_id đã gửi, đủ mọi đơn vị; trạng thái thiếu, chờ hay từ chối đều chặn đóng đơn.
 - Với đơn có nhiều dòng, chọn một dòng vẫn kiểm tra toàn bộ sản phẩm và số KIZ bắt buộc trước khi đóng posting.
 - Nhãn tải về phải là PDF/PNG thật trước khi chuyển sang in.
+- Nhãn KIZ dùng GS1 DataMatrix với FNC1, giữ nguyên AI và ký tự GS; kiểm thử giải mã lại ảnh sinh ra trước khi in.
 
 ## Kiểm tra và giới hạn
 

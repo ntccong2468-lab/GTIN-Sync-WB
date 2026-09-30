@@ -383,6 +383,8 @@ public sealed class MainForm : Form
         };
         g.ColumnHeadersDefaultCellStyle.BackColor = C.Card;
         g.ColumnHeadersDefaultCellStyle.ForeColor = C.Text;
+        g.ColumnHeadersDefaultCellStyle.SelectionBackColor = C.Soft;
+        g.ColumnHeadersDefaultCellStyle.SelectionForeColor = C.Text;
         g.ColumnHeadersDefaultCellStyle.Font = new Font("Segoe UI", 9.5f, FontStyle.Bold);
         g.DefaultCellStyle.BackColor = C.Card;
         g.AlternatingRowsDefaultCellStyle.BackColor = C.RowAlt;
@@ -390,6 +392,7 @@ public sealed class MainForm : Form
         g.DefaultCellStyle.SelectionBackColor = C.Soft;
         g.DefaultCellStyle.SelectionForeColor = C.Text;
         g.DefaultCellStyle.Padding = new Padding(8, 4, 8, 4);
+        g.RowTemplate.Height = 38;
         return g;
     }
 
@@ -746,6 +749,7 @@ public sealed class MainForm : Form
         SetWorkResize((_, _) =>
         {
             runAll.Left = work.ClientSize.Width - runAll.Width - 30;
+            intro.Width = work.ClientSize.Width - 55;
             card.Width = work.ClientSize.Width - 55;
             card.Height = Math.Max(300, work.ClientSize.Height - 124);
         });
@@ -1133,6 +1137,7 @@ public sealed class MainForm : Form
     {
         ClearWork();
         var pageToken = pageCts.Token;
+        activePage = ShowFbs;
         var store = CurrentStore(); if (store is null) return;
         var product = FindProductForOrder(store, order);
         var meta = product is null ? new ProductMetaValue("", "", "", "", "", "", order.Sku, "") : ProductMeta(product);
@@ -2511,9 +2516,13 @@ public sealed class MainForm : Form
         var writer = new BarcodeWriterPixelData
         {
             Format = BarcodeFormat.DATA_MATRIX,
-            Options = new EncodingOptions { Width = 300, Height = 300, Margin = 2, PureBarcode = true }
+            Options = new ZXing.Datamatrix.Encoder.DatamatrixEncodingOptions
+            {
+                Width = 300, Height = 300, Margin = 2, PureBarcode = true,
+                GS1Format = true, CompactEncoding = true
+            }
         };
-        return writer.Write(code);
+        return writer.Write(code.StartsWith('\u001d') ? code[1..] : code);
     }
 
     private bool PrintKizLabel(string code, string orderId, Marketplace marketplace, out string error)
@@ -2542,6 +2551,8 @@ public sealed class MainForm : Form
             {
                 var bounds = e.PageBounds;
                 var size = Math.Min(bounds.Height - 18, bounds.Width / 2);
+                e.Graphics.InterpolationMode = InterpolationMode.NearestNeighbor;
+                e.Graphics.PixelOffsetMode = PixelOffsetMode.Half;
                 e.Graphics.DrawImage(matrix, new Rectangle(6, 6, size, size));
                 using var font = new Font("Segoe UI", 7, FontStyle.Bold);
                 using var small = new Font("Segoe UI", 6);
@@ -2889,7 +2900,7 @@ internal sealed class ReportBarChart : Control
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         if (Values.Length == 0) return;
 
-        var chart = new Rectangle(10, 8, Math.Max(10, Width - 20), Math.Max(10, Height - 34));
+        var chart = new Rectangle(38, 8, Math.Max(10, Width - 48), Math.Max(10, Height - 34));
         using var gridPen = new Pen(C.Border, 1) { DashStyle = DashStyle.Dash };
         for (var i = 1; i <= 3; i++)
         {
@@ -2902,16 +2913,22 @@ internal sealed class ReportBarChart : Control
         using var brush = new SolidBrush(Color.FromArgb(126, 191, 171));
         using var textBrush = new SolidBrush(C.Muted);
         using var font = new Font("Segoe UI", 7.5f);
+        var labelStride = Math.Max(1, (int)Math.Ceiling(Values.Length / (double)Math.Max(1, chart.Width / 60)));
+        for (var level = 0; level <= 4; level++)
+        {
+            var value = max * level / 4;
+            e.Graphics.DrawString(value.ToString("0.#"), font, textBrush, 2, chart.Bottom - chart.Height * level / 4 - 6);
+        }
 
         for (var i = 0; i < Values.Length; i++)
         {
             var h = (int)Math.Round((Values[i] / max) * (chart.Height - 8));
             var x = (int)Math.Round(chart.Left + i * slot + slot * .22);
-            var w = Math.Max(6, (int)Math.Round(slot * .56));
+            var w = Math.Max(1, (int)Math.Round(slot * .56));
             var y = chart.Bottom - h;
             e.Graphics.FillRectangle(brush, x, y, w, h);
             var label = i < Labels.Length ? Labels[i] : "";
-            e.Graphics.DrawString(label, font, textBrush, x - 4, chart.Bottom + 4);
+            if (i % labelStride == 0) e.Graphics.DrawString(label, font, textBrush, x - 4, chart.Bottom + 4);
         }
     }
 }

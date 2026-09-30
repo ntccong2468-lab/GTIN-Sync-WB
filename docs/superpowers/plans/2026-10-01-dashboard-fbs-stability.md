@@ -28,17 +28,26 @@
 Files: MarketplaceHub/Services/MarketplaceGateway.cs; tests/MarketplaceHub.Contracts/*.
 - [x] Add deterministic real-gateway tests for WB status errors, Ozon mark vs country requirements, Yandex hasCis, Ozon shipment readback and exemplar acceptance, PDF label signatures, Yandex quantities.
 - [x] Run baseline: 4/10 passed; six expected regressions reproduced.
-- [ ] Correct these existing paths and run the whole contract suite.
+- [x] Correct these paths: 12/12 gateway contracts pass, including missing exemplar and missing status.
 
 ### Task 2: UI lifecycle and layout
 Files: MarketplaceHub/UI/MainForm.cs; tests/MarketplaceHub.UI/*; .github/workflows/marketplace-regression.yml.
-- [ ] Run Windows regression tests against the old page lifecycle, status tabs, toolbar geometry and report range.
-- [ ] Dispose page controls, bind image results to row identity and bound background decoding, commit checkbox edits, make FBS actions fit at minimum width.
-- [ ] Make report date filters update the chart and refreshed metrics.
+- [x] Run Windows baseline: 1/6 UI cases passed; five failures reproduced.
+- [x] Dispose controls, preserve row identity, limit decoding and thumbnail/cache memory, commit checkbox edits and wrap toolbar controls.
+- [x] Make report date filters update the chart; mark operational counts as current and stack finance at narrow widths.
 - [ ] Run Windows UI suite, inspect the generated screenshots, and complete a final independent code review.
 
 ### Task 3: Deliver the verified Windows build
 Files: MarketplaceHub/MarketplaceHub.csproj; MarketplaceHub/installer/MarketplaceHub.iss; MarketplaceHub/README.md; .github/workflows/build-marketplace-hub.yml.
-- [ ] Require both regression suites before packaging 0.7.1.
+- [x] Require both suites before packaging 0.7.1.
 - [ ] Build and test installed EXE on a Windows runner.
 - [ ] Deliver the installer and GitHub review link; state unverified live seller API / physical printer boundaries accurately.
+
+
+## Final review and additional reproductions
+
+Independent reviewer: `release_review` at commit 18cd5fa. Findings fixed: stale FBS detail / sync callbacks and incomplete Ozon exemplar confirmations. Added regressions reproduced all four failures before corrections.
+
+Additional baseline failures reproduced on Windows: manual order sync bypassed the full-sync store gate; plain DataMatrix lacked GS1 FNC1. All partial/full sync entrypoints now share one gate. Printed KIZ encoding uses compact GS1 DataMatrix, preserving GS separators and stripping only an optional scanner prefix.
+
+Final Windows run and screenshot verification are pending before delivery. Live seller credentials and physical printers are outside the fixture/CI environment. Ozon/Yandex settlement adapters remain explicitly unsupported; no estimated totals are substituted.
