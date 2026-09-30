@@ -375,6 +375,46 @@ ON CONFLICT(code) DO UPDATE SET gtin=$g,status=$s,assigned_order=$o,updated_at=$
         return result;
     }
 
+    public int DeleteKizByGtin(string gtin)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "DELETE FROM kiz_pool WHERE gtin=$g";
+        cmd.Parameters.AddWithValue("$g", gtin);
+        var count = cmd.ExecuteNonQuery();
+        Audit("KIZ", "Xóa", $"{gtin}:{count}");
+        return count;
+    }
+
+    public bool AssignAvailableKiz(string gtin, string orderId)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var tx = c.BeginTransaction();
+        string? code = null;
+        using (var pick = c.CreateCommand())
+        {
+            pick.Transaction = tx;
+            pick.CommandText = "SELECT code FROM kiz_pool WHERE gtin=$g AND status='AVAILABLE' ORDER BY updated_at LIMIT 1";
+            pick.Parameters.AddWithValue("$g", gtin);
+            code = pick.ExecuteScalar()?.ToString();
+        }
+        if (string.IsNullOrWhiteSpace(code)) return false;
+        using (var upd = c.CreateCommand())
+        {
+            upd.Transaction = tx;
+            upd.CommandText = "UPDATE kiz_pool SET status='ASSIGNED',assigned_order=$o,updated_at=$at WHERE code=$c";
+            upd.Parameters.AddWithValue("$o", orderId);
+            upd.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+            upd.Parameters.AddWithValue("$c", code);
+            upd.ExecuteNonQuery();
+        }
+        tx.Commit();
+        Audit("KIZ", "Đã gán", $"{gtin}:{orderId}");
+        return true;
+    }
+
 
     public ZnakConfig GetZnakConfig()
     {
