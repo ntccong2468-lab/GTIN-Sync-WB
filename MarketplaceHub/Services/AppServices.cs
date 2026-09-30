@@ -1,6 +1,8 @@
 using MarketplaceHub.Core;
 using MarketplaceHub.Infrastructure;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
+using System.Text.RegularExpressions;
 
 namespace MarketplaceHub.Services;
 
@@ -50,14 +52,79 @@ public sealed class AppServices
         return (true, gtin, "Cấu trúc mã hợp lệ. Trạng thái pháp lý cần kiểm tra qua True API.");
     }
 
-    public static IReadOnlyList<(string Subject, string Thumbprint, DateTime NotAfter, bool HasPrivateKey)> Certificates()
+    public static IReadOnlyList<CertificateInfo> Certificates()
     {
-        var result = new List<(string, string, DateTime, bool)>();
+        var result = new List<CertificateInfo>();
         using var store = new X509Store(StoreName.My, StoreLocation.CurrentUser);
         store.Open(OpenFlags.ReadOnly);
         foreach (var cert in store.Certificates)
-            result.Add((cert.Subject, cert.Thumbprint, cert.NotAfter, cert.HasPrivateKey));
-        return result.OrderByDescending(x => x.Item3).ToList();
+        {
+            var subject = cert.Subject ?? "";
+            var owner = cert.GetNameInfo(X509NameType.SimpleName, false);
+            if (string.IsNullOrWhiteSpace(owner)) owner = SubjectValue(subject, "CN");
+            if (string.IsNullOrWhiteSpace(owner)) owner = subject;
+            result.Add(new CertificateInfo(
+                subject,
+                cert.Thumbprint ?? "",
+                cert.NotAfter,
+                cert.HasPrivateKey,
+                owner,
+                ExtractInn(subject)));
+        }
+        return result.OrderByDescending(x => x.NotAfter).ToList();
+    }
+
+    internal static string ExtractInn(string subject)
+    {
+        if (string.IsNullOrWhiteSpace(subject)) return "";
+        var labels = new[]
+        {
+            "INN FL", "ИНН ФЛ", "ИНН ЮЛ", "INN", "ИНН",
+            "OID.1.2.643.3.131.1.1", "1.2.643.3.131.1.1"
+        };
+
+        foreach (var label in labels)
+        {
+            var pattern = $@"(?:^|[,\r\n])\s*{Regex.Escape(label)}\s*=\s*(?<v>[^,\r\n]+)";
+            var m = Regex.Match(subject, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+            if (!m.Success) continue;
+            var value = DecodeDnValue(m.Groups["v"].Value.Trim());
+            var digits = new string(value.Where(char.IsDigit).ToArray());
+            if (digits.Length is 10 or 12) return digits;
+        }
+
+        var fallback = Regex.Match(subject, @"(?<!\d)(\d{10}|\d{12})(?!\d)");
+        return fallback.Success ? fallback.Groups[1].Value : "";
+    }
+
+    private static string SubjectValue(string subject, string label)
+    {
+        var pattern = $@"(?:^|[,\r\n])\s*{Regex.Escape(label)}\s*=\s*(?<v>[^,\r\n]+)";
+        var m = Regex.Match(subject, pattern, RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+        return m.Success ? DecodeDnValue(m.Groups["v"].Value.Trim()) : "";
+    }
+
+    private static string DecodeDnValue(string value)
+    {
+        value = value.Trim().Trim('"');
+        var hex = value.StartsWith("#", StringComparison.Ordinal) ? value[1..] : value;
+        if (hex.Length >= 4 && hex.Length % 2 == 0 && hex.All(Uri.IsHexDigit))
+        {
+            try
+            {
+                var bytes = Convert.FromHexString(hex);
+                if (bytes.Length > 2 && bytes[0] is 0x0C or 0x13 or 0x16)
+                {
+                    var length = bytes[1];
+                    if (length > 0 && length <= bytes.Length - 2)
+                        bytes = bytes.Skip(2).Take(length).ToArray();
+                }
+                var decoded = Encoding.UTF8.GetString(bytes).Trim('\0', ' ', '\r', '\n');
+                if (!string.IsNullOrWhiteSpace(decoded)) return decoded;
+            }
+            catch { }
+        }
+        return value;
     }
 
     public static bool SelfTest()
@@ -146,7 +213,7 @@ public sealed class AppServices
                 originalZnak = db.GetZnakConfig();
                 var testConfig = new ZnakConfig(
                     "7701234567", "Test", "SELFTEST-THUMBPRINT", "CN=MarketplaceHub SelfTest",
-                    "Thủ công", true, "SELFTEST-OMS", "SELFTEST-CONNECTION", false);
+                    "Thủ công", true, "SELFTEST-OMS", "SELFTEST-CONNECTION", true);
                 db.SaveZnakConfig(testConfig);
                 var loaded = db.GetZnakConfig();
                 var ok = loaded == testConfig;
@@ -177,6 +244,14 @@ public sealed class AppServices
             {
                 _ = Certificates();
                 return true;
+            });
+
+            Check("11. Parser INN chứng thư nhận nhãn Nga/OID", () =>
+            {
+                return ExtractInn("CN=Тест, ИНН ФЛ=123456789012")
+                       == "123456789012"
+                       && ExtractInn("CN=Test, OID.1.2.643.3.131.1.1=7701234567")
+                       == "7701234567";
             });
         }
         finally
