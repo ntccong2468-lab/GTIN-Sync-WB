@@ -37,4 +37,52 @@ public sealed record CertificateInfo(
     string OwnerName,
     string Inn);
 
+public sealed record SyncRunRow(
+    long Id,
+    long StoreId,
+    string Stream,
+    DateTimeOffset StartedAt,
+    DateTimeOffset? FinishedAt,
+    bool Success,
+    int ReadCount,
+    int WrittenCount,
+    string Error);
+
+public sealed record FboSupplyRow(
+    long StoreId,
+    Marketplace Marketplace,
+    string OrderId,
+    string SupplyId,
+    string Status,
+    string Warehouse,
+    string PlannedAt,
+    int TotalQuantity,
+    int AcceptedQuantity,
+    string RawJson);
+
+public sealed record FinanceSnapshot(
+    string Currency,
+    decimal Revenue,
+    decimal Payout,
+    decimal Delivery,
+    decimal Storage,
+    decimal Acceptance,
+    decimal Deductions,
+    decimal Penalties,
+    decimal AdditionalPayments,
+    decimal Cashback,
+    int ReportCount,
+    string From,
+    string To);
+
+public sealed record ZnakPipelineRow(
+    long Id,
+    long StoreId,
+    string Sku,
+    string Gtin,
+    string Stage,
+    string ExternalOrderId,
+    string Detail,
+    DateTimeOffset UpdatedAt);
+
 public sealed record AuditRow(DateTimeOffset At, string Module, string Action, string Detail);
