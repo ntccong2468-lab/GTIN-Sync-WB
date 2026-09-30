@@ -204,7 +204,7 @@ public sealed class MainForm : Form
 
     private void AddSide(FlowLayoutPanel menu, string text, Action action)
     {
-        var b = NavButton(text, C.Purple, 238);
+        var b = NavButton(text, C.Purple, 216);
         b.Margin = new Padding(0, 0, 0, 14);
         b.Click += (_, _) => action();
         menu.Controls.Add(b);
@@ -437,7 +437,7 @@ public sealed class MainForm : Form
             e.Graphics.FillRectangle(bg, e.Bounds);
             var value = combo.GetItemText(combo.Items[e.Index]);
             var rect = new Rectangle(e.Bounds.X + 9, e.Bounds.Y, Math.Max(0, e.Bounds.Width - 18), e.Bounds.Height);
-            TextRenderer.DrawText(e.Graphics, value, combo.Font, rect, C.Text,
+            TextRenderer.DrawText(e.Graphics, value, combo.Font, rect, selected ? C.OnAccent : C.Text,
                 TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
             e.DrawFocusRectangle();
         };
