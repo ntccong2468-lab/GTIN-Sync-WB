@@ -2686,7 +2686,7 @@ internal sealed class BrandMarkControl : Control
     public BrandMarkControl()
     {
         DoubleBuffered = true;
-        BackColor = Color.Transparent;
+        BackColor = C.Side;
     }
 
     protected override void OnPaint(PaintEventArgs e)
