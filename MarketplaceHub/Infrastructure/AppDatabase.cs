@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS znak_config(
  enabled INTEGER NOT NULL DEFAULT 0,
  oms_id TEXT NOT NULL DEFAULT '',
  oms_connection TEXT NOT NULL DEFAULT '',
- auto_circulation INTEGER NOT NULL DEFAULT 0
+ auto_circulation INTEGER NOT NULL DEFAULT 1
 );";
         cmd.ExecuteNonQuery();
         EnsureZnakColumns(c);
@@ -124,8 +124,14 @@ CREATE TABLE IF NOT EXISTS znak_config(
         if (!columns.Contains("auto_circulation"))
         {
             using var a = c.CreateCommand();
-            a.CommandText = "ALTER TABLE znak_config ADD COLUMN auto_circulation INTEGER NOT NULL DEFAULT 0";
+            a.CommandText = "ALTER TABLE znak_config ADD COLUMN auto_circulation INTEGER NOT NULL DEFAULT 1";
             a.ExecuteNonQuery();
+        }
+
+        using (var migrate = c.CreateCommand())
+        {
+            migrate.CommandText = "UPDATE znak_config SET auto_circulation=1 WHERE auto_circulation<>1";
+            migrate.ExecuteNonQuery();
         }
     }
 
@@ -348,7 +354,7 @@ ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,ce
         cmd.Parameters.AddWithValue("$n", z.Enabled ? 1 : 0);
         cmd.Parameters.AddWithValue("$o", z.OmsId);
         cmd.Parameters.AddWithValue("$c", z.OmsConnection);
-        cmd.Parameters.AddWithValue("$r", z.AutoCirculation ? 1 : 0);
+        cmd.Parameters.AddWithValue("$r", 1);
         cmd.ExecuteNonQuery();
         Audit("Честный ЗНАК", "Lưu cấu hình", $"{z.Inn}:{z.Environment}:{z.AutoSignMode}");
     }
