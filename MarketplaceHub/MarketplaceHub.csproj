@@ -7,7 +7,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>MarketplaceHub</AssemblyName>
     <RootNamespace>MarketplaceHub</RootNamespace>
-    <Version>0.5.1</Version>
+    <Version>0.6.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
   </PropertyGroup>
   <ItemGroup>
