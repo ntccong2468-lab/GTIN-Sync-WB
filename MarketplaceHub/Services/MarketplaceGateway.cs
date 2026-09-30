@@ -408,7 +408,7 @@ public sealed class MarketplaceGateway
                     if (string.IsNullOrWhiteSpace(number)) continue;
                     var rows = new List<FbsOrderRow>();
                     var requirementIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var reqName in new[] { "products_requiring_gtd", "products_requiring_country", "products_requiring_jw_uin" })
+                    foreach (var reqName in new[] { "products_requiring_mandatory_mark", "products_requiring_optional_mark", "products_requiring_mark", "products_requiring_gtd", "products_requiring_country", "products_requiring_jw_uin" })
                         foreach (var id in post?["requirements"]?[reqName]?.AsArray() ?? new JsonArray())
                             if (id is not null) requirementIds.Add(id.ToString());
 
@@ -444,30 +444,53 @@ public sealed class MarketplaceGateway
         }
 
         if (string.IsNullOrWhiteSpace(s.CampaignId)) throw new InvalidOperationException("Thiếu Campaign ID Yandex.");
-        using var yRes = await http.SendAsync(Request(HttpMethod.Get, $"https://api.partner.market.yandex.ru/v2/campaigns/{s.CampaignId}/orders", s), ct);
-        var yText = await yRes.Content.ReadAsStringAsync(ct);
-        Ensure(yRes, yText);
-
-        var orders = JsonNode.Parse(yText)?["orders"]?.AsArray()
-                     ?? JsonNode.Parse(yText)?["result"]?["orders"]?.AsArray()
-                     ?? new JsonArray();
 
         var yResult = new List<FbsOrderRow>();
-        foreach (var order in orders)
+        var pageToken = "";
+        for (var page = 0; page < 10000; page++)
         {
-            var status = order?["status"]?.ToString() ?? "";
-            var sub = order?["substatus"]?.ToString() ?? "";
-            foreach (var item in order?["items"]?.AsArray() ?? new JsonArray())
-                yResult.Add(new FbsOrderRow(
-                    s.Id,
-                    s.Marketplace,
-                    order?["id"]?.ToString() ?? "",
-                    item?["offerId"]?.ToString() ?? "",
-                    item?["offerName"]?.ToString() ?? "",
-                    item?["count"]?.GetValue<int>() ?? 1,
-                    $"{status}/{sub}",
-                    false,
-                    order?.ToJsonString() ?? "{}"));
+            var url = $"https://api.partner.market.yandex.ru/v2/campaigns/{s.CampaignId}/orders?limit=50";
+            if (!string.IsNullOrWhiteSpace(pageToken))
+                url += "&pageToken=" + Uri.EscapeDataString(pageToken);
+
+            using var yRes = await http.SendAsync(Request(HttpMethod.Get, url, s), ct);
+            var yText = await yRes.Content.ReadAsStringAsync(ct);
+            Ensure(yRes, yText);
+            var root = JsonNode.Parse(yText);
+            var orders = root?["orders"]?.AsArray()
+                         ?? root?["result"]?["orders"]?.AsArray()
+                         ?? new JsonArray();
+
+            foreach (var order in orders)
+            {
+                var status = order?["status"]?.ToString() ?? "";
+                var sub = order?["substatus"]?.ToString() ?? "";
+                foreach (var item in order?["items"]?.AsArray() ?? new JsonArray())
+                {
+                    var instances = item?["instances"]?.AsArray() ?? new JsonArray();
+                    var requiresMark = instances.Count > 0 ||
+                        item?["requiredMeta"]?.AsArray()?.Any(x =>
+                            string.Equals(x?.ToString(), "CIS", StringComparison.OrdinalIgnoreCase) ||
+                            string.Equals(x?.ToString(), "SGTIN", StringComparison.OrdinalIgnoreCase)) == true;
+
+                    yResult.Add(new FbsOrderRow(
+                        s.Id,
+                        s.Marketplace,
+                        order?["id"]?.ToString() ?? "",
+                        item?["offerId"]?.ToString() ?? "",
+                        item?["offerName"]?.ToString() ?? "",
+                        item?["count"]?.GetValue<int>() ?? 1,
+                        $"{status}/{sub}",
+                        requiresMark,
+                        order?.ToJsonString() ?? "{}"));
+                }
+            }
+
+            var next = root?["paging"]?["nextPageToken"]?.ToString()
+                       ?? root?["result"]?["paging"]?["nextPageToken"]?.ToString()
+                       ?? "";
+            if (orders.Count == 0 || string.IsNullOrWhiteSpace(next) || next == pageToken) break;
+            pageToken = next;
         }
         return yResult;
     }
@@ -1443,6 +1466,345 @@ public sealed class MarketplaceGateway
         return false;
     }
 
+
+    public async Task<PriceUpdateResult> PrepareOzonKizAsync(
+        StoreProfile store,
+        string postingNumber,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> codesByOffer,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (store.Marketplace != Marketplace.Ozon)
+                return new PriceUpdateResult(false, "Luồng exemplar KIZ này chỉ áp dụng cho Ozon.");
+
+            using var detailRes = await http.SendAsync(Request(HttpMethod.Post,
+                "https://api-seller.ozon.ru/v3/posting/fbs/get", store,
+                JsonSerializer.Serialize(new
+                {
+                    posting_number = postingNumber,
+                    with = new { analytics_data = false, financial_data = false, product_exemplars = true }
+                })), ct);
+            var detailText = await detailRes.Content.ReadAsStringAsync(ct);
+            if (!detailRes.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, $"Ozon posting detail HTTP {(int)detailRes.StatusCode}: {Short(detailText)}");
+
+            var posting = JsonNode.Parse(detailText)?["result"] ?? JsonNode.Parse(detailText);
+            var requirements = posting?["requirements"];
+            var requiredIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var name in new[] { "products_requiring_mandatory_mark", "products_requiring_optional_mark", "products_requiring_mark" })
+                foreach (var id in requirements?[name]?.AsArray() ?? new JsonArray())
+                    if (id is not null) requiredIds.Add(id.ToString());
+
+            if (requiredIds.Count == 0)
+                return new PriceUpdateResult(true, "Ozon không yêu cầu exemplar KIZ cho posting này.", postingNumber);
+
+            var products = posting?["products"]?.AsArray() ?? new JsonArray();
+            var wanted = new List<(string ProductId, string Offer, int Quantity, IReadOnlyList<string> Codes)>();
+            foreach (var product in products)
+            {
+                var productId = product?["product_id"]?.ToString() ?? product?["sku"]?.ToString() ?? "";
+                var offer = product?["offer_id"]?.ToString() ?? "";
+                if (!requiredIds.Contains(productId) && !requiredIds.Contains(offer)) continue;
+                var qty = product?["quantity"]?.GetValue<int?>() ?? 1;
+                if (!codesByOffer.TryGetValue(offer, out var codes) || codes.Count < qty)
+                    return new PriceUpdateResult(false, $"Ozon cần {qty} KIZ cho {offer}, nhưng kho KIZ chưa đủ.");
+                wanted.Add((productId, offer, qty, codes.Take(qty).ToArray()));
+            }
+
+            if (wanted.Count == 0)
+                return new PriceUpdateResult(false, "Ozon báo cần KIZ nhưng không ánh xạ được product_id/offer_id của posting.");
+
+            using var createRes = await http.SendAsync(Request(HttpMethod.Post,
+                "https://api-seller.ozon.ru/v6/fbs/posting/product/exemplar/create-or-get", store,
+                JsonSerializer.Serialize(new { posting_number = postingNumber })), ct);
+            var createText = await createRes.Content.ReadAsStringAsync(ct);
+            if (!createRes.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, $"Ozon create exemplar HTTP {(int)createRes.StatusCode}: {Short(createText)}");
+
+            var idsByProduct = CollectOzonExemplarIdsByProduct(JsonNode.Parse(createText));
+            var validateProducts = new JsonArray();
+            var setProducts = new JsonArray();
+
+            foreach (var row in wanted)
+            {
+                if (!idsByProduct.TryGetValue(row.ProductId, out var exemplarIds) || exemplarIds.Count < row.Quantity)
+                    return new PriceUpdateResult(false, $"Ozon trả thiếu exemplar_id cho product {row.ProductId}.");
+
+                var validateExemplars = new JsonArray();
+                var setExemplars = new JsonArray();
+                for (var i = 0; i < row.Quantity; i++)
+                {
+                    var safeCode = ScannerSafeKiz(row.Codes[i]);
+                    var marks = new JsonArray(new JsonObject
+                    {
+                        ["mark"] = safeCode,
+                        ["mark_type"] = "mandatory_mark"
+                    });
+                    validateExemplars.Add(new JsonObject { ["marks"] = marks.DeepClone() });
+                    setExemplars.Add(new JsonObject
+                    {
+                        ["exemplar_id"] = long.TryParse(exemplarIds[i], out var numeric) ? numeric : exemplarIds[i],
+                        ["marks"] = marks.DeepClone()
+                    });
+                }
+                validateProducts.Add(new JsonObject
+                {
+                    ["product_id"] = long.TryParse(row.ProductId, out var p1) ? p1 : row.ProductId,
+                    ["exemplars"] = validateExemplars
+                });
+                setProducts.Add(new JsonObject
+                {
+                    ["product_id"] = long.TryParse(row.ProductId, out var p2) ? p2 : row.ProductId,
+                    ["exemplars"] = setExemplars
+                });
+            }
+
+            var validateBody = new JsonObject
+            {
+                ["posting_number"] = postingNumber,
+                ["products"] = validateProducts
+            }.ToJsonString();
+
+            using var validateRes = await http.SendAsync(Request(HttpMethod.Post,
+                "https://api-seller.ozon.ru/v5/fbs/posting/product/exemplar/validate", store, validateBody), ct);
+            var validateText = await validateRes.Content.ReadAsStringAsync(ct);
+            if (!validateRes.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, $"Ozon validate KIZ HTTP {(int)validateRes.StatusCode}: {Short(validateText)}");
+            if (OzonHasRejectedExemplar(JsonNode.Parse(validateText)))
+                return new PriceUpdateResult(false, "Ozon từ chối ít nhất một KIZ/exemplar. Không chuyển đơn sang giao hàng.");
+
+            var setBody = new JsonObject
+            {
+                ["posting_number"] = postingNumber,
+                ["products"] = setProducts
+            }.ToJsonString();
+            using var setRes = await http.SendAsync(Request(HttpMethod.Post,
+                "https://api-seller.ozon.ru/v6/fbs/posting/product/exemplar/set", store, setBody), ct);
+            var setText = await setRes.Content.ReadAsStringAsync(ct);
+            if (!setRes.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, $"Ozon set KIZ HTTP {(int)setRes.StatusCode}: {Short(setText)}");
+
+            for (var attempt = 0; attempt < 12; attempt++)
+            {
+                using var statusRes = await http.SendAsync(Request(HttpMethod.Post,
+                    "https://api-seller.ozon.ru/v5/fbs/posting/product/exemplar/status", store,
+                    JsonSerializer.Serialize(new { posting_number = postingNumber })), ct);
+                var statusText = await statusRes.Content.ReadAsStringAsync(ct);
+                if (!statusRes.IsSuccessStatusCode)
+                    return new PriceUpdateResult(false, $"Ozon KIZ status HTTP {(int)statusRes.StatusCode}: {Short(statusText)}");
+
+                var statusNode = JsonNode.Parse(statusText);
+                if (OzonHasRejectedExemplar(statusNode))
+                    return new PriceUpdateResult(false, "Ozon trả trạng thái KIZ/exemplar bị từ chối.");
+                if (OzonExemplarAccepted(statusNode))
+                    return new PriceUpdateResult(true, "Ozon đã xác thực và nhận KIZ/exemplar.", postingNumber);
+
+                await Task.Delay(1000, ct);
+            }
+
+            return new PriceUpdateResult(false,
+                "Ozon chưa xác nhận KIZ/exemplar trong thời gian chờ. Ứng dụng không ship để tránh đóng đơn khi mã chưa hợp lệ.",
+                postingNumber);
+        }
+        catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
+    }
+
+    public async Task<PriceUpdateResult> PrepareYandexBoxesAsync(
+        StoreProfile store,
+        FbsOrderRow sample,
+        IReadOnlyDictionary<string, IReadOnlyList<string>> codesByOffer,
+        CancellationToken ct = default)
+    {
+        try
+        {
+            if (store.Marketplace != Marketplace.Yandex)
+                return new PriceUpdateResult(false, "Luồng boxes/KIZ này chỉ áp dụng cho Yandex Market.");
+            if (string.IsNullOrWhiteSpace(store.CampaignId))
+                return new PriceUpdateResult(false, "Thiếu Campaign ID Yandex.");
+
+            var order = JsonNode.Parse(sample.RawJson);
+            var items = order?["items"]?.AsArray() ?? new JsonArray();
+            if (items.Count == 0)
+                return new PriceUpdateResult(false, "Yandex order không có danh sách items để tạo box.");
+
+            var boxItems = new JsonArray();
+            var expectedCodes = 0;
+            foreach (var item in items)
+            {
+                if (!long.TryParse(item?["id"]?.ToString(), out var itemId))
+                    return new PriceUpdateResult(false, "Yandex item không có id hợp lệ.");
+                var offer = item?["offerId"]?.ToString() ?? "";
+                var count = item?["count"]?.GetValue<int?>() ?? 1;
+
+                var boxItem = new JsonObject
+                {
+                    ["id"] = itemId,
+                    ["fullCount"] = count
+                };
+
+                if (codesByOffer.TryGetValue(offer, out var codes) && codes.Count > 0)
+                {
+                    if (codes.Count < count)
+                        return new PriceUpdateResult(false, $"Yandex cần {count} KIZ cho {offer}, nhưng kho KIZ chưa đủ.");
+                    var instances = new JsonArray();
+                    for (var i = 0; i < count; i++)
+                    {
+                        instances.Add(new JsonObject { ["cis"] = ScannerSafeKiz(codes[i]) });
+                        expectedCodes++;
+                    }
+                    boxItem["instances"] = instances;
+                }
+                boxItems.Add(boxItem);
+            }
+
+            var body = new JsonObject
+            {
+                ["boxes"] = new JsonArray(new JsonObject { ["items"] = boxItems }),
+                ["allowRemove"] = false
+            }.ToJsonString();
+
+            using var res = await http.SendAsync(Request(HttpMethod.Put,
+                $"https://api.partner.market.yandex.ru/v2/campaigns/{store.CampaignId}/orders/{sample.ExternalOrderId}/boxes",
+                store, body), ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if (!res.IsSuccessStatusCode)
+                return new PriceUpdateResult(false, $"Yandex boxes HTTP {(int)res.StatusCode}: {Short(text)}");
+
+            if (expectedCodes == 0)
+                return new PriceUpdateResult(true, "Yandex đã nhận layout hộp.", sample.ExternalOrderId);
+
+            for (var attempt = 0; attempt < 15; attempt++)
+            {
+                using var check = await http.SendAsync(Request(HttpMethod.Post,
+                    $"https://api.partner.market.yandex.ru/v2/campaigns/{store.CampaignId}/orders/{sample.ExternalOrderId}/identifiers/status",
+                    store, "{}"), ct);
+                var checkText = await check.Content.ReadAsStringAsync(ct);
+                if (!check.IsSuccessStatusCode)
+                    return new PriceUpdateResult(false, $"Yandex kiểm tra KIZ HTTP {(int)check.StatusCode}: {Short(checkText)}");
+
+                var statuses = CollectStringValues(JsonNode.Parse(checkText), "status");
+                if (statuses.Any(x => x.Equals("INVALID", StringComparison.OrdinalIgnoreCase) ||
+                                      x.Equals("FAILED", StringComparison.OrdinalIgnoreCase)))
+                    return new PriceUpdateResult(false, "Yandex từ chối ít nhất một mã KIZ.");
+                var okCount = statuses.Count(x => x.Equals("OK", StringComparison.OrdinalIgnoreCase));
+                if (okCount >= expectedCodes)
+                    return new PriceUpdateResult(true, $"Yandex đã xác minh {expectedCodes} KIZ.", sample.ExternalOrderId);
+
+                await Task.Delay(1000, ct);
+            }
+
+            return new PriceUpdateResult(false,
+                "Yandex vẫn đang kiểm tra KIZ. Ứng dụng chưa chuyển READY_TO_SHIP để tránh đơn bị từ chối.",
+                sample.ExternalOrderId);
+        }
+        catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
+    }
+
+    private static Dictionary<string, List<string>> CollectOzonExemplarIdsByProduct(JsonNode? node)
+    {
+        var result = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        void Walk(JsonNode? current)
+        {
+            if (current is JsonObject obj)
+            {
+                var productId = obj["product_id"]?.ToString() ?? "";
+                if (!string.IsNullOrWhiteSpace(productId) && obj["exemplars"] is JsonArray exemplars)
+                {
+                    var ids = new List<string>();
+                    foreach (var ex in exemplars)
+                    {
+                        var id = ex?["exemplar_id"]?.ToString() ?? "";
+                        if (!string.IsNullOrWhiteSpace(id)) ids.Add(id);
+                    }
+                    if (ids.Count > 0)
+                    {
+                        if (!result.TryGetValue(productId, out var existing))
+                            result[productId] = existing = new List<string>();
+                        existing.AddRange(ids);
+                    }
+                }
+                foreach (var pair in obj) Walk(pair.Value);
+            }
+            else if (current is JsonArray arr)
+                foreach (var child in arr) Walk(child);
+        }
+        Walk(node);
+        return result;
+    }
+
+    private static bool OzonHasRejectedExemplar(JsonNode? node)
+    {
+        var statuses = CollectStringValues(node, "status")
+            .Concat(CollectStringValues(node, "check_status"))
+            .Concat(CollectStringValues(node, "mark_status"))
+            .ToArray();
+        if (statuses.Any(x => x.Equals("rejected", StringComparison.OrdinalIgnoreCase) ||
+                              x.Equals("invalid", StringComparison.OrdinalIgnoreCase) ||
+                              x.Equals("failed", StringComparison.OrdinalIgnoreCase) ||
+                              x.Equals("error", StringComparison.OrdinalIgnoreCase)))
+            return true;
+        return CollectBooleanValues(node, "valid").Any(x => !x);
+    }
+
+    private static bool OzonExemplarAccepted(JsonNode? node)
+    {
+        var statuses = CollectStringValues(node, "status")
+            .Concat(CollectStringValues(node, "check_status"))
+            .Concat(CollectStringValues(node, "mark_status"))
+            .ToArray();
+        return statuses.Any(x => x.Equals("accepted", StringComparison.OrdinalIgnoreCase) ||
+                                 x.Equals("passed", StringComparison.OrdinalIgnoreCase) ||
+                                 x.Equals("success", StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static IReadOnlyList<string> CollectStringValues(JsonNode? node, string key)
+    {
+        var values = new List<string>();
+        void Walk(JsonNode? current)
+        {
+            if (current is JsonObject obj)
+            {
+                foreach (var pair in obj)
+                {
+                    if (pair.Key.Equals(key, StringComparison.OrdinalIgnoreCase) && pair.Value is JsonValue)
+                        values.Add(pair.Value.ToString());
+                    Walk(pair.Value);
+                }
+            }
+            else if (current is JsonArray arr)
+                foreach (var child in arr) Walk(child);
+        }
+        Walk(node);
+        return values;
+    }
+
+    private static IReadOnlyList<bool> CollectBooleanValues(JsonNode? node, string key)
+    {
+        var values = new List<bool>();
+        void Walk(JsonNode? current)
+        {
+            if (current is JsonObject obj)
+            {
+                foreach (var pair in obj)
+                {
+                    if (pair.Key.Equals(key, StringComparison.OrdinalIgnoreCase) &&
+                        bool.TryParse(pair.Value?.ToString(), out var value))
+                        values.Add(value);
+                    Walk(pair.Value);
+                }
+            }
+            else if (current is JsonArray arr)
+                foreach (var child in arr) Walk(child);
+        }
+        Walk(node);
+        return values;
+    }
+
+    private static string ScannerSafeKiz(string code) =>
+        string.IsNullOrEmpty(code) ? "" : code[0] == '\u001d' ? code[1..] : code;
+
+
     public async Task<PriceUpdateResult> PackOrderAsync(StoreProfile s, FbsOrderRow order, CancellationToken ct = default)
     {
         try
@@ -1534,8 +1896,9 @@ public sealed class MarketplaceGateway
             if (store.Marketplace != Marketplace.Wildberries)
             {
                 var messages = new List<string>();
-                foreach (var order in orders)
+                foreach (var group in orders.GroupBy(x => x.ExternalOrderId, StringComparer.OrdinalIgnoreCase))
                 {
+                    var order = group.First();
                     var r = await PackOrderAsync(store, order, ct);
                     messages.Add($"{order.ExternalOrderId}: {r.Message}");
                     if (!r.Success) return new PriceUpdateResult(false, string.Join(Environment.NewLine, messages));

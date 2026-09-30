@@ -1,5 +1,6 @@
 using MarketplaceHub.Core;
 using MarketplaceHub.Infrastructure;
+using System.Collections.Concurrent;
 using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
@@ -14,6 +15,7 @@ public sealed class AppServices
     public AppDatabase Db { get; } = new();
     public MarketplaceGateway Api { get; } = new();
     private readonly HttpClient znakHttp = new() { Timeout = TimeSpan.FromSeconds(45) };
+    private readonly ConcurrentDictionary<long, SemaphoreSlim> syncLocks = new();
 
     public async Task<(bool Ok, string Message)> SyncProductsAsync(StoreProfile store, CancellationToken ct = default)
     {
@@ -21,7 +23,7 @@ public sealed class AppServices
         try
         {
             var rows = await Api.SyncProductsAsync(store, ct);
-            Db.ReplaceProducts(store.Id, store.Marketplace, rows);
+            await Task.Run(() => Db.ReplaceProducts(store.Id, store.Marketplace, rows), ct);
             Db.SaveSyncState(store.Id, "products", "", "", "", "");
             Db.FinishSyncRun(run, true, rows.Count, rows.Count);
             return (true, $"Đã đồng bộ {rows.Count} sản phẩm.");
@@ -40,7 +42,7 @@ public sealed class AppServices
         try
         {
             var rows = await Api.SyncFbsAsync(store, ct);
-            var written = Db.UpsertOrders(store.Id, store.Marketplace, rows);
+            var written = await Task.Run(() => Db.UpsertOrders(store.Id, store.Marketplace, rows), ct);
             Db.SaveSyncState(store.Id, "fbs_orders", "", DateTimeOffset.UtcNow.AddDays(-30).ToString("O"), DateTimeOffset.UtcNow.ToString("O"), "");
             Db.FinishSyncRun(run, true, rows.Count, written);
             return (true, $"Đã đồng bộ {written} dòng đơn FBS và giữ lại trạng thái lịch sử trong cache.");
@@ -59,7 +61,7 @@ public sealed class AppServices
         try
         {
             var rows = await Api.SyncFboSuppliesAsync(store, ct);
-            Db.ReplaceFboSupplies(store.Id, store.Marketplace, rows);
+            await Task.Run(() => Db.ReplaceFboSupplies(store.Id, store.Marketplace, rows), ct);
             Db.SaveSyncState(store.Id, "fbo_supplies", "", "", "", "");
             Db.FinishSyncRun(run, true, rows.Count, rows.Count);
             return (true, $"Đã đồng bộ {rows.Count} yêu cầu nhập kho FBO/FBW.");
@@ -71,6 +73,43 @@ public sealed class AppServices
             return (false, ex.Message);
         }
     }
+
+
+    public async Task<(bool Ok, string Message)> SyncStoreAsync(
+        StoreProfile store,
+        CancellationToken ct = default)
+    {
+        var gate = syncLocks.GetOrAdd(store.Id, _ => new SemaphoreSlim(1, 1));
+        if (!await gate.WaitAsync(0, ct))
+            return (false, $"Cửa hàng {store.Name} đang có một luồng đồng bộ khác chạy.");
+
+        try
+        {
+            var messages = new List<string>();
+            var products = await SyncProductsAsync(store, ct);
+            messages.Add("Sản phẩm: " + products.Message);
+
+            var orders = await SyncOrdersAsync(store, ct);
+            messages.Add("FBS: " + orders.Message);
+
+            var ok = products.Ok && orders.Ok;
+            if (store.Marketplace is Marketplace.Wildberries or Marketplace.Ozon)
+            {
+                var fbo = await SyncFboSuppliesAsync(store, ct);
+                messages.Add("FBO/FBW: " + fbo.Message);
+                ok &= fbo.Ok;
+            }
+
+            Db.Audit("Đồng bộ", ok ? "Hoàn tất" : "Có lỗi", $"{store.Marketplace}:{store.Name}");
+            return (ok, string.Join(Environment.NewLine, messages));
+        }
+        finally
+        {
+            gate.Release();
+        }
+    }
+
+
 
     public async Task<(bool Ok, string Message, FinanceSnapshot? Snapshot)> ReadFinanceAsync(
         StoreProfile store, DateTime from, DateTime to, CancellationToken ct = default)

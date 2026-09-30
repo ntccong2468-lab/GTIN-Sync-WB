@@ -1,5 +1,5 @@
 #define MyAppName "Marketplace Hub"
-#define MyAppVersion "0.6.3"
+#define MyAppVersion "0.7.0"
 #define MyAppPublisher "ntccong2468-lab"
 #define MyAppExeName "MarketplaceHub.exe"
 [Setup]
