@@ -1,7 +1,10 @@
 using MarketplaceHub.Core;
 using MarketplaceHub.Infrastructure;
+using System.Diagnostics;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
+using System.Text.Json;
+using System.Text.Json.Nodes;
 using System.Text.RegularExpressions;
 
 namespace MarketplaceHub.Services;
@@ -10,6 +13,7 @@ public sealed class AppServices
 {
     public AppDatabase Db { get; } = new();
     public MarketplaceGateway Api { get; } = new();
+    private readonly HttpClient znakHttp = new() { Timeout = TimeSpan.FromSeconds(45) };
 
     public async Task<(bool Ok, string Message)> SyncProductsAsync(StoreProfile store, CancellationToken ct = default)
     {
@@ -93,6 +97,351 @@ public sealed class AppServices
         Db.AddPriceHistory(store.Id, product.Sku, product.Price, price, result.Message);
         Db.Audit("Price", result.Success ? "Accepted" : "Failed", $"{store.Marketplace}:{product.Sku}:{price}:{result.Message}");
         return result;
+    }
+
+    public static string NormalizeGtin14(string value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return "";
+        var digits = new string(value.Where(char.IsDigit).ToArray());
+        if (digits.Length == 13) return "0" + digits;
+        return digits.Length == 14 ? digits : "";
+    }
+
+    public async Task<(bool Ok, string Message, IReadOnlyList<string> Codes)> EnsureKizQuantityAsync(
+        long storeId,
+        string sku,
+        string gtin,
+        int quantity,
+        CancellationToken ct = default)
+    {
+        gtin = NormalizeGtin14(gtin);
+        if (string.IsNullOrWhiteSpace(gtin))
+            return (false, "Barcode/GTIN của sản phẩm không thể chuẩn hóa thành GTIN-14.", Array.Empty<string>());
+
+        quantity = Math.Max(1, quantity);
+        var available = Db.Kiz()
+            .Where(x => x.Gtin == gtin && x.Status == "AVAILABLE")
+            .Select(x => x.Code)
+            .Take(quantity)
+            .ToList();
+        if (available.Count >= quantity)
+            return (true, $"Kho KIZ đã có {available.Count} mã sẵn sàng.", available);
+
+        var missing = quantity - available.Count;
+        var config = Db.GetZnakConfig();
+        if (!config.Enabled)
+            return (false, $"Thiếu {missing} KIZ và chức năng Znack chưa được bật.", available);
+        if (string.IsNullOrWhiteSpace(config.OmsId) || string.IsNullOrWhiteSpace(config.OmsConnection))
+            return (false, $"Thiếu {missing} KIZ. Hãy cấu hình omsId và omsConnection.", available);
+        if (string.IsNullOrWhiteSpace(config.CertificateThumbprint))
+            return (false, $"Thiếu {missing} KIZ. Hãy chọn chứng thư số CryptoPro có private key.", available);
+
+        Db.UpsertZnakPipeline(storeId, sku, gtin, "BUYING", "", $"Tự động mua {missing} KIZ");
+        try
+        {
+            var token = await GetSuzTokenAsync(config, ct);
+            var orderId = await CreateSuzOrderAsync(config, token, gtin, missing, ct);
+            Db.UpsertZnakPipeline(storeId, sku, gtin, "POLLING", orderId, "Đang chờ SUZ cấp mã");
+
+            var ready = await WaitSuzCodesReadyAsync(config, token, orderId, ct);
+            if (!ready.Ok)
+            {
+                Db.UpsertZnakPipeline(storeId, sku, gtin, "ERROR", orderId, ready.Message);
+                return (false, ready.Message, available);
+            }
+
+            var downloaded = await DownloadSuzCodesAsync(config, token, orderId, gtin, missing, ct);
+            if (downloaded.Count == 0)
+            {
+                const string message = "SUZ báo sẵn sàng nhưng không trả mã KIZ.";
+                Db.UpsertZnakPipeline(storeId, sku, gtin, "ERROR", orderId, message);
+                return (false, message, available);
+            }
+
+            foreach (var code in downloaded)
+                Db.UpsertKiz(code, gtin, "AVAILABLE");
+
+            available.AddRange(downloaded);
+            Db.UpsertZnakPipeline(storeId, sku, gtin, "CODES_DOWNLOADED", orderId, $"Đã tải {downloaded.Count} mã KIZ");
+            Db.Audit("Znack", "Tự động mua KIZ", $"{gtin}:{downloaded.Count}:{orderId}");
+            return (available.Count >= quantity,
+                available.Count >= quantity
+                    ? $"Đã tự động mua và tải {downloaded.Count} KIZ."
+                    : $"Đã tải {downloaded.Count} KIZ nhưng vẫn chưa đủ số lượng cần dùng.",
+                available.Take(quantity).ToList());
+        }
+        catch (Exception ex)
+        {
+            Db.UpsertZnakPipeline(storeId, sku, gtin, "ERROR", "", ex.Message);
+            Db.Audit("Znack", "Lỗi mua KIZ", $"{gtin}:{ex.Message}");
+            return (false, ex.Message, available);
+        }
+    }
+
+    private async Task<string> GetSuzTokenAsync(ZnakConfig config, CancellationToken ct)
+    {
+        const string baseUrl = "https://markirovka.crpt.ru/api/v3/true-api";
+        using var challengeRes = await znakHttp.GetAsync(baseUrl + "/auth/key", ct);
+        var challengeText = await challengeRes.Content.ReadAsStringAsync(ct);
+        if (!challengeRes.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Znack auth/key HTTP {(int)challengeRes.StatusCode}: {TrimDiagnostic(challengeText)}");
+
+        var challenge = JsonNode.Parse(challengeText)?.AsObject()
+                        ?? throw new InvalidOperationException("Znack auth/key trả dữ liệu không hợp lệ.");
+        var uuid = challenge["uuid"]?.ToString() ?? "";
+        var data = challenge["data"]?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(uuid) || string.IsNullOrWhiteSpace(data))
+            throw new InvalidOperationException("Znack auth/key thiếu uuid/data.");
+
+        var cms = await SignCryptoProAsync(Encoding.UTF8.GetBytes(data), config.CertificateThumbprint, detached: false, ct);
+        var body = new JsonObject
+        {
+            ["uuid"] = uuid,
+            ["data"] = Convert.ToBase64String(cms)
+        };
+        var inn = string.IsNullOrWhiteSpace(config.Inn)
+            ? Certificates().FirstOrDefault(x => x.Thumbprint.Equals(config.CertificateThumbprint, StringComparison.OrdinalIgnoreCase))?.Inn ?? ""
+            : config.Inn;
+        if (!string.IsNullOrWhiteSpace(inn)) body["inn"] = inn;
+
+        var signInUrl = baseUrl + "/auth/simpleSignIn/" + Uri.EscapeDataString(config.OmsConnection.Trim());
+        using var signIn = new HttpRequestMessage(HttpMethod.Post, signInUrl)
+        {
+            Content = new StringContent(body.ToJsonString(), Encoding.UTF8, "application/json")
+        };
+        signIn.Headers.TryAddWithoutValidation("Accept", "application/json");
+        using var res = await znakHttp.SendAsync(signIn, ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"Znack signIn HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
+
+        var root = JsonNode.Parse(text);
+        var token = root?["clientToken"]?.ToString()
+                    ?? root?["token"]?.ToString()
+                    ?? root?["sessionToken"]?.ToString()
+                    ?? root?["jwt"]?.ToString()
+                    ?? "";
+        if (string.IsNullOrWhiteSpace(token))
+            throw new InvalidOperationException("Znack signIn không trả clientToken.");
+        return token;
+    }
+
+    private async Task<string> CreateSuzOrderAsync(
+        ZnakConfig config,
+        string token,
+        string gtin,
+        int quantity,
+        CancellationToken ct)
+    {
+        const string suzBase = "https://suzgrid.crpt.ru";
+        var order = new JsonObject
+        {
+            ["productGroup"] = "lp",
+            ["attributes"] = new JsonObject { ["releaseMethodType"] = "PRODUCTION" },
+            ["products"] = new JsonArray(new JsonObject
+            {
+                ["gtin"] = gtin,
+                ["quantity"] = quantity,
+                ["serialNumberType"] = "OPERATOR",
+                ["templateId"] = 10,
+                ["cisType"] = "UNIT"
+            })
+        };
+        var payload = Encoding.UTF8.GetBytes(order.ToJsonString());
+        var signature = Convert.ToBase64String(
+            await SignCryptoProAsync(payload, config.CertificateThumbprint, detached: true, ct));
+
+        var url = $"{suzBase}/api/v3/order?omsId={Uri.EscapeDataString(config.OmsId.Trim())}";
+        using var req = new HttpRequestMessage(HttpMethod.Post, url)
+        {
+            Content = new ByteArrayContent(payload)
+        };
+        req.Content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/json");
+        req.Headers.TryAddWithoutValidation("Accept", "application/json");
+        req.Headers.TryAddWithoutValidation("clientToken", token);
+        req.Headers.TryAddWithoutValidation("X-Signature", signature);
+
+        using var res = await znakHttp.SendAsync(req, ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"SUZ tạo order HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
+
+        var root = JsonNode.Parse(text);
+        var orderId = root?["orderId"]?.ToString() ?? root?["id"]?.ToString() ?? "";
+        if (string.IsNullOrWhiteSpace(orderId))
+            throw new InvalidOperationException("SUZ không trả orderId.");
+        return orderId;
+    }
+
+    private async Task<(bool Ok, string Message)> WaitSuzCodesReadyAsync(
+        ZnakConfig config,
+        string token,
+        string orderId,
+        CancellationToken ct)
+    {
+        const string suzBase = "https://suzgrid.crpt.ru";
+        for (var attempt = 0; attempt < 30; attempt++)
+        {
+            var url = $"{suzBase}/api/v3/order/status?omsId={Uri.EscapeDataString(config.OmsId.Trim())}&orderId={Uri.EscapeDataString(orderId)}";
+            using var req = new HttpRequestMessage(HttpMethod.Get, url);
+            req.Headers.TryAddWithoutValidation("Accept", "application/json");
+            req.Headers.TryAddWithoutValidation("clientToken", token);
+            using var res = await znakHttp.SendAsync(req, ct);
+            var text = await res.Content.ReadAsStringAsync(ct);
+            if ((int)res.StatusCode == 429)
+            {
+                await Task.Delay(TimeSpan.FromSeconds(2), ct);
+                continue;
+            }
+            if (!res.IsSuccessStatusCode)
+                return (false, $"SUZ status HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
+
+            var node = JsonNode.Parse(text);
+            var entries = node as JsonArray ?? new JsonArray(node);
+            foreach (var entry in entries)
+            {
+                var state = entry?["bufferStatus"]?.ToString()
+                            ?? entry?["status"]?.ToString()
+                            ?? "";
+                if (state.Equals("REJECTED", StringComparison.OrdinalIgnoreCase) ||
+                    state.Equals("DECLINED", StringComparison.OrdinalIgnoreCase))
+                {
+                    var reason = entry?["rejectionReason"]?.ToString() ?? "SUZ từ chối yêu cầu.";
+                    return (false, reason);
+                }
+                var available = int.TryParse(entry?["availableCodes"]?.ToString(), out var n) ? n : 0;
+                if ((state.Equals("ACTIVE", StringComparison.OrdinalIgnoreCase) ||
+                     state.Equals("READY", StringComparison.OrdinalIgnoreCase)) && available > 0)
+                    return (true, "KIZ đã sẵn sàng.");
+            }
+            await Task.Delay(TimeSpan.FromSeconds(2), ct);
+        }
+        return (false, "Hết thời gian chờ SUZ cấp KIZ. Yêu cầu đã được lưu để kiểm tra lại.");
+    }
+
+    private async Task<IReadOnlyList<string>> DownloadSuzCodesAsync(
+        ZnakConfig config,
+        string token,
+        string orderId,
+        string gtin,
+        int quantity,
+        CancellationToken ct)
+    {
+        const string suzBase = "https://suzgrid.crpt.ru";
+        var url = $"{suzBase}/api/v3/codes?omsId={Uri.EscapeDataString(config.OmsId.Trim())}&orderId={Uri.EscapeDataString(orderId)}&quantity={quantity}&gtin={Uri.EscapeDataString(gtin)}";
+        using var req = new HttpRequestMessage(HttpMethod.Get, url);
+        req.Headers.TryAddWithoutValidation("Accept", "application/json");
+        req.Headers.TryAddWithoutValidation("clientToken", token);
+        using var res = await znakHttp.SendAsync(req, ct);
+        var text = await res.Content.ReadAsStringAsync(ct);
+        if (!res.IsSuccessStatusCode)
+            throw new InvalidOperationException($"SUZ codes HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
+
+        var root = JsonNode.Parse(text);
+        JsonArray values = root as JsonArray
+                           ?? root?["codes"]?.AsArray()
+                           ?? new JsonArray();
+        var result = new List<string>();
+        foreach (var item in values)
+        {
+            var code = item is JsonValue ? item.ToString() : item?["cis"]?.ToString() ?? "";
+            if (!string.IsNullOrWhiteSpace(code)) result.Add(code);
+        }
+        return result.Distinct(StringComparer.Ordinal).ToList();
+    }
+
+    private static async Task<byte[]> SignCryptoProAsync(
+        byte[] payload,
+        string thumbprint,
+        bool detached,
+        CancellationToken ct)
+    {
+        var exe = FindCryptoProExecutable();
+        if (string.IsNullOrWhiteSpace(exe))
+            throw new InvalidOperationException("Không tìm thấy cryptcp.exe. Hãy cài CryptoPro CSP/CryptoPro Tools trên máy seller.");
+
+        var dir = Path.Combine(Path.GetTempPath(), "MarketplaceHub-Znack-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var input = Path.Combine(dir, "payload.bin");
+        var output = Path.Combine(dir, "signature.p7s");
+        await File.WriteAllBytesAsync(input, payload, ct);
+
+        try
+        {
+            var psi = new ProcessStartInfo
+            {
+                FileName = exe,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true
+            };
+            psi.ArgumentList.Add("-sign");
+            psi.ArgumentList.Add("-uMy");
+            psi.ArgumentList.Add("-thumbprint");
+            psi.ArgumentList.Add(thumbprint.Replace(" ", ""));
+            psi.ArgumentList.Add("-der");
+            psi.ArgumentList.Add(detached ? "-detached" : "-attached");
+            psi.ArgumentList.Add(input);
+            psi.ArgumentList.Add(output);
+
+            using var process = Process.Start(psi)
+                ?? throw new InvalidOperationException("Không khởi động được cryptcp.");
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
+            timeout.CancelAfter(TimeSpan.FromSeconds(60));
+            try
+            {
+                await process.WaitForExitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException)
+            {
+                try { if (!process.HasExited) process.Kill(true); } catch { }
+                throw new TimeoutException("CryptoPro ký dữ liệu quá 60 giây.");
+            }
+
+            var stdout = await process.StandardOutput.ReadToEndAsync();
+            var stderr = await process.StandardError.ReadToEndAsync();
+            if (process.ExitCode != 0)
+                throw new InvalidOperationException($"CryptoPro ký thất bại ({process.ExitCode}): {TrimDiagnostic(stderr + " " + stdout)}");
+            if (!File.Exists(output) || new FileInfo(output).Length == 0)
+                throw new InvalidOperationException("CryptoPro không tạo file chữ ký.");
+
+            return await File.ReadAllBytesAsync(output, ct);
+        }
+        finally
+        {
+            try { Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    private static string? FindCryptoProExecutable()
+    {
+        var candidates = new[]
+        {
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Crypto Pro", "CSP", "cryptcp.exe"),
+            Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Crypto Pro", "CSP", "cryptcp.exe")
+        };
+        foreach (var path in candidates)
+            if (File.Exists(path)) return path;
+
+        var pathVar = Environment.GetEnvironmentVariable("PATH") ?? "";
+        foreach (var dir in pathVar.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            try
+            {
+                var path = Path.Combine(dir.Trim().Trim('"'), "cryptcp.exe");
+                if (File.Exists(path)) return path;
+            }
+            catch { }
+        }
+        return null;
+    }
+
+    private static string TrimDiagnostic(string value)
+    {
+        value = (value ?? "").Replace("", " ").Replace("
+", " ").Trim();
+        return value.Length > 500 ? value[..500] : value;
     }
 
     public static (bool Ok, string Gtin, string Message) ParseKiz(string code)
@@ -320,7 +669,13 @@ public sealed class AppServices
                        == "7701234567";
             });
 
-            Check("13. Xóa cửa hàng và toàn bộ dữ liệu liên quan", () =>
+            Check("13. Chuẩn hóa EAN-13 thành GTIN-14", () =>
+            {
+                return NormalizeGtin14("4681005807182") == "04681005807182"
+                       && NormalizeGtin14("04681005807182") == "04681005807182";
+            });
+
+            Check("14. Xóa cửa hàng và toàn bộ dữ liệu liên quan", () =>
             {
                 if (createdStore is null) return false;
                 var id = createdStore.Id;
