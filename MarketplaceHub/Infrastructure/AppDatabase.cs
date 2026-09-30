@@ -94,6 +94,52 @@ CREATE TABLE IF NOT EXISTS znak_config(
  oms_id TEXT NOT NULL DEFAULT '',
  oms_connection TEXT NOT NULL DEFAULT '',
  auto_circulation INTEGER NOT NULL DEFAULT 1
+);
+CREATE TABLE IF NOT EXISTS sync_state(
+ store_id INTEGER NOT NULL,
+ stream TEXT NOT NULL,
+ cursor TEXT NOT NULL DEFAULT '',
+ window_from TEXT NOT NULL DEFAULT '',
+ window_to TEXT NOT NULL DEFAULT '',
+ last_success_at TEXT NOT NULL DEFAULT '',
+ last_error TEXT NOT NULL DEFAULT '',
+ PRIMARY KEY(store_id, stream)
+);
+CREATE TABLE IF NOT EXISTS sync_runs(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ store_id INTEGER NOT NULL,
+ stream TEXT NOT NULL,
+ started_at TEXT NOT NULL,
+ finished_at TEXT NULL,
+ success INTEGER NOT NULL DEFAULT 0,
+ read_count INTEGER NOT NULL DEFAULT 0,
+ written_count INTEGER NOT NULL DEFAULT 0,
+ error TEXT NOT NULL DEFAULT ''
+);
+CREATE TABLE IF NOT EXISTS fbo_supply_orders(
+ store_id INTEGER NOT NULL,
+ marketplace TEXT NOT NULL,
+ order_id TEXT NOT NULL,
+ supply_id TEXT NOT NULL DEFAULT '',
+ status TEXT NOT NULL DEFAULT '',
+ warehouse TEXT NOT NULL DEFAULT '',
+ planned_at TEXT NOT NULL DEFAULT '',
+ total_quantity INTEGER NOT NULL DEFAULT 0,
+ accepted_quantity INTEGER NOT NULL DEFAULT 0,
+ raw_json TEXT NOT NULL DEFAULT '{}',
+ synced_at TEXT NOT NULL,
+ PRIMARY KEY(store_id, order_id)
+);
+CREATE TABLE IF NOT EXISTS znak_pipeline(
+ id INTEGER PRIMARY KEY AUTOINCREMENT,
+ store_id INTEGER NOT NULL,
+ sku TEXT NOT NULL,
+ gtin TEXT NOT NULL DEFAULT '',
+ stage TEXT NOT NULL,
+ external_order_id TEXT NOT NULL DEFAULT '',
+ detail TEXT NOT NULL DEFAULT '',
+ updated_at TEXT NOT NULL,
+ UNIQUE(store_id, sku)
 );";
         cmd.ExecuteNonQuery();
         EnsureZnakColumns(c);
@@ -237,22 +283,24 @@ VALUES($s,$m,$e,$sku,$n,$p,$i,$r,$at)";
 
     public void ReplaceOrders(long storeId, Marketplace marketplace, IEnumerable<FbsOrderRow> rows)
     {
+        // Giữ lịch sử/trạng thái đã biết thay vì xóa toàn bộ cache khi API chỉ trả một queue con.
+        UpsertOrders(storeId, marketplace, rows);
+    }
+
+    public int UpsertOrders(long storeId, Marketplace marketplace, IEnumerable<FbsOrderRow> rows)
+    {
+        var list = rows.ToList();
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
         using var tx = c.BeginTransaction();
-        using (var d = c.CreateCommand())
-        {
-            d.Transaction = tx;
-            d.CommandText = "DELETE FROM fbs_orders WHERE store_id=$s";
-            d.Parameters.AddWithValue("$s", storeId);
-            d.ExecuteNonQuery();
-        }
-        foreach (var o in rows)
+        foreach (var o in list)
         {
             using var cmd = c.CreateCommand();
             cmd.Transaction = tx;
             cmd.CommandText = @"INSERT INTO fbs_orders(store_id,marketplace,external_order_id,sku,name,quantity,status,needs_kiz,raw_json,synced_at)
-VALUES($s,$m,$o,$sku,$n,$q,$st,$k,$r,$at)";
+VALUES($s,$m,$o,$sku,$n,$q,$st,$k,$r,$at)
+ON CONFLICT(store_id,external_order_id,sku) DO UPDATE SET
+ marketplace=$m,name=$n,quantity=$q,status=$st,needs_kiz=$k,raw_json=$r,synced_at=$at";
             cmd.Parameters.AddWithValue("$s", storeId);
             cmd.Parameters.AddWithValue("$m", marketplace.ToString());
             cmd.Parameters.AddWithValue("$o", o.ExternalOrderId);
@@ -266,7 +314,8 @@ VALUES($s,$m,$o,$sku,$n,$q,$st,$k,$r,$at)";
             cmd.ExecuteNonQuery();
         }
         tx.Commit();
-        Audit("FBS", "Sync", $"{marketplace}:{storeId}");
+        Audit("FBS", "Sync", $"{marketplace}:{storeId}:{list.Count}");
+        return list.Count;
     }
 
     public IReadOnlyList<FbsOrderRow> Orders(long storeId)
@@ -359,6 +408,168 @@ ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,ce
         Audit("Честный ЗНАК", "Lưu cấu hình", $"{z.Inn}:{z.Environment}:{z.AutoSignMode}");
     }
 
+    public long StartSyncRun(long storeId, string stream)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"INSERT INTO sync_runs(store_id,stream,started_at) VALUES($s,$st,$at); SELECT last_insert_rowid();";
+        cmd.Parameters.AddWithValue("$s", storeId);
+        cmd.Parameters.AddWithValue("$st", stream);
+        cmd.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+        return Convert.ToInt64(cmd.ExecuteScalar());
+    }
+
+    public void FinishSyncRun(long id, bool success, int read, int written, string? error = null)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"UPDATE sync_runs SET finished_at=$at,success=$ok,read_count=$r,written_count=$w,error=$e WHERE id=$id";
+        cmd.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+        cmd.Parameters.AddWithValue("$ok", success ? 1 : 0);
+        cmd.Parameters.AddWithValue("$r", read);
+        cmd.Parameters.AddWithValue("$w", written);
+        cmd.Parameters.AddWithValue("$e", error ?? "");
+        cmd.Parameters.AddWithValue("$id", id);
+        cmd.ExecuteNonQuery();
+    }
+
+    public void SaveSyncState(long storeId, string stream, string cursor, string windowFrom, string windowTo, string? error = null)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"INSERT INTO sync_state(store_id,stream,cursor,window_from,window_to,last_success_at,last_error)
+VALUES($s,$st,$c,$f,$t,$at,$e)
+ON CONFLICT(store_id,stream) DO UPDATE SET cursor=$c,window_from=$f,window_to=$t,
+ last_success_at=CASE WHEN $e='' THEN $at ELSE last_success_at END,last_error=$e";
+        cmd.Parameters.AddWithValue("$s", storeId);
+        cmd.Parameters.AddWithValue("$st", stream);
+        cmd.Parameters.AddWithValue("$c", cursor ?? "");
+        cmd.Parameters.AddWithValue("$f", windowFrom ?? "");
+        cmd.Parameters.AddWithValue("$t", windowTo ?? "");
+        cmd.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+        cmd.Parameters.AddWithValue("$e", error ?? "");
+        cmd.ExecuteNonQuery();
+    }
+
+    public (string Cursor, string WindowFrom, string WindowTo, string LastSuccessAt, string LastError) SyncState(long storeId, string stream)
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT cursor,window_from,window_to,last_success_at,last_error FROM sync_state WHERE store_id=$s AND stream=$st";
+        cmd.Parameters.AddWithValue("$s", storeId);
+        cmd.Parameters.AddWithValue("$st", stream);
+        using var r = cmd.ExecuteReader();
+        return r.Read()
+            ? (r.GetString(0), r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4))
+            : ("", "", "", "", "");
+    }
+
+    public IReadOnlyList<SyncRunRow> SyncRuns(long storeId, int limit = 50)
+    {
+        var result = new List<SyncRunRow>();
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"SELECT id,store_id,stream,started_at,finished_at,success,read_count,written_count,error
+FROM sync_runs WHERE store_id=$s ORDER BY id DESC LIMIT $l";
+        cmd.Parameters.AddWithValue("$s", storeId);
+        cmd.Parameters.AddWithValue("$l", limit);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var started = DateTimeOffset.TryParse(r.GetString(3), out var st) ? st : DateTimeOffset.MinValue;
+            DateTimeOffset? finished = !r.IsDBNull(4) && DateTimeOffset.TryParse(r.GetString(4), out var ft) ? ft : null;
+            result.Add(new SyncRunRow(r.GetInt64(0), r.GetInt64(1), r.GetString(2), started, finished,
+                r.GetInt64(5) == 1, r.GetInt32(6), r.GetInt32(7), r.GetString(8)));
+        }
+        return result;
+    }
+
+    public void ReplaceFboSupplies(long storeId, Marketplace marketplace, IEnumerable<FboSupplyRow> rows)
+    {
+        var list = rows.ToList();
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var tx = c.BeginTransaction();
+        foreach (var row in list)
+        {
+            using var cmd = c.CreateCommand();
+            cmd.Transaction = tx;
+            cmd.CommandText = @"INSERT INTO fbo_supply_orders(store_id,marketplace,order_id,supply_id,status,warehouse,planned_at,total_quantity,accepted_quantity,raw_json,synced_at)
+VALUES($s,$m,$o,$si,$st,$w,$p,$q,$a,$r,$at)
+ON CONFLICT(store_id,order_id) DO UPDATE SET marketplace=$m,supply_id=$si,status=$st,warehouse=$w,planned_at=$p,total_quantity=$q,accepted_quantity=$a,raw_json=$r,synced_at=$at";
+            cmd.Parameters.AddWithValue("$s", storeId);
+            cmd.Parameters.AddWithValue("$m", marketplace.ToString());
+            cmd.Parameters.AddWithValue("$o", row.OrderId);
+            cmd.Parameters.AddWithValue("$si", row.SupplyId);
+            cmd.Parameters.AddWithValue("$st", row.Status);
+            cmd.Parameters.AddWithValue("$w", row.Warehouse);
+            cmd.Parameters.AddWithValue("$p", row.PlannedAt);
+            cmd.Parameters.AddWithValue("$q", row.TotalQuantity);
+            cmd.Parameters.AddWithValue("$a", row.AcceptedQuantity);
+            cmd.Parameters.AddWithValue("$r", row.RawJson);
+            cmd.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+            cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+        Audit("FBO", "Sync", $"{marketplace}:{storeId}:{list.Count}");
+    }
+
+    public IReadOnlyList<FboSupplyRow> FboSupplies(long storeId)
+    {
+        var result = new List<FboSupplyRow>();
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"SELECT marketplace,order_id,supply_id,status,warehouse,planned_at,total_quantity,accepted_quantity,raw_json
+FROM fbo_supply_orders WHERE store_id=$s ORDER BY planned_at DESC,order_id DESC";
+        cmd.Parameters.AddWithValue("$s", storeId);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+            result.Add(new FboSupplyRow(storeId, Enum.Parse<Marketplace>(r.GetString(0)), r.GetString(1), r.GetString(2),
+                r.GetString(3), r.GetString(4), r.GetString(5), r.GetInt32(6), r.GetInt32(7), r.GetString(8)));
+        return result;
+    }
+
+    public void UpsertZnakPipeline(long storeId, string sku, string gtin, string stage, string externalOrderId = "", string detail = "")
+    {
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = @"INSERT INTO znak_pipeline(store_id,sku,gtin,stage,external_order_id,detail,updated_at)
+VALUES($s,$sku,$g,$st,$o,$d,$at)
+ON CONFLICT(store_id,sku) DO UPDATE SET gtin=$g,stage=$st,external_order_id=$o,detail=$d,updated_at=$at";
+        cmd.Parameters.AddWithValue("$s", storeId);
+        cmd.Parameters.AddWithValue("$sku", sku);
+        cmd.Parameters.AddWithValue("$g", gtin ?? "");
+        cmd.Parameters.AddWithValue("$st", stage);
+        cmd.Parameters.AddWithValue("$o", externalOrderId ?? "");
+        cmd.Parameters.AddWithValue("$d", detail ?? "");
+        cmd.Parameters.AddWithValue("$at", DateTimeOffset.UtcNow.ToString("O"));
+        cmd.ExecuteNonQuery();
+    }
+
+    public IReadOnlyList<ZnakPipelineRow> ZnakPipelines(long storeId)
+    {
+        var result = new List<ZnakPipelineRow>();
+        using var c = new SqliteConnection(ConnectionString);
+        c.Open();
+        using var cmd = c.CreateCommand();
+        cmd.CommandText = "SELECT id,sku,gtin,stage,external_order_id,detail,updated_at FROM znak_pipeline WHERE store_id=$s ORDER BY updated_at DESC";
+        cmd.Parameters.AddWithValue("$s", storeId);
+        using var r = cmd.ExecuteReader();
+        while (r.Read())
+        {
+            var at = DateTimeOffset.TryParse(r.GetString(6), out var parsed) ? parsed : DateTimeOffset.MinValue;
+            result.Add(new ZnakPipelineRow(r.GetInt64(0), storeId, r.GetString(1), r.GetString(2), r.GetString(3), r.GetString(4), r.GetString(5), at));
+        }
+        return result;
+    }
+
     public IReadOnlyList<AuditRow> AuditRows(int limit = 200)
     {
         var result = new List<AuditRow>();
@@ -402,6 +613,14 @@ ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,ce
             h.CommandText = "DELETE FROM price_history WHERE store_id=$id";
             h.Parameters.AddWithValue("$id", id);
             h.ExecuteNonQuery();
+        }
+        foreach (var table in new[] { "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline" })
+        {
+            using var extra = c.CreateCommand();
+            extra.Transaction = tx;
+            extra.CommandText = $"DELETE FROM {table} WHERE store_id=$id";
+            extra.Parameters.AddWithValue("$id", id);
+            extra.ExecuteNonQuery();
         }
         using (var st = c.CreateCommand())
         {
