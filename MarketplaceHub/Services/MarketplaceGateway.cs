@@ -205,12 +205,12 @@ public sealed class MarketplaceGateway
                 result.Add(new ProductRow(
                     s.Id,
                     s.Marketplace,
-                    x["mapping"]?["marketSku"]?.ToString() ?? sku,
+                    x?["mapping"]?["marketSku"]?.ToString() ?? sku,
                     sku,
                     offer?["name"]?.ToString() ?? sku,
                     price,
                     FirstImageUrl(offer?["pictures"] ?? x?["mediaFiles"]?["pictures"]),
-                    x.ToJsonString()));
+                    x!.ToJsonString()));
             }
 
             var next = root?["result"]?["paging"]?["nextPageToken"]?.ToString()
@@ -348,7 +348,7 @@ public sealed class MarketplaceGateway
                     "https://marketplace-api.wildberries.ru/api/v3/orders/status", s,
                     JsonSerializer.Serialize(new { orders = batch })), ct);
                 var text = await res.Content.ReadAsStringAsync(ct);
-                if (!res.IsSuccessStatusCode) continue;
+                Ensure(res, text);
                 foreach (var st in JsonNode.Parse(text)?["orders"]?.AsArray() ?? new JsonArray())
                 {
                     var id = st?["id"]?.ToString() ?? "";
@@ -365,7 +365,9 @@ public sealed class MarketplaceGateway
                 var sku = x?["article"]?.ToString()
                           ?? x?["skus"]?.AsArray()?.FirstOrDefault()?.ToString()
                           ?? "";
-                var status = statusById.TryGetValue(kv.Key, out var st) && !string.IsNullOrWhiteSpace(st) ? st : "new";
+                if (!statusById.TryGetValue(kv.Key, out var st) || string.IsNullOrWhiteSpace(st))
+                    throw new InvalidOperationException($"WB chưa trả trạng thái cho đơn {kv.Key}. Giữ dữ liệu trước đó và đồng bộ lại.");
+                var status = st;
                 var needsKiz = x?["requiredMeta"]?.AsArray()?.Any(m =>
                     string.Equals(m?.ToString(), "sgtin", StringComparison.OrdinalIgnoreCase)) ?? false;
                 return new FbsOrderRow(
@@ -408,7 +410,7 @@ public sealed class MarketplaceGateway
                     if (string.IsNullOrWhiteSpace(number)) continue;
                     var rows = new List<FbsOrderRow>();
                     var requirementIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var reqName in new[] { "products_requiring_mandatory_mark", "products_requiring_optional_mark", "products_requiring_mark", "products_requiring_gtd", "products_requiring_country", "products_requiring_jw_uin" })
+                    foreach (var reqName in new[] { "products_requiring_mandatory_mark", "products_requiring_mark" })
                         foreach (var id in post?["requirements"]?[reqName]?.AsArray() ?? new JsonArray())
                             if (id is not null) requirementIds.Add(id.ToString());
 
@@ -468,7 +470,7 @@ public sealed class MarketplaceGateway
                 foreach (var item in order?["items"]?.AsArray() ?? new JsonArray())
                 {
                     var instances = item?["instances"]?.AsArray() ?? new JsonArray();
-                    var requiresMark = instances.Count > 0 ||
+                    var requiresMark = item?["hasCis"]?.GetValue<bool?>() == true || instances.Count > 0 ||
                         item?["requiredMeta"]?.AsArray()?.Any(x =>
                             string.Equals(x?.ToString(), "CIS", StringComparison.OrdinalIgnoreCase) ||
                             string.Equals(x?.ToString(), "SGTIN", StringComparison.OrdinalIgnoreCase)) == true;
@@ -696,6 +698,11 @@ public sealed class MarketplaceGateway
                 if (!res.IsSuccessStatusCode) return new LabelResult(false, $"HTTP {(int)res.StatusCode}: {Short(Encoding.UTF8.GetString(fileBytes))}");
                 ext = ".pdf";
             }
+
+            if (ext == ".pdf" && (fileBytes.Length < 5 || Encoding.ASCII.GetString(fileBytes, 0, 5) != "%PDF-"))
+                return new LabelResult(false, "Sàn chưa trả nhãn PDF hợp lệ. Hãy đồng bộ trạng thái đóng gói rồi tải nhãn lại.");
+            if (ext == ".png" && (fileBytes.Length < 8 || !fileBytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })))
+                return new LabelResult(false, "WB chưa trả sticker PNG hợp lệ.");
 
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "MarketplaceHub", "Labels");
             Directory.CreateDirectory(dir);
@@ -1492,7 +1499,7 @@ public sealed class MarketplaceGateway
             var posting = JsonNode.Parse(detailText)?["result"] ?? JsonNode.Parse(detailText);
             var requirements = posting?["requirements"];
             var requiredIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var name in new[] { "products_requiring_mandatory_mark", "products_requiring_optional_mark", "products_requiring_mark" })
+            foreach (var name in new[] { "products_requiring_mandatory_mark", "products_requiring_mark" })
                 foreach (var id in requirements?[name]?.AsArray() ?? new JsonArray())
                     if (id is not null) requiredIds.Add(id.ToString());
 
@@ -1753,7 +1760,7 @@ public sealed class MarketplaceGateway
             .Concat(CollectStringValues(node, "check_status"))
             .Concat(CollectStringValues(node, "mark_status"))
             .ToArray();
-        return statuses.Any(x => x.Equals("accepted", StringComparison.OrdinalIgnoreCase) ||
+        return statuses.Length > 0 && statuses.All(x => x.Equals("accepted", StringComparison.OrdinalIgnoreCase) ||
                                  x.Equals("passed", StringComparison.OrdinalIgnoreCase) ||
                                  x.Equals("success", StringComparison.OrdinalIgnoreCase));
     }
@@ -1859,9 +1866,8 @@ public sealed class MarketplaceGateway
 
                 var status = JsonNode.Parse(verifyText)?["result"]?["status"]?.ToString() ?? "";
                 var substatus = JsonNode.Parse(verifyText)?["result"]?["substatus"]?.ToString() ?? "";
-                if (!status.Equals("awaiting_deliver", StringComparison.OrdinalIgnoreCase) &&
-                    substatus.Equals("ship_failed", StringComparison.OrdinalIgnoreCase))
-                    return new PriceUpdateResult(false, "Ozon trả ship_failed sau khi gửi lệnh đóng hàng.");
+                if (!new[] { "awaiting_deliver", "delivering", "delivered" }.Contains(status, StringComparer.OrdinalIgnoreCase))
+                    return new PriceUpdateResult(false, $"Ozon chưa xác nhận đóng hàng: {status}/{substatus}. Đồng bộ lại trạng thái trước khi gửi lệnh tiếp theo.");
 
                 return new PriceUpdateResult(true, $"Ozon đã tiếp nhận đóng hàng. Status: {status}/{substatus}");
             }

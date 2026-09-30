@@ -21,6 +21,15 @@ public sealed class MainForm : Form
     private readonly HttpClient imageHttp = new() { Timeout = TimeSpan.FromSeconds(20) };
     private readonly ConcurrentDictionary<string, byte[]> imageCache = new(StringComparer.OrdinalIgnoreCase);
     private CancellationTokenSource pageCts = new();
+    private readonly CancellationTokenSource lifetimeCts = new();
+    private readonly SemaphoreSlim imageWorkers = new(4, 4);
+    private readonly SemaphoreSlim fbsOperations = new(1, 1);
+    private readonly Dictionary<long, IReadOnlyList<ProductRow>> pageProducts = new();
+    private readonly System.Windows.Forms.Timer autoSync = new() { Interval = 60_000 };
+    private bool autoSyncRunning;
+    private bool resourcesDisposed;
+    private Action? refreshActivePage;
+    private Action? activePage;
     private EventHandler? activeWorkResize;
     private readonly SemaphoreSlim znakWorkers = new(2, 2);
     private readonly ConcurrentDictionary<string, string> znakQueueStatus = new(StringComparer.OrdinalIgnoreCase);
@@ -58,6 +67,28 @@ public sealed class MainForm : Form
 
         RefreshStores();
         ShowDashboard();
+        autoSync.Tick += async (_, _) =>
+        {
+            if (autoSyncRunning || IsDisposed) return;
+            autoSyncRunning = true;
+            try
+            {
+                foreach (var store in app.Db.Stores().Where(x => x.Enabled))
+                {
+                    var result = await app.SyncStoreAsync(store, lifetimeCts.Token);
+                    if (IsDisposed || lifetimeCts.IsCancellationRequested) break;
+                    if (CurrentStore()?.Id == store.Id)
+                    {
+                        pageProducts.Remove(store.Id);
+                        refreshActivePage?.Invoke();
+                        statusLabel.Text = result.Ok ? "• Đã cập nhật " + DateTime.Now.ToString("HH:mm:ss") : "• Có lỗi đồng bộ";
+                    }
+                }
+            }
+            catch (OperationCanceledException) { }
+            finally { autoSyncRunning = false; }
+        };
+        autoSync.Start();
     }
 
     private Control BuildSidebar()
@@ -110,8 +141,8 @@ public sealed class MainForm : Form
 
         p.Resize += (_, _) =>
         {
-            printHistory.Top = Math.Max(650, p.ClientSize.Height - 230);
-            menu.Height = Math.Max(230, printHistory.Top - menu.Top - 12);
+            printHistory.Top = p.ClientSize.Height - 168;
+            menu.Height = Math.Max(100, printHistory.Top - menu.Top - 12);
             settings.Top = p.ClientSize.Height - 100;
             statusLabel.Top = p.ClientSize.Height - 32;
         };
@@ -128,7 +159,7 @@ public sealed class MainForm : Form
         storePicker.BackColor = C.Card; storePicker.ForeColor = C.Text;
         storePicker.Font = new Font("Segoe UI", 11);
         ConfigureDarkCombo(storePicker);
-        storePicker.SelectedIndexChanged += (_, _) => UpdateSyncButton();
+        storePicker.SelectedIndexChanged += (_, _) => { UpdateSyncButton(); activePage?.Invoke(); };
         p.Controls.Add(storePicker);
 
         var edit = IconButton("✎"); edit.Left = 310; edit.Top = 18; edit.Click += (_, _) => ShowStores(false); p.Controls.Add(edit);
@@ -163,6 +194,7 @@ public sealed class MainForm : Form
         {
             help.Left = p.ClientSize.Width - help.Width - 10;
             syncButton.Left = help.Left - syncButton.Width - 14;
+            search.Width = Math.Max(60, syncButton.Left - search.Left - 12);
         };
 
         return p;
@@ -258,15 +290,18 @@ public sealed class MainForm : Form
         statusLabel.Text = "• Đang đồng bộ...";
         try
         {
-            var result = await app.SyncStoreAsync(s, pageCts.Token);
+            var result = await app.SyncStoreAsync(s, lifetimeCts.Token);
+            if (IsDisposed || lifetimeCts.IsCancellationRequested) return;
+            pageProducts.Remove(s.Id);
+            if (CurrentStore()?.Id == s.Id) refreshActivePage?.Invoke();
             statusLabel.Text = result.Ok ? "• Đang hoạt động" : "• Có lỗi đồng bộ";
             statusLabel.ForeColor = result.Ok ? C.Green : C.Danger;
-            if (!pageCts.IsCancellationRequested) ShowInfo(result.Message);
+            ShowInfo(result.Message);
         }
         catch (OperationCanceledException) { }
         finally
         {
-            syncButton.Enabled = true;
+            if (!syncButton.IsDisposed) syncButton.Enabled = true;
         }
     }
 
@@ -285,6 +320,9 @@ public sealed class MainForm : Form
         try { pageCts.Cancel(); } catch { }
         pageCts.Dispose();
         pageCts = new CancellationTokenSource();
+        refreshActivePage = null;
+        activePage = null;
+        pageProducts.Clear();
 
         if (activeWorkResize is not null)
         {
@@ -293,8 +331,10 @@ public sealed class MainForm : Form
         }
 
         DisposeImages(work);
+        foreach (var control in work.Controls.Cast<Control>().ToArray()) control.Dispose();
         work.Controls.Clear();
         work.Padding = new Padding(28, 26, 26, 24);
+        work.AutoScroll = true;
     }
 
     private void SetWorkResize(EventHandler handler)
@@ -405,6 +445,8 @@ public sealed class MainForm : Form
     private void ShowReport()
     {
         ClearWork();
+        activePage = ShowReport;
+        var pageToken = pageCts.Token;
         work.Controls.Add(Title("Báo cáo"));
 
         var store = CurrentStore();
@@ -488,6 +530,26 @@ public sealed class MainForm : Form
         };
         analyticsCard.Controls.Add(chart);
 
+        void RefreshSnapshot()
+        {
+            if (pageToken.IsCancellationRequested || overview.IsDisposed) return;
+            orders = app.Db.Orders(store.Id).ToArray();
+            foreach (var control in overview.Controls.Cast<Control>().ToArray()) control.Dispose();
+            overview.Controls.Clear();
+            AddMetric("Sản phẩm", app.Db.Products(store.Id).Count.ToString("N0"), MarketplaceName(store.Marketplace));
+            AddMetric("Đơn mới", orders.Count(x => IsNew(x.Status)).ToString("N0"), "Cần xử lý");
+            AddMetric("Đang đóng gói", orders.Count(x => IsPacking(x.Status)).ToString("N0"), "Đã xác nhận");
+            var pool = app.Db.Kiz();
+            AddMetric("KIZ sẵn sàng", pool.Count(x => x.Status == "AVAILABLE").ToString("N0"), $"{pool.Count:N0} mã trong kho");
+            var count = Math.Clamp((to.Value.Date - from.Value.Date).Days + 1, 1, 366);
+            var range = Enumerable.Range(0, count).Select(i => from.Value.Date.AddDays(i)).ToArray();
+            chart.Values = range.Select(day => (double)orders.Count(o => OrderDate(o)?.Date == day)).ToArray();
+            chart.Labels = range.Select(day => day.ToString("dd/MM")).ToArray();
+            chart.Invalidate();
+        }
+        from.ValueChanged += (_, _) => RefreshSnapshot();
+        to.ValueChanged += (_, _) => RefreshSnapshot();
+
         financeCard.Controls.Add(new Label { Text = "Tài chính & trạng thái", Left = 18, Top = 14, AutoSize = true, ForeColor = C.Text, Font = new Font("Segoe UI", 11, FontStyle.Bold) });
         var financeStatus = new Label
         {
@@ -519,11 +581,14 @@ public sealed class MainForm : Form
         {
             sync.Enabled = false;
             financeStatus.Text = "Đang đồng bộ dữ liệu...";
-            var storeSync = await app.SyncStoreAsync(store, pageCts.Token);
+            var storeSync = await app.SyncStoreAsync(store, pageToken);
+            if (pageToken.IsCancellationRequested) return;
+            RefreshSnapshot();
             if (store.Marketplace == Marketplace.Wildberries)
             {
                 financeStatus.Text = "Đang đọc quyết toán WB...";
-                var finance = await app.ReadFinanceAsync(store, from.Value.Date, to.Value.Date, pageCts.Token);
+                var finance = await app.ReadFinanceAsync(store, from.Value.Date, to.Value.Date, pageToken);
+                if (pageToken.IsCancellationRequested) return;
                 if (finance.Ok && finance.Snapshot is not null)
                 {
                     var f = finance.Snapshot;
@@ -567,7 +632,9 @@ public sealed class MainForm : Form
         {
             try { await RefreshReport(); }
             catch (OperationCanceledException) { }
+            finally { if (!sync.IsDisposed) sync.Enabled = true; }
         };
+        refreshActivePage = () => { RefreshSnapshot(); FillRuns(); };
 
         SetWorkResize((_, _) =>
         {
@@ -810,6 +877,8 @@ public sealed class MainForm : Form
     private void ShowFbs()
     {
         ClearWork();
+        activePage = ShowFbs;
+        var pageToken = pageCts.Token;
         work.Controls.Add(Title("Đóng hàng FBS"));
 
         var update = ActionButton("↻ Cập nhật đơn hàng", 220);
@@ -818,7 +887,8 @@ public sealed class MainForm : Form
         {
             var store = CurrentStore(); if (store is null) return;
             update.Enabled = false;
-            var result = await app.SyncOrdersAsync(store);
+            var result = await app.SyncOrdersAsync(store, lifetimeCts.Token);
+            if (pageToken.IsCancellationRequested) return;
             update.Enabled = true;
             statusLabel.Text = result.Ok ? "• Đang hoạt động" : "• Có lỗi đồng bộ";
             statusLabel.ForeColor = result.Ok ? C.Green : C.Danger;
@@ -847,9 +917,12 @@ public sealed class MainForm : Form
         work.Controls.Add(clear);
 
         var createShipment = ActionButton("Đóng đơn FBS", 160, true);
-        createShipment.Top = 145; createShipment.Anchor = AnchorStyles.Top | AnchorStyles.Right; work.Controls.Add(createShipment);
         var printLabels = ActionButton("In nhãn đã chọn", 155);
-        printLabels.Top = 145; printLabels.Anchor = AnchorStyles.Top | AnchorStyles.Right; work.Controls.Add(printLabels);
+        var actions = new FlowLayoutPanel { Left = 4, Top = 195, Height = 52, Width = work.ClientSize.Width - 55,
+            BackColor = C.Main, WrapContents = false, AutoScroll = true };
+        work.Controls.Add(actions);
+        actions.Controls.Add(createShipment);
+        actions.Controls.Add(printLabels);
         var kizOption = new CheckBox
         {
             Text = "Tự động KIZ + in KIZ",
@@ -858,7 +931,8 @@ public sealed class MainForm : Form
             ForeColor = C.Text, BackColor = C.Main,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
         };
-        work.Controls.Add(kizOption);
+        kizOption.Margin = new Padding(12, 14, 8, 0);
+        actions.Controls.Add(kizOption);
 
         var selectAll = new CheckBox
         {
@@ -867,13 +941,14 @@ public sealed class MainForm : Form
             ForeColor = C.Text, BackColor = C.Main,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
         };
-        work.Controls.Add(selectAll);
+        selectAll.Margin = new Padding(10, 14, 0, 0);
+        actions.Controls.Add(selectAll);
         var changingSelectAll = false;
 
         var card = CardPanel();
-        card.Left = 4; card.Top = 225;
+        card.Left = 4; card.Top = 260;
         card.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        card.Width = work.ClientSize.Width - 55; card.Height = work.ClientSize.Height - 255;
+        card.Width = work.ClientSize.Width - 55; card.Height = work.ClientSize.Height - 290;
         work.Controls.Add(card);
 
         var grid = FbsGrid(); grid.Dock = DockStyle.Fill; card.Controls.Add(grid);
@@ -895,6 +970,9 @@ public sealed class MainForm : Form
 
         void LoadRows()
         {
+            grid.EndEdit();
+            var checkedKeys = CheckedOrders(grid).Select(o => (o.ExternalOrderId, o.Sku)).ToHashSet();
+            DisposeImages(card);
             grid.Rows.Clear();
             var store = CurrentStore(); if (store is null) return;
             var q = search.Text.Trim();
@@ -923,7 +1001,7 @@ public sealed class MainForm : Form
                     Marketplace.Yandex => "Yandex · A9 58×40",
                     _ => store.Marketplace.ToString()
                 };
-                var row = grid.Rows.Add(false, orderText, null, productText, labelType, price);
+                var row = grid.Rows.Add(checkedKeys.Contains((order.ExternalOrderId, order.Sku)), orderText, null, productText, labelType, price);
                 grid.Rows[row].Tag = order;
                 grid.Rows[row].Height = 98;
                 var image = ProductImageUrl(product);
@@ -967,11 +1045,13 @@ public sealed class MainForm : Form
 
             createShipment.Enabled = false;
             var result = await CreateShipmentWithKizAsync(store, selected, kizOption.Checked);
+            if (pageToken.IsCancellationRequested) return;
             createShipment.Enabled = true;
             ShowInfo(result.Message);
             if (result.Success)
             {
                 await app.SyncOrdersAsync(store);
+                if (pageToken.IsCancellationRequested) return;
                 SetMode("pack");
             }
         };
@@ -983,13 +1063,16 @@ public sealed class MainForm : Form
             if (selected.Count == 0 && grid.SelectedRows.Count > 0 && grid.SelectedRows[0].Tag is FbsOrderRow focused)
                 selected.Add(focused);
             if (selected.Count == 0) { ShowInfo("Hãy chọn đơn cần in nhãn."); return; }
+            selected = selected.GroupBy(x => x.ExternalOrderId, StringComparer.OrdinalIgnoreCase).Select(x => x.First()).ToList();
+            var includeKiz = kizOption.Checked;
 
             printLabels.Enabled = false;
             var errors = new List<string>();
             var printed = 0;
             foreach (var order in selected)
             {
-                var label = await app.Api.DownloadLabelAsync(store, order.ExternalOrderId);
+                var label = await app.Api.DownloadLabelAsync(store, order.ExternalOrderId, pageToken);
+                if (pageToken.IsCancellationRequested) return;
                 app.Db.Audit("In nhãn", label.Success ? "Đã tải" : "Lỗi", $"{order.ExternalOrderId}:{label.Message}");
                 if (!label.Success || string.IsNullOrWhiteSpace(label.FilePath))
                 {
@@ -999,7 +1082,7 @@ public sealed class MainForm : Form
                 if (PrintLabelFile(store.Marketplace, label.FilePath, out var printError)) printed++;
                 else errors.Add($"{order.ExternalOrderId}: {printError}");
 
-                if (kizOption.Checked)
+                if (includeKiz)
                 {
                     foreach (var code in app.Db.Kiz().Where(x => x.Assigned.Equals(order.ExternalOrderId, StringComparison.OrdinalIgnoreCase)).Select(x => x.Code))
                     {
@@ -1015,12 +1098,12 @@ public sealed class MainForm : Form
 
         SetWorkResize((_, _) => {
             tabHost.Width = work.ClientSize.Width - 55;
-            createShipment.Left = work.ClientSize.Width - createShipment.Width - 30;
-            printLabels.Left = createShipment.Left - printLabels.Width - 12;
+            actions.Width = work.ClientSize.Width - 55;
             card.Width = work.ClientSize.Width - 55;
-            card.Height = Math.Max(260, work.ClientSize.Height - 255);
+            card.Height = Math.Max(260, work.ClientSize.Height - 290);
         });
 
+        refreshActivePage = LoadRows;
         LoadRows();
     }
 
@@ -1158,6 +1241,7 @@ public sealed class MainForm : Form
 
     private List<FbsOrderRow> CheckedOrders(DataGridView grid)
     {
+        grid.EndEdit();
         return grid.Rows.Cast<DataGridViewRow>()
             .Where(r => r.Cells.Count > 0 && r.Cells[0].Value is bool selected && selected)
             .Select(r => r.Tag as FbsOrderRow)
@@ -1170,6 +1254,26 @@ public sealed class MainForm : Form
         StoreProfile store,
         IReadOnlyList<FbsOrderRow> orders,
         bool useKiz = true)
+    {
+        var token = lifetimeCts.Token;
+        if (!await fbsOperations.WaitAsync(0, token))
+            return new PriceUpdateResult(false, "Đang có một tác vụ đóng đơn FBS. Hãy chờ tác vụ đó hoàn tất.");
+        try
+        {
+            var ids = orders.Select(x => x.ExternalOrderId).ToHashSet(StringComparer.OrdinalIgnoreCase);
+            var completeOrders = app.Db.Orders(store.Id).Where(x => ids.Contains(x.ExternalOrderId)).ToArray();
+            return await CreateShipmentWithKizCoreAsync(store, completeOrders, useKiz, token);
+        }
+        catch (OperationCanceledException) { return new PriceUpdateResult(false, "Tác vụ đã dừng. Đồng bộ lại trạng thái sàn trước khi tiếp tục."); }
+        catch (Exception ex) { return new PriceUpdateResult(false, ex.Message); }
+        finally { fbsOperations.Release(); }
+    }
+
+    private async Task<PriceUpdateResult> CreateShipmentWithKizCoreAsync(
+        StoreProfile store,
+        IReadOnlyList<FbsOrderRow> orders,
+        bool useKiz,
+        CancellationToken operationToken)
     {
         if (orders.Count == 0) return new PriceUpdateResult(false, "Chưa chọn đơn hàng.");
 
@@ -1192,11 +1296,11 @@ public sealed class MainForm : Form
             foreach (var group in requirements.GroupBy(x => x.Gtin))
             {
                 var first = group.First();
-                var ensured = await app.EnsureKizQuantityAsync(store.Id, first.Product.Sku, group.Key, group.Count(), pageCts.Token);
+                var ensured = await app.EnsureKizQuantityAsync(store.Id, first.Product.Sku, group.Key, group.Count(), operationToken);
                 if (!ensured.Ok) return new PriceUpdateResult(false, $"Không đủ KIZ cho GTIN {group.Key}: {ensured.Message}");
             }
 
-            var shipment = await app.Api.CreateShipmentAsync(store, orders, pageCts.Token);
+            var shipment = await app.Api.CreateShipmentAsync(store, orders, operationToken);
             if (!shipment.Success) return shipment;
 
             var attachErrors = new List<string>();
@@ -1209,7 +1313,7 @@ public sealed class MainForm : Form
                     continue;
                 }
 
-                var attached = await app.Api.AttachWbSgtinAsync(store, item.Order.ExternalOrderId, code, pageCts.Token);
+                var attached = await app.Api.AttachWbSgtinAsync(store, item.Order.ExternalOrderId, code, operationToken);
                 if (!attached.Success) { attachErrors.Add($"{item.Order.ExternalOrderId}: {attached.Message}"); continue; }
                 app.Db.MarkKizAssigned(code, item.Order.ExternalOrderId);
             }
@@ -1252,7 +1356,7 @@ public sealed class MainForm : Form
                 {
                     var required = gtinGroup.Sum(x => Math.Max(1, x.Order.Quantity));
                     var first = gtinGroup.First();
-                    var ensured = await app.EnsureKizQuantityAsync(store.Id, first.Product.Sku, gtinGroup.Key, required, pageCts.Token);
+                    var ensured = await app.EnsureKizQuantityAsync(store.Id, first.Product.Sku, gtinGroup.Key, required, operationToken);
                     if (!ensured.Ok) return new PriceUpdateResult(false, ensured.Message);
 
                     var pool = app.Db.Kiz().Where(x => x.Gtin == gtinGroup.Key && x.Status == "AVAILABLE")
@@ -1273,16 +1377,16 @@ public sealed class MainForm : Form
 
             PriceUpdateResult preparation;
             if (store.Marketplace == Marketplace.Ozon)
-                preparation = await app.Api.PrepareOzonKizAsync(store, orderGroup.Key, codesByOffer, pageCts.Token);
+                preparation = await app.Api.PrepareOzonKizAsync(store, orderGroup.Key, codesByOffer, operationToken);
             else
-                preparation = await app.Api.PrepareYandexBoxesAsync(store, lines.First(), codesByOffer, pageCts.Token);
+                preparation = await app.Api.PrepareYandexBoxesAsync(store, lines.First(), codesByOffer, operationToken);
 
             if (!preparation.Success) return preparation;
 
             foreach (var code in codesToAssign)
                 app.Db.MarkKizAssigned(code, orderGroup.Key);
 
-            var packed = await app.Api.PackOrderAsync(store, lines.First(), pageCts.Token);
+            var packed = await app.Api.PackOrderAsync(store, lines.First(), operationToken);
             if (!packed.Success) return packed;
         }
 
@@ -2206,16 +2310,22 @@ public sealed class MainForm : Form
     private async Task LoadImageAsync(DataGridView grid, int row, int column, string url)
     {
         var ct = pageCts.Token;
+        if (string.IsNullOrWhiteSpace(url) || grid.IsDisposed || row < 0 || row >= grid.Rows.Count || column < 0 || column >= grid.Columns.Count) return;
+        var target = grid.Rows[row];
         try
         {
-            if (string.IsNullOrWhiteSpace(url)) return;
-            var bytes = await GetImageBytesAsync(url, ct);
-            ct.ThrowIfCancellationRequested();
-            var img = DecodeProductImage(bytes);
-            if (!grid.IsDisposed && !ct.IsCancellationRequested && row >= 0 && row < grid.Rows.Count && column >= 0 && column < grid.Columns.Count)
+            await imageWorkers.WaitAsync(ct);
+            Bitmap img;
+            try
             {
-                var old = grid.Rows[row].Cells[column].Value as Image;
-                grid.Rows[row].Cells[column].Value = img;
+                var bytes = await GetImageBytesAsync(url, ct);
+                img = await Task.Run(() => DecodeProductImage(bytes), ct);
+            }
+            finally { imageWorkers.Release(); }
+            if (!grid.IsDisposed && !ct.IsCancellationRequested && target.Index >= 0 && grid.Rows.Contains(target) && column < target.Cells.Count)
+            {
+                var old = target.Cells[column].Value as Image;
+                target.Cells[column].Value = img;
                 old?.Dispose();
             }
             else img.Dispose();
@@ -2226,7 +2336,8 @@ public sealed class MainForm : Form
 
     private ProductRow? FindProductForOrder(StoreProfile store, FbsOrderRow order)
     {
-        var products = app.Db.Products(store.Id);
+        if (!pageProducts.TryGetValue(store.Id, out var products))
+            pageProducts[store.Id] = products = app.Db.Products(store.Id);
         var direct = products.FirstOrDefault(x => x.Sku.Equals(order.Sku, StringComparison.OrdinalIgnoreCase));
         if (direct is not null) return direct;
 
@@ -2600,19 +2711,28 @@ public sealed class MainForm : Form
     private void ShowInfo(string message) => MessageBox.Show(message, "Marketplace Hub", MessageBoxButtons.OK, MessageBoxIcon.Information);
 
     private static bool IsNew(string status) =>
-        status.Contains("new", StringComparison.OrdinalIgnoreCase) ||
-        status.Contains("awaiting_packaging", StringComparison.OrdinalIgnoreCase) ||
-        status.Contains("STARTED", StringComparison.OrdinalIgnoreCase);
+        new[] { "new", "awaiting_packaging", "PROCESSING/STARTED", "PROCESSING/CONFIRMED" }.Contains(status, StringComparer.OrdinalIgnoreCase);
 
     private static bool IsPacking(string status) =>
-        status.Contains("confirm", StringComparison.OrdinalIgnoreCase) ||
-        status.Contains("assembling", StringComparison.OrdinalIgnoreCase) ||
-        status.Contains("PROCESSING", StringComparison.OrdinalIgnoreCase);
+        new[] { "confirm", "assembling", "PROCESSING/PACKING", "PROCESSING/READY_FOR_DELIVERY" }.Contains(status, StringComparer.OrdinalIgnoreCase);
 
     private static bool IsShipping(string status) =>
-        status.Contains("awaiting_deliver", StringComparison.OrdinalIgnoreCase) ||
-        status.Contains("READY_TO_SHIP", StringComparison.OrdinalIgnoreCase) ||
-        status.Contains("deliver", StringComparison.OrdinalIgnoreCase);
+        new[] { "complete", "awaiting_deliver", "delivering", "deliver", "PROCESSING/READY_TO_SHIP", "DELIVERY/", "PICKUP/" }.Contains(status, StringComparer.OrdinalIgnoreCase);
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing && !resourcesDisposed)
+        {
+            resourcesDisposed = true;
+            autoSync.Stop();
+            autoSync.Dispose();
+            lifetimeCts.Cancel();
+            pageCts.Cancel();
+            DisposeImages(work);
+            imageHttp.Dispose();
+        }
+        base.Dispose(disposing);
+    }
 
     private static string TranslateKizStatus(string s) => s switch
     {
