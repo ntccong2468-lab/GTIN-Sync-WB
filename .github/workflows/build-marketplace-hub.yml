@@ -38,7 +38,11 @@ jobs:
           $exe = Resolve-Path ".\MarketplaceHub\bin\Release\net8.0-windows\win-x64\publish\MarketplaceHub.exe"
           $p = Start-Process $exe -PassThru
           Start-Sleep -Seconds 5
-          if ($p.HasExited) { throw "MarketplaceHub exited during smoke launch." }
+          if ($p.HasExited) {
+            $crash = Join-Path $env:TEMP "MarketplaceHub-gui-crash.txt"
+            if (Test-Path $crash) { Get-Content $crash }
+            throw "MarketplaceHub exited during smoke launch."
+          }
           Stop-Process -Id $p.Id -Force
       - name: Install Inno Setup
         run: choco install innosetup -y --no-progress
@@ -61,7 +65,11 @@ jobs:
           if ($self.ExitCode -ne 0) { throw "Installed self-test failed" }
           $app = Start-Process $installed -PassThru
           Start-Sleep -Seconds 4
-          if ($app.HasExited) { throw "Installed app exited unexpectedly" }
+          if ($app.HasExited) {
+            $crash = Join-Path $env:TEMP "MarketplaceHub-gui-crash.txt"
+            if (Test-Path $crash) { Get-Content $crash }
+            throw "Installed app exited unexpectedly"
+          }
           Stop-Process -Id $app.Id -Force
       - name: Upload installer artifact
         uses: actions/upload-artifact@v4
