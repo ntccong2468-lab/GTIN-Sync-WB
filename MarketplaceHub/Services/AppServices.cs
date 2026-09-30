@@ -135,7 +135,7 @@ public sealed class AppServices
 
             Check("05. Phân tích DataMatrix/KIZ hợp lệ", () =>
             {
-                var parsed = ParseKiz("010460123456789021SELFTEST");
+                var parsed = ParseKiz("014601234567890221SELFTEST");
                 return parsed.Ok && parsed.Gtin == "46012345678902";
             });
 
