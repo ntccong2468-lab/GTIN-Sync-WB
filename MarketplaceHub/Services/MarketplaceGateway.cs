@@ -1604,7 +1604,7 @@ public sealed class MarketplaceGateway
                 var statusNode = JsonNode.Parse(statusText);
                 if (OzonHasRejectedExemplar(statusNode))
                     return new PriceUpdateResult(false, "Ozon trả trạng thái KIZ/exemplar bị từ chối.");
-                if (OzonExemplarAccepted(statusNode))
+                if (OzonExemplarAccepted(statusNode, setProducts))
                     return new PriceUpdateResult(true, "Ozon đã xác thực và nhận KIZ/exemplar.", postingNumber);
 
                 await Task.Delay(1000, ct);
@@ -1754,15 +1754,37 @@ public sealed class MarketplaceGateway
         return CollectBooleanValues(node, "valid").Any(x => !x);
     }
 
-    private static bool OzonExemplarAccepted(JsonNode? node)
+    private static bool OzonExemplarAccepted(JsonNode? node, JsonArray expectedProducts)
     {
-        var statuses = CollectStringValues(node, "status")
-            .Concat(CollectStringValues(node, "check_status"))
-            .Concat(CollectStringValues(node, "mark_status"))
-            .ToArray();
-        return statuses.Length > 0 && statuses.All(x => x.Equals("accepted", StringComparison.OrdinalIgnoreCase) ||
-                                 x.Equals("passed", StringComparison.OrdinalIgnoreCase) ||
-                                 x.Equals("success", StringComparison.OrdinalIgnoreCase));
+        var confirmed = new HashSet<(string Product, string Exemplar)>();
+        void Walk(JsonNode? current)
+        {
+            if (current is JsonObject obj)
+            {
+                var productId = obj["product_id"]?.ToString() ?? "";
+                if (productId.Length > 0 && obj["exemplars"] is JsonArray exemplars)
+                    foreach (var exemplar in exemplars)
+                    {
+                        var id = exemplar?["exemplar_id"]?.ToString() ?? "";
+                        var statuses = CollectStringValues(exemplar, "status")
+                            .Concat(CollectStringValues(exemplar, "check_status"))
+                            .Concat(CollectStringValues(exemplar, "mark_status")).ToArray();
+                        if (id.Length > 0 && statuses.Length > 0 && statuses.All(x =>
+                                x.Equals("accepted", StringComparison.OrdinalIgnoreCase) ||
+                                x.Equals("passed", StringComparison.OrdinalIgnoreCase) ||
+                                x.Equals("success", StringComparison.OrdinalIgnoreCase)))
+                            confirmed.Add((productId, id));
+                    }
+                foreach (var pair in obj) Walk(pair.Value);
+            }
+            else if (current is JsonArray array)
+                foreach (var child in array) Walk(child);
+        }
+        Walk(node);
+        var expected = expectedProducts.SelectMany(product =>
+            (product?["exemplars"]?.AsArray() ?? new JsonArray()).Select(exemplar =>
+                (Product: product?["product_id"]?.ToString() ?? "", Exemplar: exemplar?["exemplar_id"]?.ToString() ?? ""))).ToArray();
+        return expected.Length > 0 && expected.All(confirmed.Contains);
     }
 
     private static IReadOnlyList<string> CollectStringValues(JsonNode? node, string key)

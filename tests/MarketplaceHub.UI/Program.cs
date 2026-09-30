@@ -149,9 +149,26 @@ internal static class Program
                 Pump(packed);
                 Expect(!packed.Result.Success && count == 0 && packed.Result.Message.Contains("GTIN"), "Unselected mandatory-KIZ line was skipped before shipping.");
             });
+            Check("Partial sync and full sync never overlap for one store", () =>
+            {
+                var response = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
+                var requests = 0;
+                typeof(MarketplaceGateway).GetField("http", instance)!.SetValue(app.Api,
+                    new HttpClient(new AsyncFixtureHttp((_, _) =>
+                    {
+                        Interlocked.Increment(ref requests);
+                        return response.Task;
+                    })));
+                var partial = app.SyncOrdersAsync(store);
+                var full = app.SyncStoreAsync(store);
+                var blocked = full.IsCompletedSuccessfully && !full.Result.Ok;
+                response.SetResult(Json("{\"status\":\"OK\",\"orders\":[],\"result\":{\"offerMappings\":[]}}"));
+                Pump(partial); Pump(full);
+                Expect(blocked && requests == 1, "Manual order sync bypassed the store lock used by background sync.");
+            });
         }
         finally { app.Db.DeleteStore(store.Id); }
-        Console.WriteLine($"{9 - failures.Count}/9 UI regressions passed");
+        Console.WriteLine($"{10 - failures.Count}/10 UI regressions passed");
         return failures.Count == 0 ? 0 : 1;
     }
 }

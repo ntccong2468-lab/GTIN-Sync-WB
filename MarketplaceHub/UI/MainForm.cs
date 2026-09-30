@@ -43,6 +43,7 @@ public sealed class MainForm : Form
         {
             var iconPath = Path.Combine(AppContext.BaseDirectory, "MarketplaceHub.ico");
             if (File.Exists(iconPath)) Icon = new Icon(iconPath);
+            else Icon = Icon.ExtractAssociatedIcon(Application.ExecutablePath);
         }
         catch { }
         StartPosition = FormStartPosition.CenterScreen;
@@ -96,9 +97,9 @@ public sealed class MainForm : Form
         var p = new Panel { Dock = DockStyle.Fill, BackColor = C.Side };
         p.Paint += (_, e) => e.Graphics.DrawLine(new Pen(C.Border), p.Width - 1, 0, p.Width - 1, p.Height);
 
-        var logoBox = new BrandMarkControl { Width = 48, Height = 48, Left = 48, Top = 10 };
+        var logoBox = new BrandMarkControl { Width = 48, Height = 48, Left = 20, Top = 10 };
         p.Controls.Add(logoBox);
-        p.Controls.Add(new Label { Text = "Marketplace Hub", AutoSize = true, Left = 104, Top = 19, ForeColor = C.OnAccent, Font = new Font("Segoe UI", 14, FontStyle.Bold) });
+        p.Controls.Add(new Label { Text = "Marketplace Hub", AutoSize = true, Left = 78, Top = 19, ForeColor = C.OnAccent, Font = new Font("Segoe UI", 13, FontStyle.Bold) });
 
         var design = NavButton("✎  Thiết kế mẫu", C.Orange, 238);
         design.Left = 13; design.Top = 75; design.Click += (_, _) => ShowDesignTools(); p.Controls.Add(design);
@@ -106,7 +107,6 @@ public sealed class MainForm : Form
         var addStore = NavButton("＋  Thêm cửa hàng", C.Purple, 238);
         addStore.Left = 13; addStore.Top = 133; addStore.Click += (_, _) => ShowStores(true); p.Controls.Add(addStore);
 
-        p.Controls.Add(new Label { Text = "-", AutoSize = true, Left = 129, Top = 194, ForeColor = C.Text });
 
         var menu = new FlowLayoutPanel
         {
@@ -194,7 +194,9 @@ public sealed class MainForm : Form
         {
             help.Left = p.ClientSize.Width - help.Width - 10;
             syncButton.Left = help.Left - syncButton.Width - 14;
-            search.Width = Math.Max(60, syncButton.Left - search.Left - 12);
+            var searchSpace = syncButton.Left - search.Left - 12;
+            search.Visible = searchSpace >= 160;
+            search.Width = Math.Max(160, searchSpace);
         };
 
         return p;
@@ -385,7 +387,7 @@ public sealed class MainForm : Form
         g.DefaultCellStyle.BackColor = C.Card;
         g.AlternatingRowsDefaultCellStyle.BackColor = C.RowAlt;
         g.DefaultCellStyle.ForeColor = C.Text;
-        g.DefaultCellStyle.SelectionBackColor = Color.FromArgb(40, 53, 73);
+        g.DefaultCellStyle.SelectionBackColor = C.Soft;
         g.DefaultCellStyle.SelectionForeColor = C.Text;
         g.DefaultCellStyle.Padding = new Padding(8, 4, 8, 4);
         return g;
@@ -458,17 +460,17 @@ public sealed class MainForm : Form
             return;
         }
 
-        var quick = new FlowLayoutPanel { Left = 4, Top = 56, Width = 690, Height = 46, BackColor = C.Main, WrapContents = false };
+        var quick = new FlowLayoutPanel { Left = 4, Top = 56, Width = 600, Height = 46, BackColor = C.Main, WrapContents = false };
         var b7 = ActionButton("7 ngày", 88, true);
         var b30 = ActionButton("30 ngày", 96);
         var b90 = ActionButton("90 ngày", 96);
-        var from = new DateTimePicker { Width = 145, Format = DateTimePickerFormat.Short, Value = DateTime.Today.AddDays(-6) };
-        var to = new DateTimePicker { Width = 145, Format = DateTimePickerFormat.Short, Value = DateTime.Today };
+        var from = new DateTimePicker { Width = 130, Format = DateTimePickerFormat.Short, Value = DateTime.Today.AddDays(-6) };
+        var to = new DateTimePicker { Width = 130, Format = DateTimePickerFormat.Short, Value = DateTime.Today };
         quick.Controls.Add(b7); quick.Controls.Add(b30); quick.Controls.Add(b90); quick.Controls.Add(from); quick.Controls.Add(to);
         work.Controls.Add(quick);
 
         var sync = ActionButton("↻ Đồng bộ báo cáo", 180, true);
-        sync.Top = 56; sync.Anchor = AnchorStyles.Top | AnchorStyles.Right; work.Controls.Add(sync);
+        sync.Top = 0; sync.Anchor = AnchorStyles.Top | AnchorStyles.Right; work.Controls.Add(sync);
 
         var overview = new TableLayoutPanel
         {
@@ -513,9 +515,9 @@ public sealed class MainForm : Form
             overview.Controls.Add(card);
         }
 
-        AddMetric("Sản phẩm", products.ToString("N0"), store.Marketplace.ToString());
-        AddMetric("Đơn mới", newCount.ToString("N0"), "Cần xử lý");
-        AddMetric("Đang đóng gói", packCount.ToString("N0"), "Đã xác nhận");
+        AddMetric("Sản phẩm", products.ToString("N0"), "Hiện tại · " + MarketplaceName(store.Marketplace));
+        AddMetric("Đơn mới", newCount.ToString("N0"), "Hiện tại · Cần xử lý");
+        AddMetric("Đang đóng gói", packCount.ToString("N0"), "Hiện tại · Đã xác nhận");
         AddMetric("KIZ sẵn sàng", kiz.Count(x => x.Status == "AVAILABLE").ToString("N0"), $"{kiz.Count:N0} mã trong kho");
 
         analyticsCard.Controls.Add(new Label { Text = "Phân tích đơn hàng", Left = 18, Top = 14, AutoSize = true, ForeColor = C.Text, Font = new Font("Segoe UI", 11, FontStyle.Bold) });
@@ -536,9 +538,9 @@ public sealed class MainForm : Form
             orders = app.Db.Orders(store.Id).ToArray();
             foreach (var control in overview.Controls.Cast<Control>().ToArray()) control.Dispose();
             overview.Controls.Clear();
-            AddMetric("Sản phẩm", app.Db.Products(store.Id).Count.ToString("N0"), MarketplaceName(store.Marketplace));
-            AddMetric("Đơn mới", orders.Count(x => IsNew(x.Status)).ToString("N0"), "Cần xử lý");
-            AddMetric("Đang đóng gói", orders.Count(x => IsPacking(x.Status)).ToString("N0"), "Đã xác nhận");
+            AddMetric("Sản phẩm", app.Db.Products(store.Id).Count.ToString("N0"), "Hiện tại · " + MarketplaceName(store.Marketplace));
+            AddMetric("Đơn mới", orders.Count(x => IsNew(x.Status)).ToString("N0"), "Hiện tại · Cần xử lý");
+            AddMetric("Đang đóng gói", orders.Count(x => IsPacking(x.Status)).ToString("N0"), "Hiện tại · Đã xác nhận");
             var pool = app.Db.Kiz();
             AddMetric("KIZ sẵn sàng", pool.Count(x => x.Status == "AVAILABLE").ToString("N0"), $"{pool.Count:N0} mã trong kho");
             var count = Math.Clamp((to.Value.Date - from.Value.Date).Days + 1, 1, 366);
@@ -557,7 +559,7 @@ public sealed class MainForm : Form
             ForeColor = C.Muted, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             Text = store.Marketplace == Marketplace.Wildberries
                 ? "Nhấn “Đồng bộ báo cáo” để đọc quyết toán WB cho khoảng ngày đã chọn."
-                : $"Báo cáo hiện hợp nhất KPI local cho {store.Marketplace}. Dữ liệu tài chính trực tiếp đang được giữ riêng theo quyền API của sàn."
+                : $"Đang hiển thị sản phẩm và đơn hàng {MarketplaceName(store.Marketplace)} đã đồng bộ. Quyết toán tài chính trực tiếp của sàn này chưa được hỗ trợ."
         };
         financeCard.Controls.Add(financeStatus);
 
@@ -639,16 +641,21 @@ public sealed class MainForm : Form
         SetWorkResize((_, _) =>
         {
             sync.Left = work.ClientSize.Width - sync.Width - 30;
-            overview.Width = work.ClientSize.Width - 55;
-
-            analyticsCard.Width = Math.Max(620, (work.ClientSize.Width - 75) * 2 / 3);
-            financeCard.Left = analyticsCard.Right + 14;
-            financeCard.Width = Math.Max(280, work.ClientSize.Width - financeCard.Left - 30);
-            chart.Width = Math.Max(300, analyticsCard.Width - 36);
-            financeStatus.Width = Math.Max(240, financeCard.Width - 36);
-
-            bottom.Width = work.ClientSize.Width - 55;
-            bottom.Height = Math.Max(180, work.ClientSize.Height - 555);
+            var available = Math.Max(560, work.ClientSize.Width - 55);
+            overview.Width = available;
+            quick.Width = available;
+            var stacked = available < 900;
+            analyticsCard.Width = stacked ? available : (available - 14) * 2 / 3;
+            financeCard.Left = stacked ? 4 : analyticsCard.Right + 14;
+            financeCard.Top = stacked ? analyticsCard.Bottom + 16 : analyticsCard.Top;
+            financeCard.Width = stacked ? available : available - analyticsCard.Width - 14;
+            financeCard.Height = stacked ? 210 : 275;
+            chart.Width = analyticsCard.Width - 36;
+            financeStatus.Width = financeCard.Width - 36;
+            financeStatus.Height = financeCard.Height - 66;
+            bottom.Top = Math.Max(analyticsCard.Bottom, financeCard.Bottom) + 16;
+            bottom.Width = available;
+            bottom.Height = Math.Max(180, work.ClientSize.Height - bottom.Top - 30);
         });
 
         FillRuns();
@@ -676,6 +683,8 @@ public sealed class MainForm : Form
     private void ShowSyncCenter()
     {
         ClearWork();
+        var pageToken = pageCts.Token;
+        activePage = ShowSyncCenter;
         work.Controls.Add(Title("Đồng bộ dữ liệu"));
 
         var runAll = ActionButton("↻ Đồng bộ tất cả cửa hàng", 220, true);
@@ -704,6 +713,7 @@ public sealed class MainForm : Form
 
         void Load()
         {
+            if (pageToken.IsCancellationRequested || grid.IsDisposed) return;
             grid.Rows.Clear();
             foreach (var shop in app.Db.Stores().Where(x => x.Enabled).OrderBy(x => x.Marketplace).ThenBy(x => x.Name))
             {
@@ -723,13 +733,14 @@ public sealed class MainForm : Form
             var messages = new List<string>();
             foreach (var shop in app.Db.Stores().Where(x => x.Enabled))
             {
-                if (pageCts.IsCancellationRequested) break;
-                var result = await app.SyncStoreAsync(shop, pageCts.Token);
+                if (pageToken.IsCancellationRequested) return;
+                var result = await app.SyncStoreAsync(shop, pageToken);
+                if (pageToken.IsCancellationRequested || runAll.IsDisposed) return;
                 messages.Add($"{MarketplaceName(shop.Marketplace)} · {shop.Name}: {(result.Ok ? "OK" : "LỖI")}\n{result.Message}");
             }
             runAll.Enabled = true;
             Load();
-            if (!pageCts.IsCancellationRequested) ShowInfo(string.Join(Environment.NewLine + Environment.NewLine, messages));
+            ShowInfo(string.Join(Environment.NewLine + Environment.NewLine, messages));
         };
 
         SetWorkResize((_, _) =>
@@ -738,6 +749,7 @@ public sealed class MainForm : Form
             card.Width = work.ClientSize.Width - 55;
             card.Height = Math.Max(300, work.ClientSize.Height - 124);
         });
+        refreshActivePage = Load;
         Load();
     }
 
@@ -787,6 +799,8 @@ public sealed class MainForm : Form
     private void ShowMarketplaceSync(Marketplace marketplace)
     {
         ClearWork();
+        var pageToken = pageCts.Token;
+        activePage = () => ShowMarketplaceSync(marketplace);
         var display = marketplace == Marketplace.Ozon ? "Ozon" : "Yandex Market";
         work.Controls.Add(Title($"Đồng bộ {display}"));
 
@@ -822,6 +836,7 @@ public sealed class MainForm : Form
 
         void LoadRows()
         {
+            if (pageToken.IsCancellationRequested || grid.IsDisposed) return;
             grid.Rows.Clear();
             foreach (var shop in app.Db.Stores().Where(x => x.Marketplace == marketplace && x.Enabled))
             {
@@ -845,19 +860,12 @@ public sealed class MainForm : Form
             var messages = new List<string>();
             foreach (var shop in shops)
             {
+                if (pageToken.IsCancellationRequested) return;
                 state.Text = $"Đang đồng bộ {display}: {shop.Name}...";
                 state.ForeColor = C.Muted;
-                var products = await app.SyncProductsAsync(shop);
-                var orders = await app.SyncOrdersAsync(shop);
-                var ok = products.Ok && orders.Ok;
-                var extra = "";
-                if (marketplace == Marketplace.Ozon)
-                {
-                    var fbo = await app.SyncFboSuppliesAsync(shop);
-                    ok &= fbo.Ok;
-                    extra = $" · {fbo.Message}";
-                }
-                messages.Add($"{shop.Name}: {(ok ? "OK" : "LỖI")} · {products.Message} · {orders.Message}{extra}");
+                var result = await app.SyncStoreAsync(shop, pageToken);
+                if (pageToken.IsCancellationRequested || run.IsDisposed) return;
+                messages.Add($"{shop.Name}: {(result.Ok ? "OK" : "LỖI")} · {result.Message}");
             }
             run.Enabled = true;
             state.Text = $"Đã hoàn tất đồng bộ {display}.";
@@ -871,6 +879,7 @@ public sealed class MainForm : Form
             card.Width = work.ClientSize.Width - 55;
             card.Height = Math.Max(280, work.ClientSize.Height - 120);
         });
+        refreshActivePage = LoadRows;
         LoadRows();
     }
 
@@ -919,7 +928,7 @@ public sealed class MainForm : Form
         var createShipment = ActionButton("Đóng đơn FBS", 160, true);
         var printLabels = ActionButton("In nhãn đã chọn", 155);
         var actions = new FlowLayoutPanel { Left = 4, Top = 195, Height = 52, Width = work.ClientSize.Width - 55,
-            BackColor = C.Main, WrapContents = false, AutoScroll = true };
+            BackColor = C.Main, WrapContents = true, AutoScroll = false };
         work.Controls.Add(actions);
         actions.Controls.Add(createShipment);
         actions.Controls.Add(printLabels);
@@ -1097,10 +1106,23 @@ public sealed class MainForm : Form
         };
 
         SetWorkResize((_, _) => {
-            tabHost.Width = work.ClientSize.Width - 55;
-            actions.Width = work.ClientSize.Width - 55;
-            card.Width = work.ClientSize.Width - 55;
-            card.Height = Math.Max(260, work.ClientSize.Height - 290);
+            var available = Math.Max(560, work.ClientSize.Width - 55);
+            tabHost.Width = available;
+            search.Width = available - category.Width - clear.Width - 24;
+            category.Left = search.Right + 10;
+            clear.Left = category.Right + 10;
+            actions.Width = available;
+            actions.Height = available < 1000 ? 100 : 52;
+            card.Top = actions.Bottom + 12;
+            card.Width = available;
+            card.Height = Math.Max(260, work.ClientSize.Height - card.Top - 30);
+            var compact = available < 900;
+            grid.Columns["check"].Width = compact ? 40 : 60;
+            grid.Columns["order"].Width = compact ? 150 : 235;
+            grid.Columns["image"].Width = compact ? 85 : 130;
+            grid.Columns["labelType"].Width = compact ? 110 : 145;
+            grid.Columns["price"].Width = compact ? 85 : 125;
+            grid.Columns["product"].MinimumWidth = 180;
         });
 
         refreshActivePage = LoadRows;
@@ -1110,6 +1132,7 @@ public sealed class MainForm : Form
     private void ShowFbsSupplyDetail(FbsOrderRow order, string? supplyOverride = null)
     {
         ClearWork();
+        var pageToken = pageCts.Token;
         var store = CurrentStore(); if (store is null) return;
         var product = FindProductForOrder(store, order);
         var meta = product is null ? new ProductMetaValue("", "", "", "", "", "", order.Sku, "") : ProductMeta(product);
@@ -1117,22 +1140,25 @@ public sealed class MainForm : Form
         var assignedKiz = app.Db.Kiz().FirstOrDefault(x => x.Assigned.Equals(order.ExternalOrderId, StringComparison.OrdinalIgnoreCase));
 
         var back = IconButton("←"); back.Left = 0; back.Top = 0; back.Click += (_, _) => ShowFbs(); work.Controls.Add(back);
-        var title = Title($"Supply {(string.IsNullOrWhiteSpace(supplyId) ? "chưa tạo" : supplyId)}");
+        var title = Title(store.Marketplace == Marketplace.Wildberries
+            ? $"Supply {(string.IsNullOrWhiteSpace(supplyId) ? "chưa tạo" : supplyId)}"
+            : $"{MarketplaceName(store.Marketplace)} · {order.ExternalOrderId}");
         title.Left = 55; work.Controls.Add(title);
 
-        var print = ActionButton("▣  In nhãn dán WB", 185, true);
+        var print = ActionButton($"▣  In nhãn {MarketplaceName(store.Marketplace)}", 215, true);
         print.BackColor = C.Green; print.BorderColor = C.Green;
         print.Anchor = AnchorStyles.Top | AnchorStyles.Right; print.Top = 0;
         print.Click += async (_, _) =>
         {
             print.Enabled = false;
-            var result = await app.Api.DownloadLabelAsync(store, order.ExternalOrderId);
-            print.Enabled = true;
+            var result = await app.Api.DownloadLabelAsync(store, order.ExternalOrderId, pageToken);
             app.Db.Audit("In nhãn", result.Success ? "Đã tải" : "Lỗi", $"{order.ExternalOrderId}:{result.Message}");
+            if (pageToken.IsCancellationRequested || print.IsDisposed) return;
+            print.Enabled = true;
             if (!result.Success || string.IsNullOrWhiteSpace(result.FilePath)) { ShowInfo(result.Message); return; }
 
             if (PrintLabelFile(store.Marketplace, result.FilePath, out var error))
-                ShowInfo("Đã gửi nhãn WB tới máy in mặc định.");
+                ShowInfo($"Đã gửi nhãn {MarketplaceName(store.Marketplace)} tới máy in mặc định.");
             else
                 ShowInfo($"Đã tải nhãn nhưng chưa in được: {error}\nFile: {result.FilePath}");
         };
@@ -1178,7 +1204,8 @@ public sealed class MainForm : Form
         var image = ProductImageUrl(product);
         if (!string.IsNullOrWhiteSpace(image)) _ = LoadImageAsync(grid, rowIndex, 2, image);
 
-        move.Enabled = true;
+        move.Enabled = IsNew(order.Status) || store.Marketplace == Marketplace.Wildberries;
+        if (!move.Enabled) move.Text = "Đơn đã đóng gói";
         move.Click += async (_, _) =>
         {
             move.Enabled = false;
@@ -1186,9 +1213,13 @@ public sealed class MainForm : Form
             {
                 var result = await CreateShipmentWithKizAsync(store, new[] { order });
                 app.Db.Audit("FBS", result.Success ? "Tạo shipment" : "Lỗi tạo shipment", $"{order.ExternalOrderId}:{result.Message}");
+                if (pageToken.IsCancellationRequested || move.IsDisposed) return;
                 if (!result.Success) { ShowInfo(result.Message); move.Enabled = true; return; }
-                await app.SyncOrdersAsync(store);
-                ShowFbsSupplyDetail(order with { Status = "confirm" }, result.ExternalTaskId);
+                await app.SyncOrdersAsync(store, pageToken);
+                if (pageToken.IsCancellationRequested || move.IsDisposed) return;
+                if (store.Marketplace == Marketplace.Wildberries)
+                    ShowFbsSupplyDetail(order with { Status = "confirm" }, result.ExternalTaskId);
+                else ShowFbs();
                 return;
             }
 
@@ -1199,12 +1230,14 @@ public sealed class MainForm : Form
                 return;
             }
 
-            var delivered = await app.Api.DeliverSupplyAsync(store, supplyId);
+            var delivered = await app.Api.DeliverSupplyAsync(store, supplyId, lifetimeCts.Token);
             app.Db.Audit("FBS", delivered.Success ? "Giao lô" : "Lỗi giao lô", $"{supplyId}:{delivered.Message}");
+            if (pageToken.IsCancellationRequested || move.IsDisposed) return;
             ShowInfo(delivered.Message);
             if (delivered.Success)
             {
-                await app.SyncOrdersAsync(store);
+                await app.SyncOrdersAsync(store, pageToken);
+                if (pageToken.IsCancellationRequested || move.IsDisposed) return;
                 ShowFbs();
             }
             else move.Enabled = true;
@@ -1227,7 +1260,8 @@ public sealed class MainForm : Form
         g.DefaultCellStyle.WrapMode = DataGridViewTriState.True;
         g.Columns.Add(new DataGridViewCheckBoxColumn { Name = "check", HeaderText = "", Width = 60, ReadOnly = false });
         g.Columns.Add(new DataGridViewTextBoxColumn { Name = "order", HeaderText = "Order ID", Width = 235, ReadOnly = true });
-        g.Columns.Add(new DataGridViewImageColumn { Name = "image", HeaderText = "Ảnh", Width = 130, ImageLayout = DataGridViewImageCellLayout.Zoom, ReadOnly = true });
+        g.Columns.Add(new DataGridViewImageColumn { Name = "image", HeaderText = "Ảnh", Width = 130, ImageLayout = DataGridViewImageCellLayout.Zoom, ReadOnly = true,
+            DefaultCellStyle = new DataGridViewCellStyle { NullValue = null } });
         g.Columns.Add(new DataGridViewTextBoxColumn { Name = "product", HeaderText = "Sản phẩm", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill, ReadOnly = true });
         g.Columns.Add(new DataGridViewTextBoxColumn { Name = "labelType", HeaderText = "Nhãn sàn", Width = 145, ReadOnly = true });
         g.Columns.Add(new DataGridViewTextBoxColumn { Name = "price", HeaderText = "Giá", Width = 125, ReadOnly = true });
@@ -2288,17 +2322,21 @@ public sealed class MainForm : Form
         var bytes = await res.Content.ReadAsByteArrayAsync(ct);
         if (bytes.Length > 0)
         {
-            if (imageCache.Count > 250) imageCache.Clear();
-            imageCache[url] = bytes;
+            if (imageCache.Count >= 250 || imageCache.Values.Sum(x => (long)x.Length) + bytes.Length > 64L * 1024 * 1024)
+                imageCache.Clear();
+            if (bytes.Length <= 4 * 1024 * 1024) imageCache[url] = bytes;
         }
         return bytes;
     }
 
-    private static Bitmap DecodeProductImage(byte[] bytes)
+    private static Bitmap DecodeProductImage(byte[] bytes, int maxEdge = 1024)
     {
         using var bitmap = SKBitmap.Decode(bytes)
             ?? throw new InvalidOperationException("Không giải mã được ảnh sản phẩm.");
-        using var image = SKImage.FromBitmap(bitmap);
+        var scale = Math.Min(1d, (double)maxEdge / Math.Max(bitmap.Width, bitmap.Height));
+        using var resized = scale < 1 ? bitmap.Resize(new SKImageInfo(
+            Math.Max(1, (int)(bitmap.Width * scale)), Math.Max(1, (int)(bitmap.Height * scale))), SKFilterQuality.Medium) : null;
+        using var image = SKImage.FromBitmap(resized ?? bitmap);
         using var data = image.Encode(SKEncodedImageFormat.Png, 92);
         using var ms = new MemoryStream(data.ToArray());
         using var temp = Image.FromStream(ms);
@@ -2319,7 +2357,7 @@ public sealed class MainForm : Form
             try
             {
                 var bytes = await GetImageBytesAsync(url, ct);
-                img = await Task.Run(() => DecodeProductImage(bytes), ct);
+                img = await Task.Run(() => DecodeProductImage(bytes, 160), ct);
             }
             finally { imageWorkers.Release(); }
             if (!grid.IsDisposed && !ct.IsCancellationRequested && target.Index >= 0 && grid.Rows.Contains(target) && column < target.Cells.Count)
