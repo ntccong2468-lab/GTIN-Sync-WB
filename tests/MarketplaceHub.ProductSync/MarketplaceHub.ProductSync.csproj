@@ -6,5 +6,6 @@
     <Compile Include="../../MarketplaceHub/Services/WbLabels.cs" Link="WbLabels.cs" />
     <Compile Include="../../MarketplaceHub/Services/WbShipments.cs" Link="WbShipments.cs" />
     <Compile Include="../../MarketplaceHub/Services/MarketplaceProductSync.cs" Link="MarketplaceProductSync.cs" Condition="Exists('../../MarketplaceHub/Services/MarketplaceProductSync.cs')" />
+    <Compile Include="../../MarketplaceHub/Services/OzonWorkflow.cs" Link="OzonWorkflow.cs" />
   </ItemGroup>
 </Project>
