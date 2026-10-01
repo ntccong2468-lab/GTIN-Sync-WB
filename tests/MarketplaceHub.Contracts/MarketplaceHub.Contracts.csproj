@@ -3,6 +3,7 @@
   <ItemGroup>
     <Compile Include="../../MarketplaceHub/Core/Models.cs" Link="Models.cs" />
     <Compile Include="../../MarketplaceHub/Services/MarketplaceGateway.cs" Link="MarketplaceGateway.cs" />
+    <Compile Include="../../MarketplaceHub/Services/MarketplaceFbs.cs" Link="MarketplaceFbs.cs" />
     <Compile Include="../../MarketplaceHub/Services/WbLabels.cs" Link="WbLabels.cs" />
     <Compile Include="../../MarketplaceHub/Services/WbShipments.cs" Link="WbShipments.cs" />
     <Compile Include="../../MarketplaceHub/Services/MarketplaceProductSync.cs" Link="MarketplaceProductSync.cs" />
