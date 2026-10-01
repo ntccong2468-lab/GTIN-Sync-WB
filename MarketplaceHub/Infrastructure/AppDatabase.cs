@@ -14,15 +14,6 @@ public sealed partial class AppDatabase
         Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
         "MarketplaceHub", "marketplacehub.db")) { }
 
-    public AppDatabase(string dbPath)
-    {
-        var fullPath = Path.GetFullPath(dbPath);
-        var dir = Path.GetDirectoryName(fullPath) ?? throw new ArgumentException("Database path has no directory.", nameof(dbPath));
-        Directory.CreateDirectory(dir);
-        DbPath = fullPath;
-        Initialize();
-    }
-
     private void Initialize()
     {
         using var c = new SqliteConnection(ConnectionString);
