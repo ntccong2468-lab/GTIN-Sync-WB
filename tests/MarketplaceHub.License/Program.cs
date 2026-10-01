@@ -1,6 +1,7 @@
 using MarketplaceHub.Core;
 using MarketplaceHub.Infrastructure;
 using MarketplaceHub.Services;
+using Microsoft.Data.Sqlite;
 using Org.BouncyCastle.Crypto.Generators;
 using Org.BouncyCastle.Crypto.Parameters;
 using Org.BouncyCastle.Crypto.Signers;
@@ -158,6 +159,7 @@ await Check("failed online validation writes no store row", async () =>
     }
     finally
     {
+        SqliteConnection.ClearAllPools();
         if (File.Exists(databasePath)) File.Delete(databasePath);
     }
 });
@@ -182,6 +184,7 @@ await Check("concurrent creates are serialized against the signed store limit", 
     }
     finally
     {
+        SqliteConnection.ClearAllPools();
         if (File.Exists(databasePath)) File.Delete(databasePath);
     }
 });
