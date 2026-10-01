@@ -1,4 +1,4 @@
-# Marketplace Hub 0.7.1
+# Marketplace Hub 0.7.2
 
 Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh, nền mint, card trắng bo tròn và bố cục báo cáo trực quan.
 
@@ -27,7 +27,21 @@ Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh
 
 ## Bộ cài
 
-`MarketplaceHub-Setup-0.7.1-win-x64.exe`
+`MarketplaceHub-Setup-0.7.2-win-x64.exe`
+
+## Sửa sticker và quy trình in WB 0.7.2
+
+- WB kiểm tra trạng thái thật `confirm` / `complete` trước khi lấy nhãn; đơn mới, hủy hoặc không rõ trạng thái không được in.
+- Lấy sticker theo lô tối đa 100 ID số nguyên, ghép theo `orderId`. 119 đơn dùng hai request sticker; kiểm tra trạng thái và KIZ là các batch riêng. Không còn gọi sticker 119 lần.
+- Giãn nhịp 250 ms; HTTP 429 chờ theo `X-Ratelimit-Retry` / `Retry-After`, tối đa ba lần thử lại. Có tiến độ và dừng tác vụ. Lỗi API dừng các lô còn lại.
+- PNG chính thức được ưu tiên và kiểm tra trước khi in. Khi WB trả `barcode` + `partA` + `partB` nhưng thiếu file, dựng QR theo dữ liệu WB như wcode; không tạo sticker từ ID đơn. Thiếu cả dữ liệu chính thức thì báo hướng xử lý metadata/quyền API.
+- In lại trong 10 phút dùng lại dữ liệu sticker theo đúng cửa hàng/token, vẫn đọc trạng thái mới để chặn đơn đã hủy.
+- Một bộ gồm PDF nhãn 58×40 mm, phiếu nhặt A4 gộp đúng article/barcode/màu/size và manifest từng đơn. Có thứ tự sticker trước/sau, số bản nhãn sản phẩm/KIZ, xem trước, chọn máy in và lịch sử PDF.
+- KIZ in từ metadata hiện hành trên WB, giữ GS/FNC1; KIZ thiếu/bị từ chối/đang kiểm tra chặn chuẩn bị khi chọn in kèm KIZ. Không mua, gán hoặc đổi KIZ trong tác vụ in.
+- Barcode và size lấy đúng biến thể `chrtId`/SKU của đơn; catalog mâu thuẫn phải đồng bộ lại, không dùng size đầu tiên.
+- Chuẩn bị hoàn tất toàn bộ PDF trước khi gửi một job tới máy in. Một spool copy, khổ 58×40, không để mặc định landscape/copies của driver đổi bộ nhãn. Lỗi lưu lịch sử sau khi gửi không báo nhầm thành chưa in.
+
+Đối chiếu chi tiết: [wb-print-comparison.md](wb-print-comparison.md).
 
 
 ## Sửa lỗi 0.7.1
@@ -45,8 +59,8 @@ Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh
 
 ## Kiểm tra và giới hạn
 
-Các dự án `tests/MarketplaceHub.Contracts` và `tests/MarketplaceHub.UI` dùng HTTP giả lập, không gọi tài khoản bán hàng. CI Windows chạy cả hai trước khi đóng bộ cài; EXE đã publish và EXE sau cài đặt đều phải qua self-test và khởi động giao diện.
+Các dự án `tests/MarketplaceHub.Contracts`, `tests/MarketplaceHub.Print` và `tests/MarketplaceHub.UI` dùng dữ liệu giả lập, không gọi tài khoản bán hàng. CI Windows chạy cả ba trước khi đóng bộ cài; EXE đã publish và EXE sau cài đặt đều phải qua self-test và khởi động giao diện.
 
 Báo cáo quyết toán trực tiếp hiện hỗ trợ WB. Ozon / Yandex hiển thị dữ liệu sản phẩm, đơn hàng và lịch sử đồng bộ; chưa có adapter quyết toán cho hai sàn này.
 
-In nhãn PDF sử dụng lệnh Print của ứng dụng PDF mặc định trên Windows. Máy cần có ứng dụng PDF hỗ trợ in và máy in đã cấu hình. Kiểm thử CI không xác nhận bản in vật lý hay quyền/token API thật của người bán. KIZ bắt buộc cần GTIN hợp lệ và mã sẵn có, hoặc cấu hình SUZ / chứng thư CryptoPro để mua mã.
+WB in bộ trang trực tiếp qua máy in được chọn; PDF giữ để xem trước/in lại. Ozon/Yandex vẫn dùng lệnh Print của ứng dụng PDF mặc định trên Windows. Kiểm thử CI không xác nhận bản in vật lý hay quyền/token API thật của người bán. KIZ bắt buộc cần GTIN hợp lệ và mã sẵn có, hoặc cấu hình SUZ / chứng thư CryptoPro để mua mã.

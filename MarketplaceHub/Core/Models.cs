@@ -16,7 +16,9 @@ public sealed record FbsOrderRow(
 
 public sealed record PriceUpdateResult(bool Success, string Message, string? ExternalTaskId = null);
 public sealed record ApiTestResult(bool Success, string Message);
-public sealed record LabelResult(bool Success, string Message, string? FilePath = null);
+public sealed record LabelResult(bool Success, string Message, string? FilePath = null,
+    string? Barcode = null, string? PartA = null, string? PartB = null);
+public sealed record WbPrintKizMetadata(bool Required,IReadOnlyList<string> Codes);
 
 public sealed record ZnakConfig(
     string Inn,

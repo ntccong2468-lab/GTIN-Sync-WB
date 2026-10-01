@@ -5,7 +5,7 @@ using System.Text.Json.Nodes;
 
 namespace MarketplaceHub.Services;
 
-public sealed class MarketplaceGateway
+public sealed partial class MarketplaceGateway
 {
     private readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(60) };
 
@@ -656,27 +656,14 @@ public sealed class MarketplaceGateway
 
     public async Task<LabelResult> DownloadLabelAsync(StoreProfile s, string orderId, CancellationToken ct = default)
     {
+        if (s.Marketplace == Marketplace.Wildberries)
+            return (await DownloadLabelsAsync(s, new[] { orderId }, ct))[orderId];
         try
         {
             byte[] fileBytes;
             string ext;
 
-            if (s.Marketplace == Marketplace.Wildberries)
-            {
-                using var req = Request(HttpMethod.Post,
-                    "https://marketplace-api.wildberries.ru/api/v3/orders/stickers?type=png&width=58&height=40",
-                    s,
-                    JsonSerializer.Serialize(new { orders = new[] { long.Parse(orderId) } }));
-                using var res = await http.SendAsync(req, ct);
-                var text = await res.Content.ReadAsStringAsync(ct);
-                if (!res.IsSuccessStatusCode) return new LabelResult(false, $"HTTP {(int)res.StatusCode}: {Short(text)}");
-
-                var base64 = JsonNode.Parse(text)?["stickers"]?.AsArray()?.FirstOrDefault()?["file"]?.ToString();
-                if (string.IsNullOrWhiteSpace(base64)) return new LabelResult(false, "WB không trả file sticker.");
-                fileBytes = Convert.FromBase64String(base64);
-                ext = ".png";
-            }
-            else if (s.Marketplace == Marketplace.Ozon)
+            if (s.Marketplace == Marketplace.Ozon)
             {
                 using var req = Request(HttpMethod.Post,
                     "https://api-seller.ozon.ru/v2/posting/fbs/package-label",

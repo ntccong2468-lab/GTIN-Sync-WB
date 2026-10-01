@@ -183,9 +183,52 @@ internal static class Program
                         "KIZ must start with FNC1 and preserve the full AI/GS data without duplicating scanner prefixes.");
                 }
             });
+            Check("WB print uses the selected size instead of the card's first size", () =>
+            {
+                var order = new FbsOrderRow(store.Id,Marketplace.Wildberries,"101","SKU","fixture",1,"confirm",false,"{\"chrtId\":2,\"skus\":[\"2222222222222\"]}");
+                var product = new ProductRow(store.Id,Marketplace.Wildberries,"100","SKU","fixture",null,"","{\"sizes\":[{\"chrtID\":1,\"techSize\":\"48\",\"skus\":[\"1111111111111\"]},{\"chrtID\":2,\"techSize\":\"50\",\"skus\":[\"2222222222222\"]}]}");
+                var result = (WbPrintOrder)typeof(MainForm).GetMethod("BuildWbPrintOrder",instance)!.Invoke(form,new object[] {order,product,new LabelResult(true,"fixture",null,"official","1","2"),Array.Empty<string>(),true})!;
+                Expect(result.Size=="50" && result.Barcode=="2222222222222","The first card size/barcode was printed for another variant.");
+            });
+            Check("WB print options and preview render without retaining image handles", () =>
+            {
+                var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");
+                Directory.CreateDirectory(dir);
+                using var options = new WbPrintOptionsDialog(true);options.Show(form);Application.DoEvents();
+                Expect(options.Options.IncludeKiz && options.Options.ProductCopies==1,"Print defaults changed.");
+                using(var picture=new Bitmap(options.Width,options.Height)) {options.DrawToBitmap(picture,new Rectangle(Point.Empty,options.Size));picture.Save(Path.Combine(dir,"WbPrintOptions.png"));}
+                options.Close();
+                var order=new WbPrintOrder("101","Куртка","SKU","Черный","48","Brand","4601234567893",1,false,Array.Empty<string>(),new LabelResult(true,"fixture",null,"!official-101","231648","9753"));
+                var bundle=new WbPrintBundleService().Prepare("fixture",new[]{order},new WbPrintOptions(true,false,false,1),Path.Combine(Path.GetTempPath(),"MarketplaceHub-ui-print"));
+                using var preview=new WbPrintPreviewDialog(bundle,_=>{});preview.Show(form);Application.DoEvents();
+                using(var picture=new Bitmap(preview.Width,preview.Height)) {preview.DrawToBitmap(picture,new Rectangle(Point.Empty,preview.Size));picture.Save(Path.Combine(dir,"WbPrintPreview.png"));}
+                Expect(All(preview).OfType<PictureBox>().Single().Image is not null,"Prepared label was not previewed.");
+                preview.Close();
+            });
+            Check("WB rejects a stale sole catalog size when order identity disagrees", () =>
+            {
+                var order=new FbsOrderRow(store.Id,Marketplace.Wildberries,"101","SKU","fixture",1,"confirm",false,"{\"chrtId\":2,\"skus\":[\"2222222222222\"]}");
+                var product=new ProductRow(store.Id,Marketplace.Wildberries,"100","SKU","fixture",null,"","{\"sizes\":[{\"chrtID\":1,\"techSize\":\"48\",\"skus\":[\"1111111111111\"]}]}");
+                var rejected=false;
+                try {typeof(MainForm).GetMethod("BuildWbPrintOrder",instance)!.Invoke(form,new object[] {order,product,new LabelResult(true,"fixture",null,"official","1","2"),Array.Empty<string>(),true});}
+                catch(TargetInvocationException ex) {rejected=ex.InnerException is InvalidOperationException;}
+                Expect(rejected,"Wrong sole catalog size was silently printed.");
+            });
+            Check("WB submission stays successful when history persistence fails", () =>
+            {
+                var bundle=new WbPrintBundle("fixture","fixture.pdf","details.pdf","job.json",new[]{new WbPrintPage("1","sticker","fixture.png")});
+                var result=WbPrintPreviewDialog.RecordSubmission(bundle,"fixture",1,_=>throw new IOException("audit disk full"),(_,_)=>throw new IOException("file disk full"));
+                Expect(result.Contains("Đã gửi 1/1") && result.Contains("lịch sử") && !result.Contains("Chưa gửi"),"History failure changed the known successful spool outcome.");
+            });
+            Check("WB printer orientation and spool copies are independent of driver defaults", () =>
+            {
+                using var document=WbPrintPreviewDialog.CreatePrintDocument("fixture");
+                Expect(!document.DefaultPageSettings.Landscape && document.PrinterSettings.Copies==1,"Driver defaults override prepared page order/copies.");
+                Expect(document.DefaultPageSettings.PaperSize.Width==228 && document.DefaultPageSettings.PaperSize.Height==157,"58×40 paper size was lost.");
+            });
         }
         finally { app.Db.DeleteStore(store.Id); }
-        Console.WriteLine($"{11 - failures.Count}/11 UI regressions passed");
+        Console.WriteLine($"{16 - failures.Count}/16 UI regressions passed");
         return failures.Count == 0 ? 0 : 1;
     }
 }

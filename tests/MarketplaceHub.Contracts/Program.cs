@@ -12,9 +12,10 @@ async Task Check(string name, Func<Task> test)
 }
 void Expect(bool value, string message) { if (!value) throw new Exception(message); }
 StoreProfile Store(Marketplace m) => new(1, m, "fixture", "123", "test-key", "456", "789", "test-token", true);
-MarketplaceGateway Api(Func<HttpRequestMessage, HttpResponseMessage> respond)
+MarketplaceGateway Api(Func<HttpRequestMessage, HttpResponseMessage> respond,
+    Func<TimeSpan, CancellationToken, Task>? delay = null)
 {
-    var api = new MarketplaceGateway();
+    var api = new MarketplaceGateway(delay);
     typeof(MarketplaceGateway).GetField("http", BindingFlags.NonPublic | BindingFlags.Instance)!
         .SetValue(api, new HttpClient(new FixtureHttp(respond)) { Timeout = TimeSpan.FromSeconds(3) });
     return api;
@@ -113,7 +114,135 @@ await Check("Yandex complete box sends one CIS per unit without removing items",
         new Dictionary<string, IReadOnlyList<string>> { ["A"] = new[] { "code1", "code2" } });
     Expect(result.Success && boxChecked, "Invalid box layout/CIS count.");
 });
-Console.WriteLine($"{12 - failures.Count}/12 contracts passed");
+await Check("WB rejects a sticker belonging to another order", async () =>
+{
+    var api = Api(r => r.RequestUri!.AbsolutePath.EndsWith("/status")
+        ? Json("{\"orders\":[{\"id\":101,\"supplierStatus\":\"confirm\",\"wbStatus\":\"waiting\"}]}")
+        : Json("{\"stickers\":[{\"orderId\":999,\"file\":\"iVBORw0KGgo=\"}]}"));
+    var label = await api.DownloadLabelAsync(Store(Marketplace.Wildberries), "101");
+    if (label.FilePath is not null) File.Delete(label.FilePath);
+    Expect(!label.Success, "A foreign sticker was accepted for order 101.");
+});
+await Check("WB new order explains sticker readiness without requesting stickers", async () =>
+{
+    var stickerRequests = 0;
+    var api = Api(r =>
+    {
+        if (r.RequestUri!.AbsolutePath.EndsWith("/status"))
+            return Json("{\"orders\":[{\"id\":101,\"supplierStatus\":\"new\",\"wbStatus\":\"waiting\"}]}");
+        stickerRequests++; return Json("{\"stickers\":[]}");
+    });
+    var label = await api.DownloadLabelAsync(Store(Marketplace.Wildberries), "101");
+    Expect(!label.Success && label.Message.Contains("new") && stickerRequests == 0, "New orders should be packed before requesting their sticker.");
+});
+await Check("WB 119 labels use two 100-ID batches and match reversed responses", async () =>
+{
+    var stickerCalls = 0; var statusCalls = 0;
+    var api = Api(r =>
+    {
+        var ids = System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x => x!.GetValue<long>()).ToArray();
+        Expect(ids.Length <= 100, "WB batch exceeds 100 integer IDs.");
+        if (r.RequestUri!.AbsolutePath.EndsWith("/status"))
+        {
+            statusCalls++;
+            return Json(System.Text.Json.JsonSerializer.Serialize(new { orders = ids.Select(id => new { id, supplierStatus = "confirm", wbStatus = "waiting" }) }));
+        }
+        stickerCalls++;
+        return Json(System.Text.Json.JsonSerializer.Serialize(new { stickers = ids.Reverse().Select(id => new { orderId = id, barcode = "WB-" + id, partA = "12", partB = id.ToString(), file = "" }) }));
+    }, (_, ct) => { ct.ThrowIfCancellationRequested(); return Task.CompletedTask; });
+    var ids = Enumerable.Range(1, 119).Select(x => x.ToString()).ToArray();
+    var result = await api.DownloadLabelsAsync(Store(Marketplace.Wildberries), ids);
+    Expect(stickerCalls == 2 && statusCalls == 2 && result.Count == 119, "119 labels must use 2 sticker calls plus 2 readiness calls.");
+    Expect(ids.All(id => result[id].Success && result[id].Barcode == "WB-" + id), "Reordered response swapped stickers.");
+    await api.DownloadLabelsAsync(Store(Marketplace.Wildberries), ids);
+    Expect(stickerCalls == 2 && statusCalls == 4, "Reprint must reuse sticker data after fresh status validation.");
+});
+await Check("WB retry waits for the larger retry header and repeats the same batch", async () =>
+{
+    var calls = 0; var delays = new List<TimeSpan>();
+    var api = Api(r =>
+    {
+        if (r.RequestUri!.AbsolutePath.EndsWith("/status"))
+            return Json("{\"orders\":[{\"id\":1,\"supplierStatus\":\"confirm\",\"wbStatus\":\"waiting\"}]}");
+        calls++;
+        if (calls == 1)
+        {
+            var response = Json("{}", HttpStatusCode.TooManyRequests);
+            response.Headers.Add("X-Ratelimit-Retry", "7");
+            response.Headers.RetryAfter = new System.Net.Http.Headers.RetryConditionHeaderValue(TimeSpan.FromSeconds(11));
+            return response;
+        }
+        return Json("{\"stickers\":[{\"orderId\":1,\"barcode\":\"official\",\"partA\":\"1\",\"partB\":\"2\"}]}");
+    }, (delay, ct) => { ct.ThrowIfCancellationRequested(); delays.Add(delay); return Task.CompletedTask; });
+    var result = await api.DownloadLabelsAsync(Store(Marketplace.Wildberries), new[] { "1" });
+    Expect(result["1"].Success && calls == 2 && delays.Any(x => x.TotalSeconds > 10.9), "Retry ignored WB rate-limit headers.");
+});
+await Check("WB cancellation stops rate-limit retry and later batches", async () =>
+{
+    using var cancel = new CancellationTokenSource(); var calls = 0;
+    var api = Api(_ =>
+    {
+        calls++; var response = Json("{}", HttpStatusCode.TooManyRequests);
+        response.Headers.Add("X-Ratelimit-Retry", "30"); return response;
+    }, (_, ct) => { cancel.Cancel(); ct.ThrowIfCancellationRequested(); return Task.CompletedTask; });
+    var stopped = false;
+    try { await api.DownloadLabelsAsync(Store(Marketplace.Wildberries), Enumerable.Range(1,119).Select(x => x.ToString()), cancel.Token); }
+    catch (OperationCanceledException) { stopped = true; }
+    Expect(stopped && calls == 1, "Cancelled job continued issuing WB requests.");
+});
+await Check("WB unknown status, partial payload and invalid PNG never become labels", async () =>
+{
+    foreach (var payload in new[] { "{\"stickers\":[]}", "{\"stickers\":[{\"orderId\":1,\"barcode\":\"x\"}]}", "{\"stickers\":[{\"orderId\":1,\"file\":\"e30=\"}]}" })
+    {
+        var api = Api(r => r.RequestUri!.AbsolutePath.EndsWith("/status")
+            ? Json("{\"orders\":[{\"id\":1,\"supplierStatus\":\"confirm\",\"wbStatus\":\"waiting\"}]}") : Json(payload), (_,_) => Task.CompletedTask);
+        Expect(!(await api.DownloadLabelAsync(Store(Marketplace.Wildberries), "1")).Success, "Incomplete/invalid sticker was accepted.");
+    }
+    var unknown = Api(_ => Json("{\"orders\":[]}"));
+    Expect(!(await unknown.DownloadLabelAsync(Store(Marketplace.Wildberries), "1")).Success, "Unknown status was accepted.");
+});
+await Check("WB cached sticker is blocked after cancellation and isolated across tokens", async () =>
+{
+    var cancelled = false; var stickers = 0;
+    var api = Api(r =>
+    {
+        if (r.RequestUri!.AbsolutePath.EndsWith("/status")) return Json("{\"orders\":[{\"id\":1,\"supplierStatus\":\"" + (cancelled ? "cancel" : "confirm") + "\",\"wbStatus\":\"waiting\"}]}");
+        stickers++; return Json("{\"stickers\":[{\"orderId\":1,\"barcode\":\"x\",\"partA\":\"1\",\"partB\":\"2\"}]}");
+    }, (_,_) => Task.CompletedTask);
+    var store = Store(Marketplace.Wildberries);
+    Expect((await api.DownloadLabelAsync(store, "1")).Success, "Fixture failed.");
+    await api.DownloadLabelAsync(store with { Token = "another-shop" }, "1");
+    Expect(stickers == 2, "Sticker cache leaked across store credentials.");
+    cancelled = true;
+    Expect(!(await api.DownloadLabelAsync(store, "1")).Success && stickers == 2, "Cancelled order reused a cached sticker.");
+});
+await Check("WB print KIZ uses batched current metadata and preserves GS", async () =>
+{
+    const string code = "010460123456789321serial\u001d91ABCD\u001d92proof";
+    var api = Api(r =>
+    {
+        Expect(r.RequestUri!.AbsolutePath == "/api/marketplace/v3/orders/meta", "Print KIZ used deprecated single-order metadata API.");
+        return Json(System.Text.Json.JsonSerializer.Serialize(new {orders=new[] {new {id=1,metaDetails=new[] {new {key="sgtin",value=new[]{code},decision="sgtinMaySell"}}}}}));
+    }, (_,_) => Task.CompletedTask);
+    var result = await api.GetWbPrintKizAsync(Store(Marketplace.Wildberries),new[]{"1"});
+    Expect(result["1"].Codes.Single()==code,"Print KIZ differs from the code attached on WB.");
+});
+await Check("WB fresh required KIZ survives null values and optional empty is ignored", async () =>
+{
+    var api=Api(_=>Json("{\"orders\":[{\"id\":1,\"metaDetails\":[{\"key\":\"sgtin\",\"value\":null,\"decision\":\"required\"}]},{\"id\":2,\"metaDetails\":[{\"key\":\"sgtin\",\"value\":\"\",\"decision\":\"optional\"}]}]}"));
+    var result=await api.GetWbPrintKizAsync(Store(Marketplace.Wildberries),new[]{"1","2"});
+    Expect(result["1"].Required && result["1"].Codes.Count==0 && !result["2"].Required && result["2"].Codes.Count==0,"Fresh required/optional KIZ requirements were lost.");
+});
+await Check("WB invalid or pending KIZ decision blocks print preparation", async () =>
+{
+    foreach(var decision in new[]{"invalid","pending","unknown-new-status"})
+    {
+        var api=Api(_=>Json("{\"orders\":[{\"id\":1,\"metaDetails\":[{\"key\":\"sgtin\",\"value\":\"code\",\"decision\":\""+decision+"\"}]}]}"));
+        var rejected=false;try{await api.GetWbPrintKizAsync(Store(Marketplace.Wildberries),new[]{"1"});}catch(InvalidDataException){rejected=true;}
+        Expect(rejected,"Unvalidated KIZ was allowed to print.");
+    }
+});
+Console.WriteLine($"{22 - failures.Count}/22 contracts passed");
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;
 
 sealed class FixtureHttp(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

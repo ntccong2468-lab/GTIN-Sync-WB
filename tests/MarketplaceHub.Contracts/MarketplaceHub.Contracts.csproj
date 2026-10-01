@@ -3,5 +3,6 @@
   <ItemGroup>
     <Compile Include="../../MarketplaceHub/Core/Models.cs" Link="Models.cs" />
     <Compile Include="../../MarketplaceHub/Services/MarketplaceGateway.cs" Link="MarketplaceGateway.cs" />
+    <Compile Include="../../MarketplaceHub/Services/WbLabels.cs" Link="WbLabels.cs" />
   </ItemGroup>
 </Project>

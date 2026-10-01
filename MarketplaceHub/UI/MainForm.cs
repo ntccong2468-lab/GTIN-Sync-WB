@@ -11,7 +11,7 @@ using System.Text.Json.Nodes;
 
 namespace MarketplaceHub.UI;
 
-public sealed class MainForm : Form
+public sealed partial class MainForm : Form
 {
     private readonly AppServices app;
     private readonly Panel work = new() { Dock = DockStyle.Fill, BackColor = C.Main };
@@ -949,7 +949,7 @@ public sealed class MainForm : Form
 
         var selectAll = new CheckBox
         {
-            Text = "Chọn tất cả đơn mới đang hiển thị",
+            Text = "Chọn tất cả đơn đang hiển thị",
             Left = 4, Top = 187, AutoSize = true,
             ForeColor = C.Text, BackColor = C.Main,
             Font = new Font("Segoe UI", 9.5f, FontStyle.Bold)
@@ -974,7 +974,7 @@ public sealed class MainForm : Form
             StyleTab(packTab, value == "pack");
             StyleTab(shipTab, value == "ship");
             createShipment.Visible = value == "new";
-            selectAll.Visible = value == "new";
+            selectAll.Visible = true;
             changingSelectAll = true;
             selectAll.Checked = false;
             changingSelectAll = false;
@@ -1024,7 +1024,7 @@ public sealed class MainForm : Form
 
         selectAll.CheckedChanged += (_, _) =>
         {
-            if (changingSelectAll || mode != "new") return;
+            if (changingSelectAll) return;
             foreach (DataGridViewRow row in grid.Rows)
                 if (!row.IsNewRow) row.Cells[0].Value = selectAll.Checked;
             grid.EndEdit();
@@ -1079,6 +1079,14 @@ public sealed class MainForm : Form
             selected = selected.GroupBy(x => x.ExternalOrderId, StringComparer.OrdinalIgnoreCase).Select(x => x.First()).ToList();
             var includeKiz = kizOption.Checked;
 
+            if (store.Marketplace == Marketplace.Wildberries)
+            {
+                printLabels.Enabled = false;
+                try { await PrepareWbPrintAsync(store, selected, includeKiz, pageToken); }
+                finally { if (!printLabels.IsDisposed) printLabels.Enabled = true; }
+                return;
+            }
+
             printLabels.Enabled = false;
             var errors = new List<string>();
             var printed = 0;
@@ -1093,7 +1101,7 @@ public sealed class MainForm : Form
                     continue;
                 }
                 if (PrintLabelFile(store.Marketplace, label.FilePath, out var printError)) printed++;
-                else errors.Add($"{order.ExternalOrderId}: {printError}");
+                else { errors.Add($"{order.ExternalOrderId}: {printError}"); continue; }
 
                 if (includeKiz)
                 {
@@ -1155,6 +1163,13 @@ public sealed class MainForm : Form
         print.Anchor = AnchorStyles.Top | AnchorStyles.Right; print.Top = 0;
         print.Click += async (_, _) =>
         {
+            if (store.Marketplace == Marketplace.Wildberries)
+            {
+                print.Enabled = false;
+                try { await PrepareWbPrintAsync(store, new[] { order }, order.NeedsKiz, pageToken); }
+                finally { if (!print.IsDisposed) print.Enabled = true; }
+                return;
+            }
             print.Enabled = false;
             var result = await app.Api.DownloadLabelAsync(store, order.ExternalOrderId, pageToken);
             app.Db.Audit("In nhãn", result.Success ? "Đã tải" : "Lỗi", $"{order.ExternalOrderId}:{result.Message}");
@@ -2171,6 +2186,18 @@ public sealed class MainForm : Form
     {
         ClearWork();
         work.Controls.Add(Title("Lịch sử in"));
+        var files = ActionButton("Mở các bộ PDF nhãn WB", 230);
+        files.Left = 260; files.Top = 0;
+        files.Click += (_, _) =>
+        {
+            try
+            {
+                Directory.CreateDirectory(WbPrintBundleService.HistoryDirectory);
+                Process.Start(new ProcessStartInfo(WbPrintBundleService.HistoryDirectory) { UseShellExecute = true });
+            }
+            catch (Exception ex) { ShowInfo(ex.Message); }
+        };
+        work.Controls.Add(files);
         var card = CardPanel(); card.Left = 4; card.Top = 70; card.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right; card.Width = work.ClientSize.Width - 55; card.Height = work.ClientSize.Height - 100; work.Controls.Add(card);
         var grid = DarkGrid(); grid.Dock = DockStyle.Fill; grid.Columns.Add("time", "Thời gian"); grid.Columns.Add("action", "Trạng thái"); grid.Columns.Add("detail", "Chi tiết");
         foreach (var a in app.Db.AuditRows().Where(x => x.Module.Contains("nhãn", StringComparison.OrdinalIgnoreCase) || x.Module.Contains("In", StringComparison.OrdinalIgnoreCase)))
