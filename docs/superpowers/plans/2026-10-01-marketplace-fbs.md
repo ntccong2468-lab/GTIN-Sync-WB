@@ -13,4 +13,4 @@
 - [x] Add batch detail UI through existing action hooks, explicit confirmation and stale page guards.
 - [x] Compile app and run fixture checks; report remaining platform/live-account verification limits.
 
-Local evidence: FBS contracts18/18; product catalog8/8; print11/11; Windows application, UI and10 persistence checks compile. Actual Windows execution and installer remain pending.
+Local evidence: FBS contracts18/18; product catalog8/8; print11/11; Windows application, UI and11 persistence checks compile. Windows run36808869705 passed11/11 persistence,27/27 UI and all API/print checks; installer and installed application passed self-test/GUI checks.

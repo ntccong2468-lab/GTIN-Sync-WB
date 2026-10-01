@@ -48,8 +48,8 @@
 
 **Files:** README, comparison document, project/installer/workflow version, PR2.
 - [x] Review independently and address important findings with red→green regressions.
-- [ ] Build0.7.3, contracts, print tests, UI tests, installed self-test and GUI smoke on Windows.
-- [ ] Retrieve exact installer, verify SHA256 against CI, save and deliver with live-token/printer boundary.
+- [x] Build0.7.3, contracts, print tests, UI tests, installed self-test and GUI smoke on Windows.
+- [x] Retrieve exact installer, verify SHA256 against CI, save and deliver with live-token/printer boundary.
 
 ## Ledger
 
@@ -92,3 +92,10 @@ Catalog review corrections: GTIN checksum and ambiguous barcode detection; Ozon 
 
 
 Windows run36807964431 reproduced missing fixture credentials and reflection invocation mismatch; these test inputs were corrected. Run36808511167 passed10/11 durable checks, reproducing a real Yandex layout retry bug when identifiers/status reverses code order. Planning now uses persisted unit reservation order before generating the box layout, matching allocation and retaining the same codes after a lost response. Screenshot review also found compact WB action clipping and collapsed Ozon product text; responsive widths/action wrapping and UI assertions were added. Scanner-prefix alias ownership is protected with additive nonunique canonical indexes; no KIZ rows are migrated/deleted.
+
+
+## Final verification
+
+Source ec3c3b64080d8798b7fc8e0957a132927633aa42; Windows run36808869705, job110199213075: success. 31/31 API contracts,18/18 Ozon/Yandex FBS,8/8 catalog,11/11 persistence/recovery,11/11 print and27/27 UI =106 regressions. Published and installed application each passed14 self-test checks; both GUI launch checks passed. The reordered-CIS/lost-layout regression is now green. Final screenshots reviewed: compact action/column problems corrected; data shown is fixture-only.
+
+Verified installer commit22f7607b8a50453274d8b877c8119489f83d56a4,69,813,894 bytes; downloaded tracked installer matches CI SHA2563972d7c7ca503098c330166f754e078cf3e180479f86e51ad78834e9c72db298 and has Windows PE signature. Installer and screenshot archive saved for delivery. No live seller token or physical printer used; PR2 remains open for review.
