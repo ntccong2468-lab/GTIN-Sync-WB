@@ -23,7 +23,7 @@ public sealed partial class MainForm
     private async Task BeginWbShipmentAsync(StoreProfile store,IReadOnlyList<FbsOrderRow> selected,bool useKiz,CancellationToken pageToken,bool preferExisting=false)
     {
         if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token)){ShowInfo("Đang có tác vụ shipment/KIZ. Hãy chờ hoàn tất.");return;}
-        PriceUpdateResult? result=null;
+        WbReceiveResult? result=null;
         try
         {
             var supplies=await app.Api.GetWbTodaySuppliesAsync(store,pageToken);
@@ -49,7 +49,7 @@ public sealed partial class MainForm
         if(result is null)return;
         app.Db.Audit("FBS WB",result.Success?"Đã nhận đơn vào shipment":"Shipment cần tiếp tục",result.Message);
         if(pageToken.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
-        if(!string.IsNullOrWhiteSpace(result.ExternalTaskId))
+        if(!string.IsNullOrWhiteSpace(result.SupplyId))
             ShowFbsWorkspace("new",result.Message);
         else ShowInfo(result.Message);
     }

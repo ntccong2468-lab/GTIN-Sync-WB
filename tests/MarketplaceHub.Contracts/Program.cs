@@ -38,6 +38,52 @@ await Check("WB status failure never turns cached orders into new orders", async
     catch (Exception ex) { rejected = ex.Message.Contains("401"); }
     Expect(rejected, "Status API failure must fail the sync; unknown status must not become new.");
 });
+
+await Check("WB mixed cancelled selection receives every eligible order", async () =>
+{
+    var creates=0;var patched=new List<long>();var members=new HashSet<long>();
+    var api=Api(r=>{
+        var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/status")) {
+            var ids=System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x=>x!.GetValue<long>()).ToArray();
+            return Json(System.Text.Json.JsonSerializer.Serialize(new{orders=ids.Select(id=>new{id,supplierStatus=members.Contains(id)?"confirm":"new",wbStatus=id==2?"canceled_by_client":"waiting"})}));
+        }
+        if(r.Method==HttpMethod.Post){creates++;return Json("{\"id\":\"MIXED\"}",HttpStatusCode.Created);}
+        if(r.Method.Method=="PATCH"){foreach(var id in System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x=>x!.GetValue<long>())){patched.Add(id);members.Add(id);}return Json("",HttpStatusCode.NoContent);}
+        return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+    },(_,_)=>Task.CompletedTask);
+    var orders=new[]{new FbsOrderRow(1,Marketplace.Wildberries,"1","A","A",1,"new",false,"{}"),new FbsOrderRow(1,Marketplace.Wildberries,"2","B","B",1,"new",false,"{}")};
+    var result=await api.ReceiveWbShipmentAsync(Store(Marketplace.Wildberries),orders);
+    Expect(result.Success&&result.SupplyId=="MIXED"&&creates==1&&patched.SequenceEqual(new long[]{1})&&result.VerifiedMemberCount==1,"Cancelled row aborted or entered the valid subset.");
+    Expect(result.Orders.Single(x=>x.OrderId=="1").Disposition==WbReceiveDisposition.EligibleNew&&result.Orders.Single(x=>x.OrderId=="1").Verified,"Eligible result was not verified.");
+    Expect(result.Orders.Single(x=>x.OrderId=="2").Disposition==WbReceiveDisposition.Cancelled,"Cancelled result was not reported separately.");
+});
+
+await Check("WB missing status rejects only that order and 205 eligible IDs use 100 100 5", async () =>
+{
+    var creates=0;var batches=new List<int>();var members=new HashSet<long>();
+    var api=Api(r=>{
+        var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/status")) {
+            var ids=System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x=>x!.GetValue<long>()).Where(x=>x!=206).ToArray();
+            return Json(System.Text.Json.JsonSerializer.Serialize(new{orders=ids.Select(id=>new{id,supplierStatus=members.Contains(id)?"confirm":"new",wbStatus="waiting"})}));
+        }
+        if(r.Method==HttpMethod.Post){creates++;return Json("{\"id\":\"BATCH-205\"}",HttpStatusCode.Created);}
+        if(r.Method.Method=="PATCH"){var ids=System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x=>x!.GetValue<long>()).ToArray();batches.Add(ids.Length);foreach(var id in ids)members.Add(id);return Json("",HttpStatusCode.NoContent);}
+        return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+    },(_,_)=>Task.CompletedTask);
+    var orders=Enumerable.Range(1,206).Select(id=>new FbsOrderRow(1,Marketplace.Wildberries,id.ToString(),"A","A",1,"new",false,"{}")).ToArray();
+    var result=await api.ReceiveWbShipmentAsync(Store(Marketplace.Wildberries),orders);
+    Expect(result.Success&&creates==1&&batches.SequenceEqual(new[]{100,100,5})&&result.VerifiedMemberCount==205,"WB did not retain one supply with 100/100/5 verified batches.");
+    Expect(result.Orders.Single(x=>x.OrderId=="206").Disposition==WbReceiveDisposition.Rejected,"Missing status was not rejected per order.");
+});
+
+await Check("WB all-cancelled selection does not create a supply", async () =>
+{
+    var mutations=0;var api=Api(r=>{if(r.Method!=HttpMethod.Get&&!r.RequestUri!.AbsolutePath.EndsWith("/status"))mutations++;return Json("{\"orders\":[{\"id\":1,\"supplierStatus\":\"new\",\"wbStatus\":\"canceled_by_client\"}]}");},(_,_)=>Task.CompletedTask);
+    var result=await api.ReceiveWbShipmentAsync(Store(Marketplace.Wildberries),new[]{new FbsOrderRow(1,Marketplace.Wildberries,"1","A","A",1,"new",false,"{}")});
+    Expect(!result.Success&&result.SupplyId is null&&mutations==0&&result.Orders.Single().Disposition==WbReceiveDisposition.Cancelled,"All-cancelled selection created a supply or lost its outcome.");
+});
 await Check("WB confirmed status and required SGTIN are preserved", async () =>
 {
     var api = Api(r => r.RequestUri!.AbsolutePath switch
@@ -291,14 +337,20 @@ await Check("WB 119 selected orders are added to one shipment in two batches", a
     var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),orders);
     Expect(result.Success && creates==1 && batches.SequenceEqual(new[]{100,19}) && members.Count==119,"119-order shipment was rejected, recreated or incomplete: "+result.Message);
 });
-await Check("WB invalid or foreign-store order IDs never create a shipment", async () =>
+await Check("WB invalid or foreign-store rows do not block a valid order", async () =>
 {
     foreach(var bad in new[]{new FbsOrderRow(1,Marketplace.Wildberries,"invalid","A","A",1,"new",false,"{}"),new FbsOrderRow(2,Marketplace.Wildberries,"2","A","A",1,"new",false,"{}")}) {
-        var creates=0;
-        var api=Api(r=> {if(r.Method==HttpMethod.Post){creates++;return Json("{\"id\":\"WB-GI-TEST\"}",HttpStatusCode.Created);}return Json("",HttpStatusCode.NoContent);},(_,_)=>Task.CompletedTask);
+        var creates=0;var members=new HashSet<long>();
+        var api=Api(r=> {
+            var path=r.RequestUri!.AbsolutePath;
+            if(path.EndsWith("/status")){var ids=System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray();return Json(System.Text.Json.JsonSerializer.Serialize(new{orders=ids.Select(x=>new{id=x!.GetValue<long>(),supplierStatus=members.Contains(x.GetValue<long>())?"confirm":"new",wbStatus="waiting"})}));}
+            if(r.Method==HttpMethod.Post){creates++;return Json("{\"id\":\"WB-GI-TEST\"}",HttpStatusCode.Created);}
+            if(r.Method.Method=="PATCH"){foreach(var x in System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray())members.Add(x!.GetValue<long>());return Json("",HttpStatusCode.NoContent);}
+            return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+        },(_,_)=>Task.CompletedTask);
         var valid=new FbsOrderRow(1,Marketplace.Wildberries,"1","A","A",1,"new",false,"{}");
-        var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),new[]{valid,bad});
-        Expect(!result.Success && creates==0,"Invalid/foreign ID was silently dropped or added to this shop.");
+        var result=await api.ReceiveWbShipmentAsync(Store(Marketplace.Wildberries),new[]{valid,bad});
+        Expect(result.Success&&creates==1&&members.SetEquals(new long[]{1})&&result.Orders.Single(x=>x.OrderId==bad.ExternalOrderId).Disposition==WbReceiveDisposition.Rejected,"Invalid/foreign row blocked or entered the valid subset.");
     }
 });
 

@@ -7,19 +7,25 @@ public sealed partial class AppServices
 {
     private readonly SemaphoreSlim wbKizOperations=new(1,1);
 
-    public async Task<PriceUpdateResult> ReceiveWbOrdersAsync(StoreProfile store,IReadOnlyList<FbsOrderRow> orders,
+    public async Task<WbReceiveResult> ReceiveWbOrdersAsync(StoreProfile store,IReadOnlyList<FbsOrderRow> orders,
         WbShipmentChoice choice,CancellationToken ct=default,IProgress<string>? progress=null)
     {
-        if(store.Marketplace!=Marketplace.Wildberries)return new(false,"Chỉ nhận shipment WB cho cửa hàng Wildberries.");
+        if(store.Marketplace!=Marketplace.Wildberries)return new(false,null,false,0,Array.Empty<WbReceiveOrderResult>(),"Chỉ nhận shipment WB cho cửa hàng Wildberries.");
         var unique=orders.GroupBy(x=>x.ExternalOrderId,StringComparer.Ordinal).Select(x=>x.First()).ToArray();
-        if(unique.Length==0)return new(false,"Chưa chọn đơn mới.");
-        var result=await Api.CreateShipmentAsync(store,unique,ct,choice.SupplyId,choice.Name,progress).ConfigureAwait(false);
-        if(!string.IsNullOrWhiteSpace(result.ExternalTaskId)) {
+        if(unique.Length==0)return new(false,null,false,0,Array.Empty<WbReceiveOrderResult>(),"Chưa chọn đơn mới.");
+        var result=await Api.ReceiveWbShipmentAsync(store,unique,choice.SupplyId,choice.Name,ct,progress).ConfigureAwait(false);
+        var observed=DateTimeOffset.UtcNow;
+        foreach(var order in result.Orders) {
+            if(order.Disposition==WbReceiveDisposition.Cancelled)Db.MarkOrderRemoteState(store.Id,store.Marketplace,order.OrderId,"new","cancelled",true,observed);
+            else if(order.Verified)Db.MarkOrderRemoteState(store.Id,store.Marketplace,order.OrderId,"confirm","waiting",true,observed);
+            else if(order.Disposition==WbReceiveDisposition.Rejected)Db.MarkOrderRemoteState(store.Id,store.Marketplace,order.OrderId,"","",false,observed);
+        }
+        if(!string.IsNullOrWhiteSpace(result.SupplyId)) {
             try {
-                var supply=await Api.GetWbSupplyAsync(store,result.ExternalTaskId,ct).ConfigureAwait(false);
+                var supply=await Api.GetWbSupplyAsync(store,result.SupplyId,ct).ConfigureAwait(false);
                 var members=await Api.GetWbSupplyOrderIdsAsync(store,supply.Id,ct).ConfigureAwait(false);
                 Db.UpsertWbSupply(store.Id,supply,members.Count);Db.StoreWbSupplyMembership(store.Id,supply.Id,members);
-            } catch(Exception ex) {return new(false,result.Message+" Đã tạo/giữ shipment nhưng chưa đọc đủ membership: "+ex.Message,result.ExternalTaskId);}
+            } catch(Exception ex) {return result with{Success=false,Message=result.Message+" Đã tạo/giữ shipment nhưng chưa đọc đủ membership: "+ex.Message};}
         }
         return result;
     }

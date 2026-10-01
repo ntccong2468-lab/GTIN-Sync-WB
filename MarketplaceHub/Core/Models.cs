@@ -104,3 +104,16 @@ public sealed record WbSupply(string Id, string Name, DateTimeOffset CreatedAt, 
 }
 public sealed record WbOrderStatus(string SupplierStatus, string WbStatus);
 public sealed record WbShipmentChoice(string? SupplyId, string Name);
+public enum WbReceiveDisposition { EligibleNew, AlreadyMember, Cancelled, Rejected }
+public sealed record WbReceiveOrderResult(
+    string OrderId,
+    WbReceiveDisposition Disposition,
+    bool Verified,
+    string Message);
+public sealed record WbReceiveResult(
+    bool Success,
+    string? SupplyId,
+    bool Created,
+    int VerifiedMemberCount,
+    IReadOnlyList<WbReceiveOrderResult> Orders,
+    string Message);
