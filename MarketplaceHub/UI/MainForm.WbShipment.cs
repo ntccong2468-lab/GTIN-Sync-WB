@@ -124,7 +124,7 @@ public sealed partial class MainForm
         grid.Columns.Add(new DataGridViewTextBoxColumn{Name="number",HeaderText="STT",Width=50});
         grid.Columns.Add(new DataGridViewTextBoxColumn{Name="order",HeaderText="Mã nhiệm vụ",Width=175});
         grid.Columns.Add(new DataGridViewImageColumn{Name="image",HeaderText="Ảnh",Width=100,ImageLayout=DataGridViewImageCellLayout.Zoom,DefaultCellStyle=new DataGridViewCellStyle{NullValue=null}});
-        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="detail",HeaderText="Thông tin chi tiết",AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill});
+        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="detail",HeaderText="Thông tin chi tiết",MinimumWidth=220,AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill});
         grid.Columns.Add(new DataGridViewTextBoxColumn{Name="kiz",HeaderText="KIZ trên WB",Width=160});
         grid.Columns.Add(new DataGridViewTextBoxColumn{Name="price",HeaderText="Giá",Width=100});card.Controls.Add(grid);
         void RenderRows()
@@ -187,9 +187,13 @@ public sealed partial class MainForm
             finally {fbsOperations.Release();if(!deliver.IsDisposed){deliver.Enabled=!supply.Done;export.Enabled=true;}}
         };
         SetWorkResize((_,_)=> {
-            deliver.Left=Math.Max(570,work.ClientSize.Width-deliver.Width-12);export.Left=deliver.Left-export.Width-10;
-            title.Width=Math.Max(260,export.Left-title.Left-10);state.Width=work.ClientSize.Width-25;
+            var compact=work.ClientSize.Width<1000;
+            export.Top=deliver.Top=compact?55:0;
+            deliver.Left=compact?190:work.ClientSize.Width-deliver.Width-12;export.Left=compact?0:deliver.Left-export.Width-10;
+            title.Width=compact?work.ClientSize.Width-title.Left-25:export.Left-title.Left-10;
+            options.Top=compact?105:55;options.Width=work.ClientSize.Width-25;state.Top=options.Bottom+3;state.Width=work.ClientSize.Width-25;card.Top=state.Bottom+6;
             card.Width=work.ClientSize.Width-25;card.Height=Math.Max(240,work.ClientSize.Height-card.Top-20);
+            grid.Columns["number"].Width=45;grid.Columns["order"].Width=compact?140:175;grid.Columns["image"].Width=compact?80:100;grid.Columns["kiz"].Width=compact?135:160;grid.Columns["price"].Width=compact?80:100;
         });
         refreshActivePage=null;
     }

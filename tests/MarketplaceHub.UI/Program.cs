@@ -387,6 +387,8 @@ internal static class Program
                     typeof(MainForm).GetMethod("ShowWbSupplyDetail",instance)!.Invoke(form,new object?[]{wb,new WbSupply("WB-GI-FIXTURE","Today",DateTimeOffset.UtcNow,false),rows,marking,null});
                     Application.DoEvents();
                     var grid=All(form).OfType<DataGridView>().Single();
+                    Expect(grid.Columns["detail"].Width>=220,"WB product details collapsed at compact width.");
+                    var supplyWork=(Panel)typeof(MainForm).GetField("work",instance)!.GetValue(form)!;var delivery=All(form).OfType<Button>().Single(b=>b.Text=="Chuyển sang giao hàng");Expect(delivery.Right<=supplyWork.ClientSize.Width,"Delivery action is clipped at compact width.");
                     Expect(grid.Rows.Count==2 && grid.Rows[0].Cells["kiz"].Value!.ToString()!.Contains("Đã tích KIZ") && grid.Rows[1].Cells["kiz"].Value!.ToString()!.Contains("Chưa gắn"),"Full shipment or confirmed KIZ status was missing.");
                     var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);
                     using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"WbSupplyDetail.png"));}
@@ -400,7 +402,7 @@ internal static class Program
                     app.Db.UpsertOrders(oz.Id,Marketplace.Ozon,new[]{new FbsOrderRow(oz.Id,Marketplace.Ozon,"P1","A","Quần nam",2,"awaiting_deliver",false,"{}"),new FbsOrderRow(oz.Id,Marketplace.Ozon,"P1","B","Áo khoác",1,"awaiting_deliver",false,"{}"),new FbsOrderRow(oz.Id,Marketplace.Ozon,"P2","C","Bộ thể thao",1,"awaiting_packaging",false,"{}")});
                     var batch=app.Db.CreateMarketplaceFbsBatch(oz,new[]{"P1","P2"});app.Db.SaveMarketplaceFbsOrder(oz,batch.Id,"P1","PACKED");app.Db.SaveMarketplaceFbsOrder(oz,batch.Id,"P2","ERROR","Cần đồng bộ barcode đúng biến thể");
                     typeof(MainForm).GetMethod("ShowMarketplaceFbsBatch",instance)!.Invoke(form,new object?[]{oz,batch.Id,null});Application.DoEvents();
-                    var grid=All(form).OfType<DataGridView>().Single(g=>g.Name=="marketplaceBatchOrders");Expect(grid.Rows.Count==2 && grid.Rows[0].Cells["items"].Value!.ToString()!.Contains("Áo khoác") && grid.Rows[1].Cells["error"].Value!.ToString()!.Contains("barcode"),"Whole batch or recovery reason was hidden.");
+                    var grid=All(form).OfType<DataGridView>().Single(g=>g.Name=="marketplaceBatchOrders");Expect(grid.Columns["items"].Width>=220,"Whole posting product column collapsed.");Expect(grid.Rows.Count==2 && grid.Rows[0].Cells["items"].Value!.ToString()!.Contains("Áo khoác") && grid.Rows[1].Cells["error"].Value!.ToString()!.Contains("barcode"),"Whole batch or recovery reason was hidden.");
                     var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);using var image=new Bitmap(form.Width,form.Height);form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"OzonFbsBatch.png"));
                 }finally{app.Db.DeleteStore(oz.Id);}
             });

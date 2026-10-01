@@ -18,12 +18,12 @@ public sealed partial class MainForm
         var missing=new CheckBox{Left=415,Top=163,Text="Chỉ biến thể thiếu GTIN",AutoSize=true,ForeColor=C.Text};work.Controls.Add(missing);
         var card=CardPanel();card.Left=0;card.Top=210;work.Controls.Add(card);
         var grid=DarkGrid();grid.Name="productVariants";grid.Dock=DockStyle.Fill;grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;
-        grid.Columns.Add(new DataGridViewImageColumn{Name="photo",HeaderText="Ảnh",Width=90,ImageLayout=DataGridViewImageCellLayout.Zoom,DefaultCellStyle=new DataGridViewCellStyle{NullValue=null}});
-        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="sku",HeaderText="SKU / Article",Width=180});
-        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="size",HeaderText="Size",Width=70});
-        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="barcodes",HeaderText="Barcode của biến thể",Width=210});
-        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="gtin",HeaderText="GTIN",Width=170});
-        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="status",HeaderText="Trạng thái",AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill});card.Controls.Add(grid);
+        grid.Columns.Add(new DataGridViewImageColumn{Name="photo",HeaderText="Ảnh",Width=60,ImageLayout=DataGridViewImageCellLayout.Zoom,DefaultCellStyle=new DataGridViewCellStyle{NullValue=null}});
+        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="sku",HeaderText="SKU / Article",Width=130});
+        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="size",HeaderText="Size",Width=50});
+        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="barcodes",HeaderText="Barcode của biến thể",Width=180});
+        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="gtin",HeaderText="GTIN",Width=150});
+        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="status",HeaderText="Trạng thái",MinimumWidth=160,AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill});card.Controls.Add(grid);
         var prev=ActionButton("‹",48);var next=ActionButton("›",48);var page=new Label{ForeColor=C.Text,AutoSize=true};work.Controls.Add(prev);work.Controls.Add(next);work.Controls.Add(page);
         IReadOnlyList<ProductVariantRow> variants=Array.Empty<ProductVariantRow>();var currentPage=0;CancellationTokenSource? operation=null;var loading=false;
         void Render()

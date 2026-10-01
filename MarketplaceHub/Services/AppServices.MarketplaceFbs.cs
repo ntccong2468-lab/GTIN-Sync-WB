@@ -39,8 +39,13 @@ public sealed partial class AppServices
                         layout=(JsonArray)persisted["boxes"]!.DeepClone();
                     }
                     var planned=new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal);
-                    foreach(var item in snapshot.Items.Where(x=>x.RequiresKiz))planned[item.Id]=remote.Codes.TryGetValue(item.Id,out var old) && old.Count==item.Quantity?old:
-                        Enumerable.Range(0,item.Quantity).Select(u=>reservations.FirstOrDefault(r=>r.ItemId==item.Id && r.Unit==u)?.Code??$"plan:{item.Id}:{u}").ToArray();
+                    foreach(var item in snapshot.Items.Where(x=>x.RequiresKiz)) {
+                        var held=reservations.Where(r=>r.ItemId==item.Id).OrderBy(r=>r.Unit).ToArray();
+                        var old=remote.Codes.TryGetValue(item.Id,out var current)?current:Array.Empty<string>();
+                        // identifiers/status may return CIS in a different order. The saved unit reservation determines layout positions.
+                        if(old.Count==item.Quantity && held.Length==item.Quantity && old.Select(MarketplaceFbsPayloads.NormalizeCode).ToHashSet(StringComparer.Ordinal).SetEquals(held.Select(r=>MarketplaceFbsPayloads.NormalizeCode(r.Code))))old=held.Select(r=>r.Code).ToArray();
+                        planned[item.Id]=old.Count==item.Quantity?old:Enumerable.Range(0,item.Quantity).Select(u=>held.FirstOrDefault(r=>r.Unit==u)?.Code??$"plan:{item.Id}:{u}").ToArray();
+                    }
                     var proposed=MarketplaceFbsPayloads.BuildYandexBoxes(snapshot,planned,layout);
                     layout=(JsonArray)proposed["boxes"]!.DeepClone();
                     foreach(var box in layout)foreach(var item in box?["items"] as JsonArray??new())foreach(var instance in item?["instances"] as JsonArray??new())

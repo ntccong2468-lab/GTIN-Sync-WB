@@ -81,7 +81,7 @@ public sealed partial class MainForm
         var export=ActionButton("↓ Xuất nhãn sàn + KIZ",245,true);export.Left=250;export.Top=55;work.Controls.Add(export);
         var state=new Label{Left=0,Top=108,Height=55,ForeColor=C.Muted,AutoEllipsis=true,Text=message??"Đọc lại trạng thái và từng KIZ trước khi xuất nhãn. Nhãn sàn giữ nguyên PDF chính thức."};work.Controls.Add(state);
         var card=CardPanel();card.Left=0;card.Top=180;work.Controls.Add(card);var grid=DarkGrid();grid.Name="marketplaceBatchOrders";grid.Dock=DockStyle.Fill;grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;grid.DefaultCellStyle.WrapMode=DataGridViewTriState.True;
-        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="order",HeaderText="Posting / đơn",Width=190});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="items",HeaderText="Toàn bộ hàng trong đơn",AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="state",HeaderText="Đóng gói / KIZ",Width=260});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="error",HeaderText="Cần xử lý",Width=240});card.Controls.Add(grid);
+        grid.Columns.Add(new DataGridViewTextBoxColumn{Name="order",HeaderText="Posting / đơn",Width=190});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="items",HeaderText="Toàn bộ hàng trong đơn",MinimumWidth=220,AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="state",HeaderText="Đóng gói / KIZ",Width=260});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="error",HeaderText="Cần xử lý",Width=240});card.Controls.Add(grid);
         foreach(var member in app.Db.MarketplaceFbsBatchOrders(store,batchId)) {
             var rows=app.Db.Orders(store.Id).Where(x=>x.ExternalOrderId==member.Id).ToArray();var marks=app.Db.MarketplaceKizReservations(store,member.Id);var assigned=marks.Count(x=>x.Status=="ASSIGNED");
             var row=grid.Rows.Add(member.Id,string.Join("\n",rows.Select(x=>x.Sku+" · "+x.Name+" × "+x.Quantity)),member.Status is "PACKED" or "LABELS_READY"?$"Sàn đã xác nhận đóng · {assigned} KIZ":member.Status=="AMBIGUOUS"?"Đang đối soát lệnh đóng hàng":"Chưa xác nhận đóng · "+marks.Count+" KIZ đã giữ",member.Error);grid.Rows[row].Height=110;
@@ -99,7 +99,12 @@ public sealed partial class MainForm
             finally{fbsOperations.Release();if(!retry.IsDisposed){retry.Enabled=true;export.Enabled=true;}}
         };
         export.Click+=async(_,_)=>await ExportMarketplaceBatchAsync(store,batchId,token,true);
-        SetWorkResize((_,_)=>{state.Width=work.ClientSize.Width-25;card.Width=work.ClientSize.Width-25;card.Height=Math.Max(230,work.ClientSize.Height-card.Top-25);});refreshActivePage=null;
+        SetWorkResize((_,_)=>{
+            var available=work.ClientSize.Width-25;var open=work.Controls.OfType<Button>().FirstOrDefault(b=>b.Name=="openMarketplaceLabels");
+            if(open is not null){open.Left=available<810?0:510;open.Top=available<810?105:55;}
+            state.Top=open is not null && available<810?158:108;state.Width=available;card.Top=state.Bottom+17;card.Width=available;card.Height=Math.Max(230,work.ClientSize.Height-card.Top-25);
+            grid.Columns["order"].Width=Math.Clamp((int)(available*.18),120,180);grid.Columns["state"].Width=Math.Clamp((int)(available*.23),170,240);grid.Columns["error"].Width=Math.Clamp((int)(available*.25),180,260);
+        });refreshActivePage=null;
     }
 
     private async Task ExportMarketplaceBatchAsync(StoreProfile store,string batchId,CancellationToken token,bool reprint=false)
@@ -132,7 +137,7 @@ public sealed partial class MainForm
             app.Db.Audit("In nhãn "+store.Marketplace,"Đã xuất PDF xác nhận",$"{members.Count} đơn · {folder}");
             if(token.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
             ShowMarketplaceFbsBatch(store,batchId,$"Đã xuất {members.Count} nhãn sàn và bộ KIZ. Mở PDF để xem/chọn máy in: {folder}");
-            var open=ActionButton("Mở thư mục nhãn / in PDF",280);open.Left=510;open.Top=55;open.Click+=(_,_)=>System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(folder){UseShellExecute=true});work.Controls.Add(open);
+            var open=ActionButton("Mở thư mục nhãn / in PDF",280);open.Name="openMarketplaceLabels";open.Left=510;open.Top=55;open.Click+=(_,_)=>System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(folder){UseShellExecute=true});work.Controls.Add(open);activeWorkResize?.Invoke(work,EventArgs.Empty);
         }catch(OperationCanceledException){}catch(Exception ex){if(!token.IsCancellationRequested && !IsDisposed){app.Db.Audit("In nhãn "+store.Marketplace,"Chưa xuất đủ",ex.Message);ShowInfo(ex.Message);}}
     }
 }
