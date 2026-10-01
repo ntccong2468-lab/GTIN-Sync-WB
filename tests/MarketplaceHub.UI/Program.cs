@@ -256,6 +256,9 @@ internal static class Program
                 var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-selection","","","","","fixture",true));
                 try {
                     app.Db.UpsertOrders(wb.Id,Marketplace.Wildberries,new[]{new FbsOrderRow(wb.Id,Marketplace.Wildberries,"101","A","Quần nam A",1,"new",false,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"102","B","Quần nam B",1,"new",false,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"103","C","Bộ thể thao",1,"new",false,"{}")});
+                    var observed=DateTimeOffset.UtcNow;
+                    app.Db.UpsertOrderRemoteStates(wb.Id,Marketplace.Wildberries,new Dictionary<string,OrderRemoteState>(StringComparer.Ordinal){
+                        ["101"]=new("new","waiting",true,observed),["102"]=new("new","waiting",true,observed),["103"]=new("new","waiting",true,observed)});
                     typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,new object?[]{0L});
                     for(var i=0;i<picker.Items.Count;i++)if(picker.Items[i] is StoreProfile s && s.Id==wb.Id)picker.SelectedIndex=i;
                     Page(form,"ShowFbs");Application.DoEvents();
