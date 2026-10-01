@@ -235,7 +235,7 @@ internal static class Program
                 var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-selection","","","","","fixture",true));
                 try {
                     app.Db.UpsertOrders(wb.Id,Marketplace.Wildberries,new[]{new FbsOrderRow(wb.Id,Marketplace.Wildberries,"101","A","Quần nam A",1,"new",false,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"102","B","Quần nam B",1,"new",false,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"103","C","Bộ thể thao",1,"new",false,"{}")});
-                    typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,null);
+                    typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,new object?[]{0L});
                     for(var i=0;i<picker.Items.Count;i++)if(picker.Items[i] is StoreProfile s && s.Id==wb.Id)picker.SelectedIndex=i;
                     Page(form,"ShowFbs");Application.DoEvents();
                     var grid=All(form).OfType<DataGridView>().Single();
@@ -245,7 +245,7 @@ internal static class Program
                     var search=All(form).OfType<TextBox>().Single(c=>c.PlaceholderText.Contains("Tìm theo đơn"));search.Text="Quần";Application.DoEvents();
                     Expect(grid.Rows.Count==2 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true),"Filtering lost select-all selection.");
                     Expect(All(form).Any(c=>c.Text=="Tạo shipment mới" && c.Visible) && All(form).Any(c=>c.Text=="Thêm shipment hôm nay" && c.Visible),"Shipment choices did not appear after selecting orders.");
-                } finally {app.Db.DeleteStore(wb.Id);typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,null);}
+                } finally {app.Db.DeleteStore(wb.Id);typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,new object?[]{0L});}
             });
             Check("WB reserved KIZ stays with its shop and order across retries and imports", () =>
             {
@@ -366,7 +366,7 @@ internal static class Program
                     var scope=ProductCatalog.Scope(catalogStore);app.Db.BeginProductCatalog(catalogStore,scope);
                     var entries=Enumerable.Range(1,51).Select(i=>ProductCatalog.Entry(new ProductRow(catalogStore.Id,Marketplace.Yandex,i.ToString(),"SKU-"+i,"Quần "+i,null,"","{\"offer\":{\"barcodes\":[\"4601234567893\"],\"size\":\"48\"}}"))).ToArray();
                     app.Db.ApplyProductCatalogPage(catalogStore,"",scope,new ProductCatalogPage(entries,"",true));
-                    typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,null);
+                    typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,new object?[]{0L});
                     for(var i=0;i<picker.Items.Count;i++)if(picker.Items[i] is StoreProfile shop && shop.Id==catalogStore.Id)picker.SelectedIndex=i;
                     Page(form,"ShowProductSynchronization");
                     var deadline=DateTime.UtcNow.AddSeconds(8);
@@ -375,7 +375,7 @@ internal static class Program
                     var next=All(form).OfType<Button>().Single(b=>b.Text=="›");next.PerformClick();Application.DoEvents();Expect(grid.Rows.Count==1,"Second variant page was incorrect.");
                     var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);
                     using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"ProductSynchronization.png"));}
-                }finally{app.Db.DeleteStore(catalogStore.Id);typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,null);}
+                }finally{app.Db.DeleteStore(catalogStore.Id);typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,new object?[]{0L});}
             });
             Check("WB full supply detail renders all orders and verified KIZ state", () =>
             {

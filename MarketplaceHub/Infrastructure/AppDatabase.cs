@@ -145,6 +145,7 @@ CREATE TABLE IF NOT EXISTS znak_pipeline(
         EnsureZnakColumns(c);
         InitializeWbShipmentTables(c);
         InitializeMarketplaceFbsTables(c);
+        InitializeKizIdentityIndexes(c);
         EnsureProductCatalogTables(c);
     }
 
@@ -352,8 +353,16 @@ ON CONFLICT(store_id,external_order_id,sku) DO UPDATE SET
 
     public void UpsertKiz(string code, string gtin, string status, string assignedOrder = "")
     {
+        code = MarketplaceHub.Services.MarketplaceFbsPayloads.NormalizeCode(code);
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
+        using(var alias=c.CreateCommand()) {
+            alias.CommandText="SELECT code FROM kiz_pool WHERE "+CanonicalKizCodeSql+"=$canonical";
+            alias.Parameters.AddWithValue("$canonical",code.TrimStart('\u001d'));using var row=alias.ExecuteReader();var existing=new List<string>();while(row.Read())existing.Add(row.GetString(0));
+            if(existing.Count>1)throw new InvalidOperationException("Kho chứa nhiều cách viết của cùng một KIZ. Đối soát mã trùng trước khi nhập lại.");
+            if(existing.Count==1)code=existing[0];
+        }
+        GuardKizAliasOwnership(c,null,code);
         using var cmd = c.CreateCommand();
         cmd.CommandText = @"INSERT INTO kiz_pool(code,gtin,status,assigned_order,updated_at) VALUES($c,$g,COALESCE((SELECT status FROM wb_kiz_reservations WHERE code=$c),(SELECT status FROM marketplace_kiz_reservations WHERE code=$c),$s),COALESCE((SELECT order_id FROM wb_kiz_reservations WHERE code=$c),(SELECT marketplace||':'||store_id||':'||order_id||':'||item_id||':'||unit_index FROM marketplace_kiz_reservations WHERE code=$c),$o),$at)
 ON CONFLICT(code) DO UPDATE SET gtin=CASE WHEN kiz_pool.status IN('RESERVED','ASSIGNED') THEN kiz_pool.gtin ELSE excluded.gtin END,

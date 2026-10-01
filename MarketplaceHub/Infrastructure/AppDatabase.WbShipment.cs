@@ -65,6 +65,7 @@ ON CONFLICT(store_id,order_id) DO UPDATE SET supply_id=$p,updated_at=$at";
             select.Parameters.AddWithValue("$g",gtin);code=select.ExecuteScalar()?.ToString();
         }
         if(code is null)return null;
+        GuardKizAliasOwnership(c,tx,code);
         using(var reserve=c.CreateCommand()) {
             reserve.Transaction=tx;reserve.CommandText="INSERT INTO wb_kiz_reservations(code,store_id,order_id,gtin,status,updated_at) VALUES($c,$s,$o,$g,'RESERVED',$at)";
             reserve.Parameters.AddWithValue("$c",code);reserve.Parameters.AddWithValue("$s",storeId);reserve.Parameters.AddWithValue("$o",orderId);reserve.Parameters.AddWithValue("$g",gtin);reserve.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));reserve.ExecuteNonQuery();
@@ -101,6 +102,7 @@ ON CONFLICT(code) DO UPDATE SET status='ASSIGNED',updated_at=$at";
 
     private static void ValidateWbKizOwnership(SqliteConnection c,SqliteTransaction? tx,long storeId,string orderId,string gtin,string code)
     {
+        GuardKizAliasOwnership(c,tx,code);
         bool owned=false;
         using(var read=c.CreateCommand()) {
             read.Transaction=tx;read.CommandText="SELECT code,store_id,order_id,gtin FROM wb_kiz_reservations WHERE code=$c OR (store_id=$s AND order_id=$o)";

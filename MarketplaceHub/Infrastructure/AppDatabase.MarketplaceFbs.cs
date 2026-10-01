@@ -67,6 +67,22 @@ CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,o
         cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());cmd.Parameters.AddWithValue("$o",orderId);var result=new List<MarketplaceUnitKiz>();using var r=cmd.ExecuteReader();while(r.Read())result.Add(new(r.GetString(0),r.GetInt32(1),r.GetString(2),r.GetString(3),r.GetString(4)));return result;
     }
 
+    // Scanner FNC1 prefixes and textual GS escapes represent the same physical code.
+    private const string CanonicalKizCodeSql=@"replace(replace(replace(ltrim(code,char(29)),'<GS>',char(29)),'\u001d',char(29)),'\u001D',char(29))";
+    private static void InitializeKizIdentityIndexes(SqliteConnection c)
+    {
+        foreach(var table in new[]{"kiz_pool","wb_kiz_reservations","marketplace_kiz_reservations"}) {
+            using var cmd=c.CreateCommand();cmd.CommandText="CREATE INDEX IF NOT EXISTS idx_"+table+"_canonical ON "+table+"("+CanonicalKizCodeSql+")";cmd.ExecuteNonQuery();
+        }
+    }
+    private static void GuardKizAliasOwnership(SqliteConnection c,SqliteTransaction? tx,string code)
+    {
+        using var query=c.CreateCommand();query.Transaction=tx;
+        query.CommandText="SELECT code FROM (SELECT code FROM wb_kiz_reservations UNION ALL SELECT code FROM marketplace_kiz_reservations UNION ALL SELECT code FROM kiz_pool WHERE status IN('RESERVED','ASSIGNED') OR assigned_order!='') WHERE code!=$code AND "+CanonicalKizCodeSql+"=$canonical LIMIT 1";
+        query.Parameters.AddWithValue("$code",code);query.Parameters.AddWithValue("$canonical",MarketplaceHub.Services.MarketplaceFbsPayloads.NormalizeCode(code).TrimStart('\u001d'));
+        if(query.ExecuteScalar() is not null)throw new InvalidOperationException("Cùng một KIZ có tiền tố scanner/GS khác nhưng đã thuộc đơn khác. Dừng để đối soát, không cấp lại mã.");
+    }
+
     public string? ReserveMarketplaceKiz(StoreProfile store,string orderId,string itemId,int unit,string gtin,string? remoteCode=null)
     {
         using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();var owner=$"{store.Marketplace}:{store.Id}:{orderId}:{itemId}:{unit}";
@@ -81,6 +97,7 @@ CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,o
         if(code is null) {
             using var select=c.CreateCommand();select.Transaction=tx;select.CommandText="SELECT code FROM kiz_pool WHERE gtin=$g AND status='AVAILABLE' AND assigned_order='' AND code NOT IN(SELECT code FROM wb_kiz_reservations) AND code NOT IN(SELECT code FROM marketplace_kiz_reservations) ORDER BY updated_at LIMIT 1";select.Parameters.AddWithValue("$g",gtin);code=select.ExecuteScalar()?.ToString();if(code is null)return null;
         }
+        GuardKizAliasOwnership(c,tx,code);
         using(var conflict=c.CreateCommand()) {
             conflict.Transaction=tx;conflict.CommandText="SELECT (SELECT COUNT(*) FROM wb_kiz_reservations WHERE code=$c)+(SELECT COUNT(*) FROM marketplace_kiz_reservations WHERE code=$c)+(SELECT COUNT(*) FROM kiz_pool WHERE code=$c AND (gtin!=$g OR status!='AVAILABLE' OR assigned_order!=''))";
             conflict.Parameters.AddWithValue("$c",code);conflict.Parameters.AddWithValue("$g",gtin);if(Convert.ToInt64(conflict.ExecuteScalar())>0)throw new InvalidOperationException("KIZ thuộc đơn khác/cửa hàng khác hoặc chưa đối soát. Không ghi đè chủ sở hữu.");
@@ -105,6 +122,7 @@ CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,o
     }
     private static void ValidateMarketplaceKizOwner(SqliteConnection c,SqliteTransaction tx,StoreProfile store,string order,string item,int unit,string gtin,string code)
     {
+        GuardKizAliasOwnership(c,tx,code);
         using var conflict=c.CreateCommand();conflict.Transaction=tx;
         conflict.CommandText="SELECT (SELECT COUNT(*) FROM wb_kiz_reservations WHERE code=$c)+(SELECT COUNT(*) FROM marketplace_kiz_reservations WHERE code=$c AND (store_id!=$s OR marketplace!=$m OR order_id!=$o OR item_id!=$i OR unit_index!=$u OR gtin!=$g))+(SELECT COUNT(*) FROM kiz_pool WHERE code=$c AND (gtin!=$g OR status NOT IN('RESERVED','ASSIGNED') OR assigned_order!=$owner))";
         UnitParameters(conflict,store,order,item,unit);conflict.Parameters.AddWithValue("$c",code);conflict.Parameters.AddWithValue("$g",gtin);conflict.Parameters.AddWithValue("$owner",$"{store.Marketplace}:{store.Id}:{order}:{item}:{unit}");
