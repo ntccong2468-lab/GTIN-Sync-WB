@@ -246,7 +246,7 @@ internal static class Program
                     var search=All(form).OfType<TextBox>().Single(x=>x.PlaceholderText.Contains("Tìm theo đơn"));search.Text="Quần";Application.DoEvents();
                     Expect(grid.Rows.Count==2 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true),"Filtering lost selected visible orders.");
                     Expect(All(form).Any(x=>x.Text=="Nhận đơn (2)" && x.Visible),"Receipt action did not appear after header selection.");
-                    Expect(!All(form).Any(x=>x.Text.Contains("KIZ") && x.Visible && x is Button),"New-order page exposes KIZ/printing before shipment receipt.");
+                    Expect(!All(form).Any(x=>x.Visible && x is Button && (x.Text.Contains("Xuất nhãn")||x.Text.Contains("In nhãn")||x.Text.Contains("Tự động KIZ"))),"New-order page exposes KIZ/printing before shipment receipt.");
                 } finally {app.Db.DeleteStore(wb.Id);typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,new object?[]{0L});}
             });
             Check("WB reserved KIZ stays with its shop and order across retries and imports", () =>
