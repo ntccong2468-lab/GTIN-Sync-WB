@@ -7,6 +7,14 @@ namespace MarketplaceHub.UI;
 public sealed partial class MainForm
 {
     private string fbsWorkspaceMode="new";
+    private OrderTruthSnapshot BuildOrderTruth(StoreProfile store)
+    {
+        IReadOnlySet<string> members = store.Marketplace == Marketplace.Wildberries
+            ? app.Db.WbReceivedOrderIds(store.Id)
+            : app.Db.MarketplaceReceivedOrderIds(store);
+        return new OrderTruthService().Build(store, app.Db.Orders(store.Id), members, app.Db.OrderRemoteStates(store.Id));
+    }
+
     private void ShowFbsPacking(){fbsWorkspaceMode="pack";ShowFbsWorkspace("pack");}
 
     private void ShowFbsWorkspace(string? requestedMode=null,string? message=null)
@@ -37,12 +45,12 @@ public sealed partial class MainForm
         grid.Columns.Add(new DataGridViewTextBoxColumn{Name="price",HeaderText="GIÁ",Width=125,AutoSizeMode=DataGridViewAutoSizeColumnMode.None,ReadOnly=true});card.Controls.Add(grid);
         var all=false;var loading=false;
         void Selection(){if(loading)return;grid.EndEdit();var n=grid.Rows.Cast<DataGridViewRow>().Count(r=>r.Cells[0].Value is true);receive.Visible=n>0;receive.Text=$"Nhận đơn ({n})";grid.Columns[0].HeaderText=n==0?"☐":n==grid.Rows.Count?"☑":"▣";grid.InvalidateColumn(0);}
-        void Load(){loading=true;try{var keep=grid.Rows.Cast<DataGridViewRow>().Where(r=>r.Cells[0].Value is true&&r.Tag is FbsOrderRow).Select(r=>((FbsOrderRow)r.Tag).ExternalOrderId).ToHashSet(StringComparer.Ordinal);DisposeImages(card);grid.Rows.Clear();var q=search.Text.Trim();IReadOnlySet<string> received=store.Marketplace==Marketplace.Wildberries?app.Db.WbReceivedOrderIds(store.Id):app.Db.MarketplaceReceivedOrderIds(store);
-            foreach(var order in app.Db.Orders(store.Id)){if(!IsNew(order.Status)||received.Contains(order.ExternalOrderId))continue;if(q.Length>0&&!order.ExternalOrderId.Contains(q,StringComparison.OrdinalIgnoreCase)&&!order.Sku.Contains(q,StringComparison.OrdinalIgnoreCase)&&!order.Name.Contains(q,StringComparison.OrdinalIgnoreCase))continue;if(category.SelectedIndex==1&&!order.NeedsKiz||category.SelectedIndex==2&&order.NeedsKiz)continue;var p=FindProductForOrder(store,order);var name=string.IsNullOrWhiteSpace(order.Name)?p?.Name??order.Sku:order.Name;var row=grid.Rows.Add(keep.Contains(order.ExternalOrderId),order.ExternalOrderId+"\n"+FormatOrderTime(order),null,name+"\n"+BuildProductMetaLine(p,order),p?.Price is null?"":$"{p.Price:0.##} ₽");grid.Rows[row].Tag=order;grid.Rows[row].Height=98;var image=ProductImageUrl(p);if(!string.IsNullOrWhiteSpace(image))_=LoadImageAsync(grid,row,2,image);}
+        void Load(){loading=true;try{var keep=grid.Rows.Cast<DataGridViewRow>().Where(r=>r.Cells[0].Value is true&&r.Tag is OrderTruthRow).Select(r=>((OrderTruthRow)r.Tag).ExternalOrderId).ToHashSet(StringComparer.Ordinal);DisposeImages(card);grid.Rows.Clear();var q=search.Text.Trim();var truth=BuildOrderTruth(store);
+            foreach(var item in truth.Orders.Where(x=>x.State==OrderTruthState.New)){var order=item.Lines[0];if(q.Length>0&&!item.ExternalOrderId.Contains(q,StringComparison.OrdinalIgnoreCase)&&!item.Lines.Any(x=>x.Sku.Contains(q,StringComparison.OrdinalIgnoreCase)||x.Name.Contains(q,StringComparison.OrdinalIgnoreCase)))continue;var needsKiz=item.Lines.Any(x=>x.NeedsKiz);if(category.SelectedIndex==1&&!needsKiz||category.SelectedIndex==2&&needsKiz)continue;var p=FindProductForOrder(store,order);var name=string.IsNullOrWhiteSpace(order.Name)?p?.Name??order.Sku:order.Name;var variants=item.Lines.Count>1?$" · {item.Lines.Count} dòng sản phẩm":"";var row=grid.Rows.Add(keep.Contains(item.ExternalOrderId),item.ExternalOrderId+"\n"+FormatOrderTime(order),null,name+variants+"\n"+BuildProductMetaLine(p,order),p?.Price is null?"":$"{p.Price:0.##} ₽");grid.Rows[row].Tag=item;grid.Rows[row].Height=98;var image=ProductImageUrl(p);if(!string.IsNullOrWhiteSpace(image))_=LoadImageAsync(grid,row,2,image);}
         }finally{loading=false;Selection();}}
         grid.CurrentCellDirtyStateChanged+=(_,_)=>{if(grid.IsCurrentCellDirty)grid.CommitEdit(DataGridViewDataErrorContexts.Commit);};grid.CellValueChanged+=(_,e)=>{if(e.ColumnIndex==0)Selection();};
         grid.ColumnHeaderMouseClick+=(_,e)=>{if(e.ColumnIndex!=0)return;all=!all;loading=true;foreach(DataGridViewRow row in grid.Rows)row.Cells[0].Value=all;loading=false;Selection();};
-        receive.Click+=async(_,_)=>{var selected=grid.Rows.Cast<DataGridViewRow>().Where(r=>r.Cells[0].Value is true).Select(r=>r.Tag).OfType<FbsOrderRow>().GroupBy(x=>x.ExternalOrderId,StringComparer.Ordinal).Select(x=>x.First()).ToArray();if(selected.Length==0)return;receive.Enabled=false;try{if(store.Marketplace==Marketplace.Wildberries)await BeginWbShipmentAsync(store,selected,false,token);else await BeginMarketplaceFbsAsync(store,selected,token,false);}finally{if(!receive.IsDisposed)receive.Enabled=true;}};
+        receive.Click+=async(_,_)=>{var selected=grid.Rows.Cast<DataGridViewRow>().Where(r=>r.Cells[0].Value is true).Select(r=>r.Tag).OfType<OrderTruthRow>().SelectMany(x=>x.Lines).ToArray();if(selected.Length==0)return;receive.Enabled=false;try{if(store.Marketplace==Marketplace.Wildberries)await BeginWbShipmentAsync(store,selected,false,token);else await BeginMarketplaceFbsAsync(store,selected,token,false);}finally{if(!receive.IsDisposed)receive.Enabled=true;}};
         search.TextChanged+=(_,_)=>Load();category.SelectedIndexChanged+=(_,_)=>Load();
         refresh.Click+=async(_,_)=>{refresh.Enabled=false;try{var r=await app.SyncOrdersAsync(store,lifetimeCts.Token);if(!token.IsCancellationRequested)ShowFbsWorkspace("new",r.Message);}catch(Exception ex){if(!token.IsCancellationRequested)ShowInfo(ex.Message);}finally{if(!refresh.IsDisposed)refresh.Enabled=true;}};
         SetWorkResize((_,_)=>{var w=Math.Max(560,work.ClientSize.Width-55);card.Width=w;card.Height=Math.Max(260,work.ClientSize.Height-card.Top-30);search.Width=Math.Max(220,w-category.Width-clear.Width-receive.Width-38);category.Left=search.Right+10;clear.Left=category.Right+10;receive.Left=clear.Right+10;});refreshActivePage=Load;Load();

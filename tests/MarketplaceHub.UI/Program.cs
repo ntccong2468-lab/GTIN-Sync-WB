@@ -38,7 +38,10 @@ internal static class Program
         app.Db.ReplaceProducts(store.Id, Marketplace.Yandex,
             new[] { new ProductRow(store.Id, Marketplace.Yandex, "A", "A", "Quần nam • A", 1250, "", "{}") });
         app.Db.UpsertOrders(store.Id, Marketplace.Yandex,
-            new[] { new FbsOrderRow(store.Id, Marketplace.Yandex, "1", "A", "Quần nam • A", 2, "PROCESSING/STARTED", false, "{\"creationDate\":\"2026-09-30\",\"items\":[{\"id\":2,\"offerId\":\"A\",\"count\":2}]}") });
+            new[] {
+                new FbsOrderRow(store.Id, Marketplace.Yandex, "1", "A", "Quần nam • A", 2, "PROCESSING/STARTED", false, "{\"creationDate\":\"2026-09-30\",\"items\":[{\"id\":2,\"offerId\":\"A\",\"count\":2}]}"),
+                new FbsOrderRow(store.Id, Marketplace.Yandex, "1", "B", "Quần nam • B", 1, "PROCESSING/STARTED", false, "{\"creationDate\":\"2026-09-30\",\"items\":[{\"id\":3,\"offerId\":\"B\",\"count\":1}]}")
+            });
         try
         {
             using var form = new MainForm(app);
@@ -61,6 +64,14 @@ internal static class Program
             {
                 foreach (var state in new[] { "awaiting_deliver", "PROCESSING/READY_TO_SHIP" })
                     Expect(!State("IsNew", state) && State("IsPacking", state) && !State("IsShipping", state), "Packed order is absent from packing or shown in multiple tabs.");
+            });
+            Check("Report and FBS projection count one external order instead of product lines", () =>
+            {
+                var truth=(OrderTruthSnapshot)typeof(MainForm).GetMethod("BuildOrderTruth",instance)!.Invoke(form,new object[]{store})!;
+                Expect(truth.NewCount==1&&truth.Orders.Count==1&&truth.Orders[0].Lines.Count==2,"UI projection counted SKU lines as separate orders.");
+                Page(form,"ShowReport");Application.DoEvents();
+                var label=All(form).OfType<Label>().Single(x=>x.Text=="Đơn mới");
+                Expect(label.Parent!.Controls.OfType<Label>().Any(x=>x.Text=="1"),"Report did not render the canonical distinct count.");
             });
             Check("Delivered orders are absent from active shipping tab", () =>
                 Expect(!State("IsShipping", "delivered"), "Delivered order is still active."));

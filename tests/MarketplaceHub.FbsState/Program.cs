@@ -14,6 +14,58 @@ HttpResponseMessage Json(string body)=>new(HttpStatusCode.OK){Content=new String
 void Http(Func<HttpRequestMessage,HttpResponseMessage> response){typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,new HttpClient(new FixtureHttp(response)));typeof(MarketplaceGateway).GetField("wbLabelDelay",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,(Func<TimeSpan,CancellationToken,Task>)((_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;}));}
 string Posting(string status="awaiting_packaging",bool required=false)=>System.Text.Json.JsonSerializer.Serialize(new{result=new{posting_number="P",status,requirements=new{products_requiring_mandatory_mark=required?new[]{100}:Array.Empty<int>()},products=new[]{new{sku=100,offer_id="A",quantity=2,name="A"},new{sku=200,offer_id="B",quantity=1,name="B"}}}});
 try {
+await Check("Canonical truth counts one posting with several lines once",()=>{
+    var store=new StoreProfile(9001,Marketplace.Wildberries,"WB","","","","","",true);
+    var rows=new[]{
+        new FbsOrderRow(store.Id,store.Marketplace,"101","SKU-S","Áo size S",1,"new",false,"{}"),
+        new FbsOrderRow(store.Id,store.Marketplace,"101","SKU-M","Áo size M",1,"new",false,"{}")};
+    var remote=new Dictionary<string,OrderRemoteState>(StringComparer.Ordinal){{"101",new("new","waiting",true,DateTimeOffset.UtcNow)}};
+    var truth=new OrderTruthService().Build(store,rows,new HashSet<string>(),remote);
+    Expect(truth.Orders.Count==1&&truth.NewCount==1&&truth.Orders[0].Lines.Count==2,"Posting nhiều dòng bị đếm thành nhiều đơn.");
+    return Task.CompletedTask;
+});
+await Check("Shipment members are not new",()=>{
+    var store=new StoreProfile(9002,Marketplace.Wildberries,"WB","","","","","",true);
+    var rows=new[]{new FbsOrderRow(store.Id,store.Marketplace,"102","SKU","Áo",1,"new",false,"{}")};
+    var remote=new Dictionary<string,OrderRemoteState>(StringComparer.Ordinal){{"102",new("confirm","waiting",true,DateTimeOffset.UtcNow)}};
+    var truth=new OrderTruthService().Build(store,rows,new HashSet<string>{"102"},remote);
+    Expect(truth.NewCount==0&&truth.Orders.Single().State==OrderTruthState.InShipment,"Đơn đã thuộc shipment vẫn là đơn mới.");
+    return Task.CompletedTask;
+});
+await Check("Cancelled remote state is not new",()=>{
+    var store=new StoreProfile(9003,Marketplace.Wildberries,"WB","","","","","",true);
+    var rows=new[]{new FbsOrderRow(store.Id,store.Marketplace,"103","SKU","Áo",1,"new",false,"{}")};
+    var remote=new Dictionary<string,OrderRemoteState>(StringComparer.Ordinal){{"103",new("new","canceled_by_client",true,DateTimeOffset.UtcNow)}};
+    var truth=new OrderTruthService().Build(store,rows,new HashSet<string>(),remote);
+    Expect(truth.NewCount==0&&truth.Orders.Single().State==OrderTruthState.Cancelled,"Trạng thái hủy hiện tại vẫn được chọn.");
+    return Task.CompletedTask;
+});
+await Check("Unknown current state is partial rather than authoritative",()=>{
+    var store=new StoreProfile(9004,Marketplace.Wildberries,"WB","","","","","",true);
+    var rows=new[]{new FbsOrderRow(store.Id,store.Marketplace,"104","SKU","Áo",1,"new",false,"{}")};
+    var truth=new OrderTruthService().Build(store,rows,new HashSet<string>(),new Dictionary<string,OrderRemoteState>());
+    Expect(!truth.IsAuthoritative&&truth.NewCount==0&&truth.Orders.Single().State==OrderTruthState.Unknown,"Thiếu readback WB vẫn được trình bày như số liệu chắc chắn.");
+    return Task.CompletedTask;
+});
+await Check("Ozon and Yandex batch membership uses projection without WB semantics",()=>{
+    foreach(var marketplace in new[]{Marketplace.Ozon,Marketplace.Yandex}) {
+        var store=new StoreProfile(9100+(int)marketplace,marketplace,marketplace.ToString(),"","","","","",true);
+        var status=marketplace==Marketplace.Ozon?"awaiting_packaging":"PROCESSING/STARTED";
+        var rows=new[]{new FbsOrderRow(store.Id,marketplace,"B-1","SKU","Áo",1,status,false,"{}")};
+        var service=new OrderTruthService();
+        Expect(service.Build(store,rows,new HashSet<string>(),new Dictionary<string,OrderRemoteState>()).NewCount==1,"Queue mới của "+marketplace+" không được nhận diện.");
+        Expect(service.Build(store,rows,new HashSet<string>{"B-1"},new Dictionary<string,OrderRemoteState>()).Orders.Single().State==OrderTruthState.InShipment,"Membership của "+marketplace+" bị áp quy tắc WB.");
+    }
+    return Task.CompletedTask;
+});
+await Check("Remote order state persists without replacing order history",()=>{
+    var store=Store(Marketplace.Wildberries);var observed=DateTimeOffset.UtcNow;
+    app.Db.MarkOrderRemoteState(store.Id,store.Marketplace,"105","new","waiting",true,observed);
+    app.Db.MarkOrderRemoteState(store.Id,store.Marketplace,"106","new","canceled_by_client",true,observed);
+    var states=app.Db.OrderRemoteStates(store.Id);
+    Expect(states.Count==2&&states["105"].Complete&&states["106"].MarketplaceStatus=="canceled_by_client","Readback trạng thái không được lưu đúng theo cửa hàng/đơn.");
+    return Task.CompletedTask;
+});
 await Check("Per-unit reservations survive retry and cannot steal WB or legacy assignments",()=>{
     var oz=Store(Marketplace.Ozon);var wb=Store(Marketplace.Wildberries);const string gtin="04601234567893";
     var a="01"+gtin+"21"+Guid.NewGuid().ToString("N");var b="01"+gtin+"21"+Guid.NewGuid().ToString("N");var legacy="01"+gtin+"21"+Guid.NewGuid().ToString("N");

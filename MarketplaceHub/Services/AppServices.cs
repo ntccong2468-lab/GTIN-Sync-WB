@@ -45,6 +45,30 @@ public sealed partial class AppServices
         {
             var rows = await Api.SyncFbsAsync(store, ct);
             var written = await Task.Run(() => Db.UpsertOrders(store.Id, store.Marketplace, rows), ct);
+            if (store.Marketplace == Marketplace.Wildberries)
+            {
+                var ids = rows.Select(x => x.ExternalOrderId).Distinct(StringComparer.Ordinal).ToArray();
+                var now = DateTimeOffset.UtcNow;
+                Db.UpsertOrderRemoteStates(store.Id, store.Marketplace,
+                    ids.ToDictionary(x => x, x => new OrderRemoteState(
+                        rows.First(r => r.ExternalOrderId == x).Status, "", false, now), StringComparer.Ordinal));
+                try
+                {
+                    var statuses = await Api.GetWbOrderStatusesAsync(store, ids, ct).ConfigureAwait(false);
+                    var observed = DateTimeOffset.UtcNow;
+                    Db.UpsertOrderRemoteStates(store.Id, store.Marketplace,
+                        statuses.ToDictionary(x => x.Key,
+                            x => new OrderRemoteState(x.Value.SupplierStatus, x.Value.WbStatus, true, observed),
+                            StringComparer.Ordinal));
+                }
+                catch (Exception ex) when (ex is not OperationCanceledException)
+                {
+                    var message = $"Đã lưu {written} dòng đơn nhưng trạng thái WB hiện tại chưa đầy đủ: {ex.Message}";
+                    Db.SaveSyncState(store.Id, "fbs_orders", "", "", "", message);
+                    Db.FinishSyncRun(run, false, rows.Count, written, message);
+                    return (false, message);
+                }
+            }
             Db.SaveSyncState(store.Id, "fbs_orders", "", DateTimeOffset.UtcNow.AddDays(-30).ToString("O"), DateTimeOffset.UtcNow.ToString("O"), "");
             Db.FinishSyncRun(run, true, rows.Count, written);
             return (true, $"Đã đồng bộ {written} dòng đơn FBS và giữ lại trạng thái lịch sử trong cache.");
