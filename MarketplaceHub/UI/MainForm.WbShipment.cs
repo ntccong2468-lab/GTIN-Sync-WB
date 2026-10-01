@@ -32,14 +32,14 @@ public sealed partial class MainForm
             if(choice.ShowDialog(this)!=DialogResult.OK)return;
             if(pageToken.IsCancellationRequested || CurrentStore()?.Id!=store.Id)return;
             using var stop=CancellationTokenSource.CreateLinkedTokenSource(lifetimeCts.Token);
-            using var dialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text="Shipment WB · thêm đơn và gắn KIZ"};
+            using var dialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text="WB · nhận đơn vào shipment"};
             dialog.Show(this);
             var progress=new Progress<string>(text=>{if(!dialog.IsDisposed)dialog.Report(text);});
             try
             {
                 var ids=selected.Select(x=>x.ExternalOrderId).ToHashSet(StringComparer.Ordinal);
                 var complete=app.Db.Orders(store.Id).Where(x=>ids.Contains(x.ExternalOrderId)).ToArray();
-                result=await CreateShipmentWithKizCoreAsync(store,complete,useKiz,stop.Token,choice.Choice,progress);
+                result=await app.ReceiveWbOrdersAsync(store,complete,choice.Choice,stop.Token,progress);
             }
             finally {dialog.Close();}
         }
@@ -47,10 +47,10 @@ public sealed partial class MainForm
         catch(Exception ex){if(!pageToken.IsCancellationRequested && !IsDisposed)ShowInfo(ex.Message);return;}
         finally {fbsOperations.Release();}
         if(result is null)return;
-        app.Db.Audit("FBS WB",result.Success?"Shipment và KIZ đã xác nhận":"Shipment cần tiếp tục",result.Message);
+        app.Db.Audit("FBS WB",result.Success?"Đã nhận đơn vào shipment":"Shipment cần tiếp tục",result.Message);
         if(pageToken.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
         if(!string.IsNullOrWhiteSpace(result.ExternalTaskId))
-            await OpenWbSupplyAsync(store,result.ExternalTaskId,pageToken,result.Success,result.Success?null:result.Message,useKiz);
+            ShowFbsWorkspace("new",result.Message);
         else ShowInfo(result.Message);
     }
 
@@ -109,7 +109,7 @@ public sealed partial class MainForm
     {
         ClearWork();var token=pageCts.Token;activePage=ShowFbs;
         if(orders.Any(x=>x.Quantity<=0))warning="Shipment còn đơn chưa tải được chi tiết sản phẩm. Đã hiển thị đủ mã đơn; đồng bộ lại trước khi gắn KIZ hoặc xuất nhãn.\n"+warning;
-        var back=IconButton("←");back.Left=0;back.Top=0;back.Click+=(_,_)=>ShowFbs();work.Controls.Add(back);
+        var back=IconButton("←");back.Left=0;back.Top=0;back.Click+=(_,_)=>ShowFbsPacking();work.Controls.Add(back);
         var title=Title("Supply "+supply.Id+" · "+orders.Count+" đơn");title.Left=55;title.AutoSize=false;title.AutoEllipsis=true;title.Height=45;work.Controls.Add(title);
         var export=ActionButton("↓ Xuất nhãn dán",180,true);var deliver=ActionButton("Chuyển sang giao hàng",225,true);
         export.Top=0;deliver.Top=0;work.Controls.Add(export);work.Controls.Add(deliver);export.Enabled=orders.Count>0;deliver.Enabled=!supply.Done && orders.Count>0;

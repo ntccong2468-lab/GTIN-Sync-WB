@@ -20,35 +20,16 @@ public sealed partial class MainForm
 
     private async Task BeginMarketplaceFbsAsync(StoreProfile store,IReadOnlyList<FbsOrderRow> selected,CancellationToken originToken,bool useKiz=true)
     {
-        if(selected.Count==0){ShowInfo("Hãy chọn đơn cần nhận/đóng gói.");return;}
-        if(selected.Any(x=>x.StoreId!=store.Id || x.Marketplace!=store.Marketplace)){ShowInfo("Đơn phải thuộc cùng cửa hàng.");return;}
-        if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token)){ShowInfo("Đang xử lý một lượt đóng hàng.");return;}
-        string? batchId=null;PriceUpdateResult? result=null;
+        if(selected.Count==0){ShowInfo("Hãy chọn đơn cần nhận.");return;}
+        if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token)){ShowInfo("Đang xử lý một lượt nhận đơn.");return;}
         try {
             using var chooser=new MarketplaceBatchDialog(store,selected.Select(x=>x.ExternalOrderId).Distinct().Count(),app.Db.TodayMarketplaceFbsBatches(store));
-            if(chooser.ShowDialog(this)!=DialogResult.OK || originToken.IsCancellationRequested)return;
-            var batch=app.Db.CreateMarketplaceFbsBatch(store,selected.Select(x=>x.ExternalOrderId),chooser.ExistingId);batchId=batch.Id;
-            var layouts=await ReadMarketplaceLayoutsAsync(store,batch.Id,originToken);
-            if(layouts is null || originToken.IsCancellationRequested)return;
+            if(chooser.ShowDialog(this)!=DialogResult.OK||originToken.IsCancellationRequested)return;
             using var stop=CancellationTokenSource.CreateLinkedTokenSource(lifetimeCts.Token);
-            using var progressDialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text=store.Marketplace+" · nhận/đóng gói toàn bộ đơn"};progressDialog.Show(this);
-            var progress=new Progress<string>(text=>{if(!progressDialog.IsDisposed)progressDialog.Report(text);});
-            try {result=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),item=>ResolveMarketplaceGtin(store,item),useKiz,stop.Token,progress,batch.Id,layouts);}
-            finally{progressDialog.Close();}
-        }catch(OperationCanceledException){}catch(Exception ex){result=new(false,ex.Message,batchId);}
-        finally{fbsOperations.Release();}
-        if(originToken.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
-        if(batchId is null){if(result is not null)ShowInfo(result.Message);return;}
-        ShowMarketplaceFbsBatch(store,batchId,result?.Message);
-        if(result?.Success==true)await ExportMarketplaceBatchAsync(store,batchId,pageCts.Token);
-    }
-
-    private void OpenMarketplaceBatch(StoreProfile store)
-    {
-        var rows=app.Db.TodayMarketplaceFbsBatches(store);
-        if(rows.Count==0){ShowInfo("Chưa có lượt đóng hàng đã lưu.");return;}
-        using var chooser=new MarketplaceBatchDialog(store,0,rows,true);
-        if(chooser.ShowDialog(this)==DialogResult.OK && chooser.ExistingId is string id)ShowMarketplaceFbsBatch(store,id);
+            using var dialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text=store.Marketplace+" · nhận đơn vào shipment"};dialog.Show(this);
+            PriceUpdateResult result;try {result=await app.ReceiveMarketplaceFbsAsync(store,selected.Select(x=>x.ExternalOrderId),stop.Token,new Progress<string>(text=>{if(!dialog.IsDisposed)dialog.Report(text);}),chooser.ExistingId);}finally{dialog.Close();}
+            if(!originToken.IsCancellationRequested&&!IsDisposed&&CurrentStore()?.Id==store.Id)ShowFbsWorkspace("new",result.Message);
+        }catch(OperationCanceledException){}catch(Exception ex){if(!originToken.IsCancellationRequested)ShowInfo(ex.Message);}finally{fbsOperations.Release();}
     }
 
     private async Task<Dictionary<string,JsonArray>?> ReadMarketplaceLayoutsAsync(StoreProfile store,string batchId,CancellationToken token)
@@ -75,9 +56,9 @@ public sealed partial class MainForm
     private void ShowMarketplaceFbsBatch(StoreProfile store,string batchId,string? message=null)
     {
         ClearWork();var token=pageCts.Token;activePage=ShowFbs;
-        var back=IconButton("←");back.Click+=(_,_)=>ShowFbs();work.Controls.Add(back);
+        var back=IconButton("←");back.Click+=(_,_)=>ShowFbsPacking();work.Controls.Add(back);
         var title=Title(store.Marketplace+" · lượt đóng hàng");title.Left=55;work.Controls.Add(title);
-        var retry=ActionButton("Nhận / tiếp tục đóng gói",240,true);retry.Left=0;retry.Top=55;work.Controls.Add(retry);
+        var retry=ActionButton("Chuẩn bị KIZ + đóng gói",240,true);retry.Left=0;retry.Top=55;work.Controls.Add(retry);
         var export=ActionButton("↓ Xuất nhãn sàn + KIZ",245,true);export.Left=250;export.Top=55;work.Controls.Add(export);
         var state=new Label{Left=0,Top=108,Height=55,ForeColor=C.Muted,AutoEllipsis=true,Text=message??"Đọc lại trạng thái và từng KIZ trước khi xuất nhãn. Nhãn sàn giữ nguyên PDF chính thức."};work.Controls.Add(state);
         var card=CardPanel();card.Left=0;card.Top=180;work.Controls.Add(card);var grid=DarkGrid();grid.Name="marketplaceBatchOrders";grid.Dock=DockStyle.Fill;grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;grid.DefaultCellStyle.WrapMode=DataGridViewTriState.True;
@@ -98,7 +79,18 @@ public sealed partial class MainForm
             }catch(Exception ex){if(!token.IsCancellationRequested)state.Text=ex.Message;}
             finally{fbsOperations.Release();if(!retry.IsDisposed){retry.Enabled=true;export.Enabled=true;}}
         };
-        export.Click+=async(_,_)=>await ExportMarketplaceBatchAsync(store,batchId,token,true);
+        export.Click+=async(_,_)=> {
+            if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token))return;retry.Enabled=false;export.Enabled=false;
+            try {
+                if(app.Db.MarketplaceFbsBatchOrders(store,batchId).Any(x=>x.Status is not ("PACKED" or "LABELS_READY"))) {
+                    var layouts=await ReadMarketplaceLayoutsAsync(store,batchId,token);if(layouts is null)return;
+                    using var stop=CancellationTokenSource.CreateLinkedTokenSource(lifetimeCts.Token);using var dialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text=store.Marketplace+" · KIZ, đóng gói và xuất nhãn"};dialog.Show(this);
+                    PriceUpdateResult packed;try{packed=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),item=>ResolveMarketplaceGtin(store,item),true,stop.Token,new Progress<string>(text=>{if(!dialog.IsDisposed)dialog.Report(text);}),batchId,layouts);}finally{dialog.Close();}
+                    if(!packed.Success){ShowMarketplaceFbsBatch(store,batchId,packed.Message);return;}
+                }
+                await ExportMarketplaceBatchCoreAsync(store,batchId,token,true);
+            }catch(Exception ex){if(!token.IsCancellationRequested)ShowInfo(ex.Message);}finally{fbsOperations.Release();if(!retry.IsDisposed){retry.Enabled=true;export.Enabled=true;}}
+        };
         SetWorkResize((_,_)=>{
             var available=work.ClientSize.Width-25;var open=work.Controls.OfType<Button>().FirstOrDefault(b=>b.Name=="openMarketplaceLabels");
             if(open is not null){open.Left=available<810?0:510;open.Top=available<810?105:55;}
@@ -150,7 +142,7 @@ internal sealed class MarketplaceBatchDialog:Form
     {
         Text=store.Marketplace+" · nhận "+count+" đơn FBS";ClientSize=new Size(600,250);BackColor=C.Main;ForeColor=C.Text;StartPosition=FormStartPosition.CenterParent;FormBorderStyle=FormBorderStyle.FixedDialog;MaximizeBox=false;MinimizeBox=false;
         var create=new RadioButton{Left=25,Top=30,Text="Tạo lượt đóng hàng mới · hôm nay (Moscow)",Checked=true,AutoSize=true};create.Enabled=!browse;create.Checked=!browse;Controls.Add(create);existing.Checked=browse;existing.Text=browse?"Mở lượt đã lưu / tiếp tục lượt chưa xong":"Thêm vào lượt hôm nay";existing.Left=25;existing.Top=75;existing.Enabled=rows.Count>0;Controls.Add(existing);batches.Left=25;batches.Top=110;batches.DisplayMember="Name";foreach(var b in rows)batches.Items.Add(b);if(rows.Count>0)batches.SelectedIndex=0;Controls.Add(batches);
-        var go=new Button{Left=25,Top=180,Width=360,Text=browse?"Mở lượt đã lưu":"Nhận đơn → KIZ → đóng gói → xuất nhãn",DialogResult=DialogResult.OK};Controls.Add(go);var cancel=new Button{Left=410,Top=180,Width=100,Text="Hủy",DialogResult=DialogResult.Cancel};Controls.Add(cancel);AcceptButton=go;CancelButton=cancel;
+        var go=new Button{Left=25,Top=180,Width=360,Text=browse?"Mở lượt đã lưu":"Nhận đơn vào shipment",DialogResult=DialogResult.OK};Controls.Add(go);var cancel=new Button{Left=410,Top=180,Width=100,Text="Hủy",DialogResult=DialogResult.Cancel};Controls.Add(cancel);AcceptButton=go;CancelButton=cancel;
     }
 }
 internal sealed class MarketplaceLayoutDialog:Form

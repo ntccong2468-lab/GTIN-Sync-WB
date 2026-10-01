@@ -9,6 +9,24 @@ public sealed partial class MarketplaceGateway
 {
     public static DateOnly WbBusinessDay(DateTimeOffset at) => DateOnly.FromDateTime(at.ToOffset(TimeSpan.FromHours(3)).DateTime);
 
+    public async Task<IReadOnlyList<WbSupply>> GetWbSuppliesAsync(StoreProfile store,CancellationToken ct=default)
+    {
+        RequireWbStore(store);var found=new Dictionary<string,WbSupply>(StringComparer.Ordinal);var cursors=new HashSet<long>();long next=0;
+        await wbLabelGate.WaitAsync(ct).ConfigureAwait(false);
+        try {
+            for(var page=0;page<200;page++) {
+                if(!cursors.Add(next))throw new InvalidDataException("WB lặp cursor shipment. Hãy tải lại danh sách.");
+                var body=await WbMarketplaceRequestAsync(store,HttpMethod.Get,$"/api/v3/supplies?limit=1000&next={next}",null,ct,null).ConfigureAwait(false);
+                var root=JsonNode.Parse(body);var supplies=root?["supplies"] as JsonArray??throw new InvalidDataException("WB không trả danh sách shipment hợp lệ.");
+                foreach(var row in supplies){var supply=ParseWbSupply(row);found[supply.Id]=supply;}
+                if(supplies.Count==0)return found.Values.OrderByDescending(x=>x.CreatedAt).ToArray();
+                if(!long.TryParse(root?["next"]?.ToString(),out next))throw new InvalidDataException("WB thiếu cursor shipment.");
+                if(next==0)return found.Values.OrderByDescending(x=>x.CreatedAt).ToArray();
+            }
+            throw new InvalidDataException("Danh sách shipment WB quá dài; chưa tải đủ.");
+        } finally {wbLabelGate.Release();}
+    }
+
     public async Task<IReadOnlyList<WbSupply>> GetWbTodaySuppliesAsync(StoreProfile store, CancellationToken ct = default, DateTimeOffset? now = null)
     {
         RequireWbStore(store);

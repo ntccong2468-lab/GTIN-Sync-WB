@@ -3,6 +3,8 @@ using MarketplaceHub.Core;
 
 namespace MarketplaceHub.Infrastructure;
 
+public sealed record WbSupplySummary(string Id,string Name,DateTimeOffset CreatedAt,bool Done,int? OrderCount);
+
 public sealed partial class AppDatabase
 {
     private static void InitializeWbShipmentTables(SqliteConnection c)
@@ -11,8 +13,37 @@ public sealed partial class AppDatabase
         cmd.CommandText=@"
 CREATE TABLE IF NOT EXISTS wb_supply_orders(store_id INTEGER NOT NULL,order_id TEXT NOT NULL,supply_id TEXT NOT NULL,updated_at TEXT NOT NULL,PRIMARY KEY(store_id,order_id));
 CREATE INDEX IF NOT EXISTS ix_wb_supply_orders_supply ON wb_supply_orders(store_id,supply_id);
+CREATE TABLE IF NOT EXISTS wb_supplies(store_id INTEGER NOT NULL,supply_id TEXT NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL,done INTEGER NOT NULL,order_count INTEGER NULL,updated_at TEXT NOT NULL,PRIMARY KEY(store_id,supply_id));
+CREATE INDEX IF NOT EXISTS ix_wb_supplies_open ON wb_supplies(store_id,done,created_at DESC);
 CREATE TABLE IF NOT EXISTS wb_kiz_reservations(code TEXT PRIMARY KEY,store_id INTEGER NOT NULL,order_id TEXT NOT NULL,gtin TEXT NOT NULL,status TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(store_id,order_id));";
         cmd.ExecuteNonQuery();
+    }
+
+    public IReadOnlySet<string> WbReceivedOrderIds(long storeId)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText="SELECT order_id FROM wb_supply_orders WHERE store_id=$s";cmd.Parameters.AddWithValue("$s",storeId);
+        var result=new HashSet<string>(StringComparer.Ordinal);using var row=cmd.ExecuteReader();while(row.Read())result.Add(row.GetString(0));return result;
+    }
+
+    public void UpsertWbSupply(long storeId,WbSupply supply,int? orderCount=null)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText=@"INSERT INTO wb_supplies(store_id,supply_id,name,created_at,done,order_count,updated_at) VALUES($s,$id,$n,$at,$done,$count,$now)
+ON CONFLICT(store_id,supply_id) DO UPDATE SET name=$n,created_at=$at,done=$done,order_count=COALESCE($count,order_count),updated_at=$now";
+        cmd.Parameters.AddWithValue("$s",storeId);cmd.Parameters.AddWithValue("$id",supply.Id);cmd.Parameters.AddWithValue("$n",supply.Name);
+        cmd.Parameters.AddWithValue("$at",supply.CreatedAt.ToString("O"));cmd.Parameters.AddWithValue("$done",supply.Done?1:0);
+        cmd.Parameters.AddWithValue("$count",(object?)orderCount??DBNull.Value);cmd.Parameters.AddWithValue("$now",DateTimeOffset.UtcNow.ToString("O"));cmd.ExecuteNonQuery();
+    }
+
+    public IReadOnlyList<WbSupplySummary> WbSupplies(StoreProfile store,bool done=false)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText=@"SELECT s.supply_id,s.name,s.created_at,s.done,
+COALESCE(s.order_count,(SELECT COUNT(*) FROM wb_supply_orders o WHERE o.store_id=s.store_id AND o.supply_id=s.supply_id))
+FROM wb_supplies s WHERE s.store_id=$store AND s.done=$done ORDER BY s.created_at DESC";
+        cmd.Parameters.AddWithValue("$store",store.Id);cmd.Parameters.AddWithValue("$done",done?1:0);var result=new List<WbSupplySummary>();
+        using var row=cmd.ExecuteReader();while(row.Read())result.Add(new(row.GetString(0),row.GetString(1),DateTimeOffset.Parse(row.GetString(2)),row.GetInt32(3)!=0,row.IsDBNull(4)?null:row.GetInt32(4)));return result;
     }
 
     public void StoreWbSupplyMembership(long storeId,string supplyId,IEnumerable<string> ids)

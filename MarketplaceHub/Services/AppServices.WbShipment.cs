@@ -7,6 +7,34 @@ public sealed partial class AppServices
 {
     private readonly SemaphoreSlim wbKizOperations=new(1,1);
 
+    public async Task<PriceUpdateResult> ReceiveWbOrdersAsync(StoreProfile store,IReadOnlyList<FbsOrderRow> orders,
+        WbShipmentChoice choice,CancellationToken ct=default,IProgress<string>? progress=null)
+    {
+        if(store.Marketplace!=Marketplace.Wildberries)return new(false,"Chỉ nhận shipment WB cho cửa hàng Wildberries.");
+        var unique=orders.GroupBy(x=>x.ExternalOrderId,StringComparer.Ordinal).Select(x=>x.First()).ToArray();
+        if(unique.Length==0)return new(false,"Chưa chọn đơn mới.");
+        var result=await Api.CreateShipmentAsync(store,unique,ct,choice.SupplyId,choice.Name,progress).ConfigureAwait(false);
+        if(!string.IsNullOrWhiteSpace(result.ExternalTaskId)) {
+            try {
+                var supply=await Api.GetWbSupplyAsync(store,result.ExternalTaskId,ct).ConfigureAwait(false);
+                var members=await Api.GetWbSupplyOrderIdsAsync(store,supply.Id,ct).ConfigureAwait(false);
+                Db.UpsertWbSupply(store.Id,supply,members.Count);Db.StoreWbSupplyMembership(store.Id,supply.Id,members);
+            } catch(Exception ex) {return new(false,result.Message+" Đã tạo/giữ shipment nhưng chưa đọc đủ membership: "+ex.Message,result.ExternalTaskId);}
+        }
+        return result;
+    }
+
+    public async Task RefreshWbSuppliesAsync(StoreProfile store,CancellationToken ct=default,IProgress<string>? progress=null)
+    {
+        var rows=await Api.GetWbSuppliesAsync(store,ct).ConfigureAwait(false);var index=0;
+        foreach(var supply in rows) {
+            ct.ThrowIfCancellationRequested();index++;progress?.Report($"WB · shipment {index}/{rows.Count}");int? count=null;
+            try {var ids=await Api.GetWbSupplyOrderIdsAsync(store,supply.Id,ct).ConfigureAwait(false);count=ids.Count;Db.StoreWbSupplyMembership(store.Id,supply.Id,ids);}
+            catch(OperationCanceledException){throw;}catch(Exception ex){Db.Audit("FBS WB","Chưa đọc đủ shipment "+supply.Id,ex.Message);}
+            Db.UpsertWbSupply(store.Id,supply,count);
+        }
+    }
+
     public async Task<IReadOnlyList<FbsOrderRow>> ReadWbSupplyOrdersAsync(StoreProfile store,string supplyId,CancellationToken ct=default)
     {
         var ids=await Api.GetWbSupplyOrderIdsAsync(store,supplyId,ct).ConfigureAwait(false);

@@ -9,7 +9,7 @@ public sealed class WbShipmentDialog : Form
     private readonly RadioButton existing=new(){Text="Thêm vào shipment đã tạo hôm nay",AutoSize=true};
     private readonly TextBox name=new(){Width=560};
     private readonly ComboBox supplies=new(){DropDownStyle=ComboBoxStyle.DropDownList,Width=560};
-    private readonly Button go=new(){Text="Thêm đơn → tự gắn KIZ → xuất nhãn",Width=360,Height=40,DialogResult=DialogResult.OK};
+    private readonly Button go=new(){Text="Nhận đơn vào shipment",Width=360,Height=40,DialogResult=DialogResult.OK};
     public WbShipmentChoice Choice=>existing.Checked && supplies.SelectedItem is WbSupply supply ? new(supply.Id,supply.Name) : new(null,name.Text.Trim());
 
     public WbShipmentDialog(int orderCount,IReadOnlyList<WbSupply> today,bool preferExisting=false,bool allowCreate=true)
@@ -26,7 +26,7 @@ public sealed class WbShipmentDialog : Form
         create.Visible=allowCreate;name.Visible=allowCreate;
         if(preferExisting || !allowCreate){create.Checked=false;existing.Checked=true;}
         body.Controls.Add(create);body.Controls.Add(name);body.Controls.Add(existing);body.Controls.Add(supplies);
-        body.Controls.Add(new Label{AutoSize=true,MaximumSize=new Size(560,0),Text="Chỉ dùng shipment đang mở của cửa hàng này. KIZ và sticker được xử lý sau khi WB xác nhận đã thêm đơn."});
+        body.Controls.Add(new Label{AutoSize=true,MaximumSize=new Size(560,0),Text="Chỉ dùng shipment đang mở của cửa hàng này. Sau khi nhận, mở shipment ở tab Đang đóng gói để tích KIZ và xuất nhãn."});
         if(!allowCreate)go.Text="Mở shipment";
         var buttons=new FlowLayoutPanel{Width=560,Height=45};buttons.Controls.Add(go);
         var cancel=new Button{Text="Hủy",DialogResult=DialogResult.Cancel,Width=100,Height=40};buttons.Controls.Add(cancel);body.Controls.Add(buttons);

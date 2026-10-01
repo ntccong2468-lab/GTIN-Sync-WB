@@ -7,6 +7,28 @@ public sealed partial class AppServices
 {
     private readonly SemaphoreSlim marketplaceFbsOperations=new(1,1);
 
+    public async Task<PriceUpdateResult> ReceiveMarketplaceFbsAsync(StoreProfile store,IEnumerable<string> orderIds,
+        CancellationToken ct=default,IProgress<string>? progress=null,string? batchId=null)
+    {
+        if(store.Marketplace is not (Marketplace.Ozon or Marketplace.Yandex))return new(false,"Luồng nhận đơn này chỉ dành cho Ozon/Yandex.");
+        var ids=orderIds.Where(x=>!string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal).ToArray();
+        if(ids.Length==0)return new(false,"Chưa chọn đơn mới.");
+        var accepted=new List<string>();var rejected=new List<string>();var index=0;
+        foreach(var id in ids) {
+            ct.ThrowIfCancellationRequested();index++;progress?.Report($"{store.Marketplace} · kiểm tra đơn {index}/{ids.Length}");
+            try {
+                var fresh=await ReadFreshMarketplaceFbsAsync(store,id,ct).ConfigureAwait(false);
+                if(!fresh.CanPack||fresh.IsPacked){rejected.Add(id+": trạng thái hiện tại không thể nhận vào lượt đóng gói");continue;}
+                Db.UpsertOrders(store.Id,store.Marketplace,fresh.Rows);accepted.Add(id);
+            } catch(Exception ex){rejected.Add(id+": "+ex.Message);}
+        }
+        if(accepted.Count==0)return new(false,string.Join(Environment.NewLine,rejected.Take(8)));
+        var batch=Db.CreateMarketplaceFbsBatch(store,accepted,batchId);
+        var message=$"Đã nhận {accepted.Count}/{ids.Length} đơn vào {batch.Name}. Chuyển sang Đang đóng gói để mở shipment và xuất nhãn.";
+        if(rejected.Count>0)message+="\nChưa nhận: "+string.Join("; ",rejected.Take(5));
+        return new(rejected.Count==0,message,batch.Id);
+    }
+
     public async Task<PriceUpdateResult> PackMarketplaceFbsAsync(StoreProfile store,IEnumerable<string> orderIds,
         Func<MarketplaceFbsItem,string> resolveGtin,bool useKiz=true,CancellationToken ct=default,IProgress<string>? progress=null,
         string? batchId=null,IReadOnlyDictionary<string,JsonArray>? layouts=null)

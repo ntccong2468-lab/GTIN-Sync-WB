@@ -5,6 +5,7 @@ namespace MarketplaceHub.Infrastructure;
 
 public sealed record MarketplaceFbsBatch(string Id,long StoreId,string Name,DateTimeOffset CreatedAt,string Status);
 public sealed record MarketplaceUnitKiz(string ItemId,int Unit,string Gtin,string Code,string Status);
+public sealed record MarketplaceFbsBatchSummary(string Id,string Name,DateTimeOffset CreatedAt,string Status,int OrderCount,int Quantity);
 
 public sealed partial class AppDatabase
 {
@@ -15,6 +16,27 @@ CREATE TABLE IF NOT EXISTS marketplace_kiz_reservations(code TEXT PRIMARY KEY,st
 CREATE TABLE IF NOT EXISTS marketplace_fbs_batches(id TEXT PRIMARY KEY,store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL,status TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS marketplace_fbs_actions(store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,order_id TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(store_id,marketplace,order_id));
 CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,order_id TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',layout_json TEXT NOT NULL DEFAULT '',PRIMARY KEY(batch_id,order_id));";cmd.ExecuteNonQuery();
+    }
+
+    public IReadOnlySet<string> MarketplaceReceivedOrderIds(StoreProfile store)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText=@"SELECT o.order_id FROM marketplace_fbs_batch_orders o JOIN marketplace_fbs_batches b ON b.id=o.batch_id WHERE b.store_id=$s AND b.marketplace=$m";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());var result=new HashSet<string>(StringComparer.Ordinal);
+        using var row=cmd.ExecuteReader();while(row.Read())result.Add(row.GetString(0));return result;
+    }
+
+    public IReadOnlyList<MarketplaceFbsBatchSummary> MarketplaceFbsBatches(StoreProfile store,bool shipping=false)
+    {
+        var result=new List<MarketplaceFbsBatchSummary>();
+        foreach(var batch in TodayMarketplaceFbsBatches(store)) {
+            var members=MarketplaceFbsBatchOrders(store,batch.Id);if(members.Count==0)continue;
+            var complete=members.All(x=>x.Status=="LABELS_READY");if(complete!=shipping)continue;
+            var ids=members.Select(x=>x.Id).ToHashSet(StringComparer.Ordinal);
+            var quantity=Orders(store.Id).Where(x=>ids.Contains(x.ExternalOrderId)).Sum(x=>Math.Max(1,x.Quantity));
+            result.Add(new(batch.Id,batch.Name,batch.CreatedAt,complete?"Đang giao":"Đang đóng gói",members.Count,quantity));
+        }
+        return result.OrderByDescending(x=>x.CreatedAt).ToArray();
     }
 
     public MarketplaceFbsBatch CreateMarketplaceFbsBatch(StoreProfile store,IEnumerable<string> orderIds,string? existingId=null)
