@@ -75,14 +75,18 @@ Check("A4 picking groups exact variants and preserves quantity", () =>
 });
 Check("Final product-page KIZ and barcode decode at 203, 254 and 300 dpi", () =>
 {
-    foreach(var marking in new[]{code,"010460123456789321serialABCDEFG\u001d91ABCD\u001d92"+new string('a',88)})
+    var cryptoFixtures=Enumerable.Range(1,12).Select(id=>"010460123456789321"+id.ToString("D13")+"\u001d91ABCD\u001d92"+
+        Convert.ToBase64String(System.Security.Cryptography.SHA512.HashData(System.Text.Encoding.UTF8.GetBytes(id.ToString()))));
+    foreach(var marking in new[]{code,"010460123456789321serialABCDEFG\u001d91ABCD\u001d92"+new string('a',88)}.Concat(cryptoFixtures))
     {
     var bundle=service.Prepare("fixture",new[]{order with {KizCodes=new[]{marking}}},new WbPrintOptions(true,true,false,1),output);
     using var page=SKBitmap.Decode(bundle.Pages[0].Path);
     foreach(var dpi in new[]{203,254,300})
+    foreach(var roundDimensions in new[]{false,true})
     {
         var scale=dpi/254f;
-        using var raster=page.Resize(new SKImageInfo((int)(580*scale),(int)(400*scale)),SKFilterQuality.None);
+        int Pixels(float value)=>roundDimensions ? (int)Math.Round(value) : (int)value;
+        using var raster=page.Resize(new SKImageInfo(Pixels(580*scale),Pixels(400*scale)),SKFilterQuality.None);
         foreach(var area in new[]{(new SKRectI(20,45,240,265),BarcodeFormat.DATA_MATRIX,marking),(new SKRectI(25,278,555,343),BarcodeFormat.CODE_128,order.Barcode)})
         {
             var rect=new SKRectI((int)(area.Item1.Left*scale),(int)(area.Item1.Top*scale),(int)(area.Item1.Right*scale),(int)(area.Item1.Bottom*scale));

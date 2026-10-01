@@ -150,15 +150,15 @@ public sealed class WbPrintBundleService
         catch { image.Dispose(); throw; }
     }
 
-    public static SKBitmap RenderCode(string text, BarcodeFormat format)
+    public static SKBitmap RenderCode(string text, BarcodeFormat format, int matrixSize = 300)
     {
         if (format == BarcodeFormat.DATA_MATRIX)
             text = "\u001d" + (text.StartsWith('\u001d') ? text[1..] : text);
         var writer = new BarcodeWriterPixelData
         {
             Format = format,
-            Options = new EncodingOptions { Width = format == BarcodeFormat.CODE_128 ? 530 : 300,
-                Height = format == BarcodeFormat.CODE_128 ? 60 : 300, Margin = 2, PureBarcode = true }
+            Options = new EncodingOptions { Width = format == BarcodeFormat.CODE_128 ? 530 : format == BarcodeFormat.DATA_MATRIX ? matrixSize : 300,
+                Height = format == BarcodeFormat.CODE_128 ? 60 : format == BarcodeFormat.DATA_MATRIX ? matrixSize : 300, Margin = 2, PureBarcode = true }
         };
         // Keep the legacy encoder: CompactEncoding in ZXing 0.16.10 can corrupt GS after C40 runs.
         var pixels = writer.Write(text);
@@ -175,8 +175,9 @@ public sealed class WbPrintBundleService
             using var canvas = new SKCanvas(image); canvas.Clear(SKColors.White);
             if (!string.IsNullOrWhiteSpace(kiz))
             {
-                using var matrix = RenderCode(kiz,BarcodeFormat.DATA_MATRIX);
-                canvas.DrawBitmap(matrix,new SKRect(20,45,240,265));
+                // Encode at the final raster size so modules are not resampled twice.
+                using var matrix = RenderCode(kiz,BarcodeFormat.DATA_MATRIX,220);
+                canvas.DrawBitmap(matrix,20,45);
                 Text(canvas,"KIZ · GS1",28,30,18,true);
             }
             Text(canvas,order.Brand,260,34,25,true,300);
