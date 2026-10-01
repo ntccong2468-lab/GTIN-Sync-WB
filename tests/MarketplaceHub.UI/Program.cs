@@ -47,6 +47,16 @@ internal static class Program
                 if (picker.Items[i] is StoreProfile s && s.Id == store.Id) picker.SelectedIndex = i;
             form.Show();
             Application.DoEvents();
+            Check("Ozon diagnostics keeps the real API key masked and declares read-only mode", () =>
+            {
+                var ozon = new StoreProfile(999, Marketplace.Ozon, "fixture", "client", "top-secret", "", "", "", true);
+                using var dialog = new OzonDiagnosticsDialog(app.Api, ozon);
+                var key = All(dialog).OfType<TextBox>().Single(x => x.Name == "ozonDiagnosticApiKey");
+                var warning = All(dialog).Single(x => x.Name == "ozonReadOnlyWarning");
+                Expect(key.UseSystemPasswordChar && key.Text == "top-secret", "Ozon key is not masked in the live-test panel.");
+                Expect(warning.Text.Contains("chỉ đọc") && warning.Text.Contains("không tạo job nhãn"), "Mutation boundary is not visible to the seller.");
+                Expect(All(dialog).OfType<Button>().Any(x => x.Name == "copyOzonRedactedReport"), "Redacted diagnostic export is missing.");
+            });
             Check("Packed Ozon and Yandex orders remain available for label printing", () =>
             {
                 foreach (var state in new[] { "awaiting_deliver", "PROCESSING/READY_TO_SHIP" })

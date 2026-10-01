@@ -8,6 +8,12 @@ on:
       - ".github/workflows/build-marketplace-hub.yml"
       - "!MarketplaceHub/dist/**"
   workflow_dispatch:
+    inputs:
+      build_installer:
+        description: "Publish and build the Windows installer after live validation"
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: write
 jobs:
@@ -31,6 +37,8 @@ jobs:
         run: dotnet run --project tests/MarketplaceHub.ProductSync -c Release
       - name: Persistent FBS and catalog recovery
         run: dotnet run --project tests/MarketplaceHub.FbsState -c Release
+      - name: Ozon and Yandex stateful mock API end-to-end
+        run: dotnet run --project tests/MarketplaceHub.MockApi -c Release
       - name: WB label and picking PDF regressions
         env:
           MARKETPLACE_PRINT_SAMPLES: ${{ github.workspace }}/print-samples
@@ -50,8 +58,10 @@ jobs:
           name: MarketplaceHub-release-screenshots
           path: screenshots/*.png
       - name: Publish self-contained
+        if: github.event_name == 'workflow_dispatch' && inputs.build_installer == true
         run: dotnet publish .\MarketplaceHub\MarketplaceHub.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true /p:PublishTrimmed=false
       - name: Functional self-test
+        if: github.event_name == 'workflow_dispatch' && inputs.build_installer == true
         shell: powershell
         run: |
           $exe = Resolve-Path ".\MarketplaceHub\bin\Release\net8.0-windows\win-x64\publish\MarketplaceHub.exe"
@@ -60,6 +70,7 @@ jobs:
           if (Test-Path $report) { Get-Content $report }
           if ($p.ExitCode -ne 0) { throw "Self-test failed: $($p.ExitCode)" }
       - name: GUI smoke launch
+        if: github.event_name == 'workflow_dispatch' && inputs.build_installer == true
         shell: powershell
         run: |
           $exe = Resolve-Path ".\MarketplaceHub\bin\Release\net8.0-windows\win-x64\publish\MarketplaceHub.exe"
@@ -72,13 +83,16 @@ jobs:
           }
           Stop-Process -Id $p.Id -Force
       - name: Install Inno Setup
+        if: github.event_name == 'workflow_dispatch' && inputs.build_installer == true
         run: choco install innosetup -y --no-progress
       - name: Build installer
+        if: github.event_name == 'workflow_dispatch' && inputs.build_installer == true
         shell: powershell
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" ".\MarketplaceHub\installer\MarketplaceHub.iss"
           Get-FileHash ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.7.4-win-x64.exe" -Algorithm SHA256
       - name: Silent install test
+        if: github.event_name == 'workflow_dispatch' && inputs.build_installer == true
         shell: powershell
         run: |
           $setup = Resolve-Path ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.7.4-win-x64.exe"
@@ -99,13 +113,14 @@ jobs:
           }
           Stop-Process -Id $app.Id -Force
       - name: Upload installer artifact
+        if: github.event_name == 'workflow_dispatch' && inputs.build_installer == true
         uses: actions/upload-artifact@v4
         with:
           name: MarketplaceHub-Setup-0.7.4-win-x64
           path: MarketplaceHub/dist/MarketplaceHub-Setup-0.7.4-win-x64.exe
           if-no-files-found: error
       - name: Commit verified installer
-        if: github.ref == 'refs/heads/marketplace-hub-v2' || github.ref == 'refs/heads/fix/dashboard-fbs-stability'
+        if: github.event_name == 'workflow_dispatch' && inputs.build_installer == true && (github.ref == 'refs/heads/marketplace-hub-v2' || github.ref == 'refs/heads/fix/dashboard-fbs-stability')
         shell: powershell
         run: |
           git config user.name "github-actions[bot]"

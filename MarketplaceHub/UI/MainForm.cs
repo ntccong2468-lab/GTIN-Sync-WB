@@ -1821,6 +1821,8 @@ public sealed partial class MainForm : Form
         var token = LabeledDark(host, "Wildberries Token", "", 20, 400, 520, true);
         var save = ActionButton("Lưu cửa hàng", 145, true); save.Left = 20; save.Top = 485; host.Controls.Add(save);
         var test = ActionButton("Kiểm tra API", 140); test.Left = 180; test.Top = 485; host.Controls.Add(test);
+        var ozonTest = ActionButton("Kiểm tra Ozon chuyên sâu", 220); ozonTest.Left = 335; ozonTest.Top = 485; ozonTest.Visible = (Marketplace)market.SelectedItem! == Marketplace.Ozon; host.Controls.Add(ozonTest);
+        market.SelectedIndexChanged += (_,_) => ozonTest.Visible = market.SelectedItem is Marketplace selected && selected == Marketplace.Ozon;
 
         long id = 0;
         if (!newStore && CurrentStore() is StoreProfile s)
@@ -1837,6 +1839,11 @@ public sealed partial class MainForm : Form
         test.Click += async (_, _) =>
         {
             var r = await app.Api.TestAsync(Read()); ShowInfo(r.Message);
+        };
+        ozonTest.Click += (_, _) =>
+        {
+            using var dialog = new OzonDiagnosticsDialog(app.Api, Read());
+            dialog.ShowDialog(this);
         };
     }
 

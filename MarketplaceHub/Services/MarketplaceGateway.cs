@@ -659,14 +659,8 @@ public sealed partial class MarketplaceGateway
 
             if (s.Marketplace == Marketplace.Ozon)
             {
-                using var req = Request(HttpMethod.Post,
-                    "https://api-seller.ozon.ru/v2/posting/fbs/package-label",
-                    s,
-                    JsonSerializer.Serialize(new { posting_number = new[] { orderId } }));
-                using var res = await http.SendAsync(req, ct);
-                fileBytes = await res.Content.ReadAsByteArrayAsync(ct);
-                if (!res.IsSuccessStatusCode) return new LabelResult(false, $"HTTP {(int)res.StatusCode}: {Short(Encoding.UTF8.GetString(fileBytes))}");
-                ext = ".pdf";
+                var taskId=await CreateOzonLabelTaskAsync(s,new[]{orderId},ct).ConfigureAwait(false);
+                return await DownloadOzonLabelTaskAsync(s,orderId,taskId,ct).ConfigureAwait(false);
             }
             else
             {

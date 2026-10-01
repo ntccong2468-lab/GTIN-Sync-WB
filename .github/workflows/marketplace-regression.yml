@@ -15,6 +15,12 @@ jobs:
         with: { dotnet-version: "8.0.x" }
       - name: API contracts
         run: dotnet run --project tests/MarketplaceHub.Contracts -c Release
+      - name: Ozon and Yandex FBS contracts
+        run: dotnet run --project tests/MarketplaceHub.Fbs -c Release
+      - name: Persistent FBS recovery
+        run: dotnet run --project tests/MarketplaceHub.FbsState -c Release
+      - name: Stateful Ozon and Yandex mock API
+        run: dotnet run --project tests/MarketplaceHub.MockApi -c Release
       - name: UI navigation and layout
         if: always()
         env:

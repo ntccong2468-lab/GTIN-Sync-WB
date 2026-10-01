@@ -118,6 +118,54 @@ await Check("Yandex rejects mixing two partial products in one box",async()=>{
 await Check("Scanner prefix normalization keeps internal separators and crypto tail",()=>{
     const string code="010460123456789321serial\u001d91ABCD\u001d92proof";Expect(MarketplaceFbsPayloads.NormalizeCode("\u001d"+code)==code && MarketplaceFbsPayloads.NormalizeCode(code.Replace("\u001d","<GS>"))==code,"Full SGTIN changed.");return Task.CompletedTask;
 });
+await Check("Ozon label uses v2 create, numeric task poll and verified PDF",async()=>{
+    var requests=new List<(string Path,string Body)>();
+    var api=Api(r=>{
+        var body=r.Content?.ReadAsStringAsync().GetAwaiter().GetResult()??"";requests.Add((r.RequestUri!.AbsolutePath,body));
+        if(r.RequestUri.AbsolutePath.EndsWith("/create"))return Json("{\"result\":{\"task_id\":3001}}");
+        if(r.RequestUri.AbsolutePath.EndsWith("/get"))return Json("{\"result\":{\"status\":\"completed\",\"file_url\":\"https://cdn.ozon.ru/labels/3001.pdf\"}}");
+        return new HttpResponseMessage(HttpStatusCode.OK){Content=new ByteArrayContent(Encoding.ASCII.GetBytes("%PDF-1.7\\nozon"))};
+    });
+    var task=await api.CreateOzonLabelTaskAsync(Store(Marketplace.Ozon),new[]{"P"});
+    var label=await api.DownloadOzonLabelTaskAsync(Store(Marketplace.Ozon),"P",task);
+    Expect(task=="3001" && label.Success && File.Exists(label.FilePath!),"Official PDF was not created.");
+    Expect(requests[0].Path=="/v2/posting/fbs/package-label/create" && requests[1].Path=="/v1/posting/fbs/package-label/get","Wrong Ozon label endpoints.");
+    Expect(requests[1].Body.Contains("\"task_id\":3001") && !requests[1].Body.Contains("\"3001\""),"Numeric task_id contract was not preserved.");
+    File.Delete(label.FilePath!);
+});
+await Check("Ozon label accepts legacy big_label task and rejects unsafe document host",async()=>{
+    foreach(var unsafeHost in new[]{false,true}){
+        var api=Api(r=>{
+            if(r.RequestUri!.AbsolutePath.EndsWith("/create"))return Json("{\"result\":{\"tasks\":[{\"task_id\":11,\"task_type\":\"small_label\"},{\"task_id\":12,\"task_type\":\"big_label\"}]}}");
+            if(r.RequestUri.AbsolutePath.EndsWith("/get"))return Json("{\"result\":{\"status\":\"completed\",\"file_url\":\"https://"+(unsafeHost?"example.com":"docs.ozone.ru")+"/label.pdf\"}}");
+            return new HttpResponseMessage(HttpStatusCode.OK){Content=new ByteArrayContent(Encoding.ASCII.GetBytes("%PDF-1.7\\nok"))};
+        });
+        var task=await api.CreateOzonLabelTaskAsync(Store(Marketplace.Ozon),new[]{"P"});
+        var label=await api.DownloadOzonLabelTaskAsync(Store(Marketplace.Ozon),"P",task);
+        Expect(task=="12" && label.Success==!unsafeHost,"Legacy task selection or URL boundary failed.");
+        if(label.FilePath is not null)File.Delete(label.FilePath);
+    }
+});
+await Check("Ozon read-only diagnostics exercise capabilities without mutation endpoints",async()=>{
+    var paths=new List<string>();
+    var api=Api(r=>{paths.Add(r.RequestUri!.AbsolutePath);return r.RequestUri.AbsolutePath switch{
+        "/v1/seller/info"=>Json("{\"result\":{\"name\":\"seller\"}}"),
+        "/v1/roles"=>Json("{\"result\":[\"FBS\",\"package-label\",\"exemplar\"]}"),
+        "/v2/warehouse/list"=>Json("{\"result\":[{\"warehouse_id\":1}]}"),
+        "/v4/posting/fbs/unfulfilled/list"=>Json("{\"result\":{\"postings\":[],\"has_next\":false,\"cursor\":\"\"}}"),
+        "/v3/posting/fbs/get"=>Json(Ozon()),
+        _=>Json("{}",HttpStatusCode.NotFound)};});
+    var report=await api.DiagnoseOzonAsync(Store(Marketplace.Ozon),"P");
+    Expect(report.Success && report.Steps.Count==5 && report.Steps.All(x=>x.Success),"Read-only stages failed.");
+    Expect(paths.All(x=>!x.Contains("/ship")&&!x.Contains("/create")&&!x.Contains("/set")),"Diagnostics called a mutation endpoint.");
+    Expect(!report.SafeText.Contains("key",StringComparison.OrdinalIgnoreCase),"Diagnostic report exposed the API key.");
+});
+await Check("Ozon diagnostics classify rate limits without leaking response bodies",async()=>{
+    var api=Api(r=>r.RequestUri!.AbsolutePath=="/v1/seller/info"?Json("{\"secret\":\"do-not-copy\"}",(HttpStatusCode)429):Json("{}"));
+    var report=await api.DiagnoseOzonAsync(Store(Marketplace.Ozon));
+    Expect(!report.Success && report.Steps.Count==1 && report.Steps[0].Code=="rate_limited","429 was not classified.");
+    Expect(!report.SafeText.Contains("do-not-copy"),"Raw error body leaked into diagnostic report.");
+});
 Console.WriteLine($"{checks-failures.Count}/{checks} passed");
 return failures.Count==0?0:1;
 sealed class FixtureHttp(Func<HttpRequestMessage,HttpResponseMessage> responder):HttpMessageHandler

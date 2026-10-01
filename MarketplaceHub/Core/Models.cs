@@ -16,6 +16,15 @@ public sealed record FbsOrderRow(
 
 public sealed record PriceUpdateResult(bool Success, string Message, string? ExternalTaskId = null);
 public sealed record ApiTestResult(bool Success, string Message);
+public sealed record OzonDiagnosticStep(
+    string Stage, string Endpoint, bool Success, int HttpStatus, long ElapsedMs,
+    string Code, string Message, string NextAction);
+public sealed record OzonDiagnosticReport(IReadOnlyList<OzonDiagnosticStep> Steps)
+{
+    public bool Success => Steps.Count > 0 && Steps.All(x => x.Success);
+    public string SafeText => string.Join(Environment.NewLine, Steps.Select(x =>
+        $"{x.Stage} | {x.Endpoint} | {(x.Success ? "OK" : "LỖI")} | HTTP {x.HttpStatus} | {x.ElapsedMs} ms | {x.Code} | {x.Message} | {x.NextAction}"));
+}
 public sealed record LabelResult(bool Success, string Message, string? FilePath = null,
     string? Barcode = null, string? PartA = null, string? PartB = null);
 public sealed record WbPrintKizMetadata(bool Required,IReadOnlyList<string> Codes);

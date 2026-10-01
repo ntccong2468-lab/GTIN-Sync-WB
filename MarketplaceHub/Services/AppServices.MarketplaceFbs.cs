@@ -169,7 +169,30 @@ public sealed partial class AppServices
                 expected[item.Id]=reserved.OrderBy(x=>x.Unit).Select(x=>x.Code).ToArray();foreach(var code in expected[item.Id])CheckMarketplaceGtin(code,gtin,item.Offer);
             }
             if(!MarketplaceCodesMatch(current,expected,remote))return new(false,"Mã hiện tại trên sàn khác mã đã xác nhận. Chưa xuất nhãn.");
+            if(store.Marketplace==Marketplace.Ozon)return await DownloadDurableOzonLabelAsync(store,orderId,ct).ConfigureAwait(false);
             return await Api.DownloadLabelAsync(store,orderId,ct).ConfigureAwait(false);
         }catch(Exception ex){return new(false,ex.Message);}
+    }
+
+    private async Task<LabelResult> DownloadDurableOzonLabelAsync(StoreProfile store,string postingNumber,CancellationToken ct)
+    {
+        var job=Db.GetOrCreateOzonLabelJob(store,postingNumber);
+        if(job.Status=="RECONCILE_REQUIRED" && string.IsNullOrWhiteSpace(job.TaskId))
+            return new(false,"Kết quả tạo job nhãn Ozon trước đó chưa rõ. Mở bảng kiểm tra API/đối soát trên Ozon; ứng dụng không tự tạo job thứ hai.");
+        var taskId=job.TaskId;
+        if(string.IsNullOrWhiteSpace(taskId))
+        {
+            Db.SaveOzonLabelJob(store,postingNumber,"","CREATE_PENDING");
+            try
+            {
+                taskId=await Api.CreateOzonLabelTaskAsync(store,new[]{postingNumber},ct).ConfigureAwait(false);
+                Db.SaveOzonLabelJob(store,postingNumber,taskId,"POLLING");
+            }
+            catch(OperationCanceledException){Db.SaveOzonLabelJob(store,postingNumber,"","RECONCILE_REQUIRED","cancelled_during_create");throw;}
+            catch(Exception){Db.SaveOzonLabelJob(store,postingNumber,"","RECONCILE_REQUIRED","create_outcome_unknown");return new(false,"Chưa xác nhận được kết quả tạo job nhãn Ozon. Không tự gửi lại; hãy dùng bảng kiểm tra API để đối soát.");}
+        }
+        var label=await Api.DownloadOzonLabelTaskAsync(store,postingNumber,taskId,ct).ConfigureAwait(false);
+        Db.SaveOzonLabelJob(store,postingNumber,taskId,label.Success?"READY":label.Message.Contains("đang tạo",StringComparison.OrdinalIgnoreCase)?"POLLING":"FAILED",label.Success?"":"label_not_ready");
+        return label;
     }
 }

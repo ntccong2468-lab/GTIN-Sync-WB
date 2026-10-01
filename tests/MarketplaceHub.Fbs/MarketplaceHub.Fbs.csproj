@@ -7,5 +7,6 @@
     <Compile Include="../../MarketplaceHub/Services/WbShipments.cs" Link="WbShipments.cs" />
     <Compile Include="../../MarketplaceHub/Services/MarketplaceFbs.cs" Link="MarketplaceFbs.cs" />
     <Compile Include="../../MarketplaceHub/Services/MarketplaceProductSync.cs" Link="MarketplaceProductSync.cs" />
+    <Compile Include="../../MarketplaceHub/Services/OzonWorkflow.cs" Link="OzonWorkflow.cs" />
   </ItemGroup>
 </Project>

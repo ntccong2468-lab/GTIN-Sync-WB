@@ -677,7 +677,7 @@ ON CONFLICT(store_id,sku) DO UPDATE SET gtin=$g,stage=$st,external_order_id=$o,d
         using(var batches=c.CreateCommand()) {
             batches.Transaction=tx;batches.CommandText="DELETE FROM marketplace_fbs_batch_orders WHERE batch_id IN(SELECT id FROM marketplace_fbs_batches WHERE store_id=$id)";batches.Parameters.AddWithValue("$id",id);batches.ExecuteNonQuery();
         }
-        foreach (var table in new[] { "marketplace_fbs_batches", "marketplace_fbs_actions", "marketplace_kiz_reservations", "product_variants", "product_catalog_checkpoint", "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline", "wb_supply_orders", "wb_kiz_reservations" })
+        foreach (var table in new[] { "marketplace_fbs_batches", "marketplace_fbs_actions", "marketplace_kiz_reservations", "ozon_label_jobs", "product_variants", "product_catalog_checkpoint", "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline", "wb_supply_orders", "wb_kiz_reservations" })
         {
             using var extra = c.CreateCommand();
             extra.Transaction = tx;

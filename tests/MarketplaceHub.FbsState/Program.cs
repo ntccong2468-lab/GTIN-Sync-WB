@@ -109,6 +109,16 @@ await Check("Scanner prefix cannot bypass ownership or reimport a second physica
     var blocked=false;try{app.Db.ReserveMarketplaceKiz(oz,"P","100",0,gtin,"\u001d"+code);}catch(InvalidOperationException){blocked=true;}Expect(blocked,"Leading GS changed ownership identity.");
     app.Db.UpsertKiz("\u001d"+code,gtin,"AVAILABLE");app.Db.UpsertKiz(code.Replace("\u001d","<GS>"),gtin,"AVAILABLE");Expect(app.Db.Kiz().Count(x=>MarketplaceFbsPayloads.NormalizeCode(x.Code)==code)==1 && app.Db.Kiz().Single(x=>x.Code==code).Status=="RESERVED","Reimport created an available alias of an owned physical code.");return Task.CompletedTask;
 });
+await Check("Ozon label task survives restart state and ambiguous create blocks duplicates",()=>{
+    var oz=Store(Marketplace.Ozon);var first=app.Db.GetOrCreateOzonLabelJob(oz,"P-LABEL");
+    Expect(first.Status=="NEW"&&first.TaskId=="","Initial label checkpoint is invalid.");
+    app.Db.SaveOzonLabelJob(oz,"P-LABEL","","CREATE_PENDING");
+    var blocked=app.Db.SaveOzonLabelJob(oz,"P-LABEL","","RECONCILE_REQUIRED","create_outcome_unknown");
+    Expect(blocked.Status=="RECONCILE_REQUIRED"&&blocked.TaskId=="","Ambiguous label create was not retained.");
+    var persisted=app.Db.GetOrCreateOzonLabelJob(oz,"P-LABEL");Expect(persisted.Status=="RECONCILE_REQUIRED","Restart reset ambiguous label job.");
+    app.Db.SaveOzonLabelJob(oz,"P-READY","3001","POLLING");var ready=app.Db.SaveOzonLabelJob(oz,"P-READY","","READY");
+    Expect(ready.TaskId=="3001"&&ready.Status=="READY","Existing task_id was discarded during recovery.");return Task.CompletedTask;
+});
 }finally{foreach(var store in stores)app.Db.DeleteStore(store.Id);}
 Console.WriteLine($"{checks-failures.Count}/{checks} persistence and FBS workflow checks passed");return failures.Count==0?0:1;
 sealed class FixtureHttp(Func<HttpRequestMessage,HttpResponseMessage> response):HttpMessageHandler

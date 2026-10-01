@@ -6,6 +6,7 @@ namespace MarketplaceHub.Infrastructure;
 public sealed record MarketplaceFbsBatch(string Id,long StoreId,string Name,DateTimeOffset CreatedAt,string Status);
 public sealed record MarketplaceUnitKiz(string ItemId,int Unit,string Gtin,string Code,string Status);
 public sealed record MarketplaceFbsBatchSummary(string Id,string Name,DateTimeOffset CreatedAt,string Status,int OrderCount,int Quantity);
+public sealed record OzonLabelJob(long StoreId,string PostingNumber,string TaskId,string Status,string SafeError,DateTimeOffset UpdatedAt);
 
 public sealed partial class AppDatabase
 {
@@ -15,7 +16,8 @@ public sealed partial class AppDatabase
 CREATE TABLE IF NOT EXISTS marketplace_kiz_reservations(code TEXT PRIMARY KEY,store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,order_id TEXT NOT NULL,item_id TEXT NOT NULL,unit_index INTEGER NOT NULL,gtin TEXT NOT NULL,status TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(store_id,marketplace,order_id,item_id,unit_index));
 CREATE TABLE IF NOT EXISTS marketplace_fbs_batches(id TEXT PRIMARY KEY,store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL,status TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS marketplace_fbs_actions(store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,order_id TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(store_id,marketplace,order_id));
-CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,order_id TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',layout_json TEXT NOT NULL DEFAULT '',PRIMARY KEY(batch_id,order_id));";cmd.ExecuteNonQuery();
+CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,order_id TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',layout_json TEXT NOT NULL DEFAULT '',PRIMARY KEY(batch_id,order_id));
+CREATE TABLE IF NOT EXISTS ozon_label_jobs(store_id INTEGER NOT NULL,posting_number TEXT NOT NULL,task_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,safe_error TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(store_id,posting_number));";cmd.ExecuteNonQuery();
     }
 
     public IReadOnlySet<string> MarketplaceReceivedOrderIds(StoreProfile store)
@@ -161,5 +163,26 @@ CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,o
     public bool TryBeginMarketplaceShip(StoreProfile store,string orderId)
     {
         using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="INSERT OR IGNORE INTO marketplace_fbs_actions VALUES($s,$m,$o,'SUBMITTED')";cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());cmd.Parameters.AddWithValue("$o",orderId);return cmd.ExecuteNonQuery()==1;
+    }
+
+    public OzonLabelJob GetOrCreateOzonLabelJob(StoreProfile store,string postingNumber)
+    {
+        if(store.Marketplace!=Marketplace.Ozon)throw new InvalidOperationException("Job nhãn này chỉ dành cho Ozon.");
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();var now=DateTimeOffset.UtcNow;
+        using(var insert=c.CreateCommand()){insert.Transaction=tx;insert.CommandText="INSERT OR IGNORE INTO ozon_label_jobs(store_id,posting_number,status,updated_at) VALUES($s,$p,'NEW',$at)";insert.Parameters.AddWithValue("$s",store.Id);insert.Parameters.AddWithValue("$p",postingNumber);insert.Parameters.AddWithValue("$at",now.ToString("O"));insert.ExecuteNonQuery();}
+        OzonLabelJob job;using(var read=c.CreateCommand()){read.Transaction=tx;read.CommandText="SELECT task_id,status,safe_error,updated_at FROM ozon_label_jobs WHERE store_id=$s AND posting_number=$p";read.Parameters.AddWithValue("$s",store.Id);read.Parameters.AddWithValue("$p",postingNumber);using var row=read.ExecuteReader();if(!row.Read())throw new InvalidOperationException("Không tạo được checkpoint nhãn Ozon.");job=new(store.Id,postingNumber,row.GetString(0),row.GetString(1),row.GetString(2),DateTimeOffset.Parse(row.GetString(3)));}
+        tx.Commit();return job;
+    }
+
+    public OzonLabelJob SaveOzonLabelJob(StoreProfile store,string postingNumber,string taskId,string status,string safeError="")
+    {
+        if(store.Marketplace!=Marketplace.Ozon)throw new InvalidOperationException("Job nhãn này chỉ dành cho Ozon.");
+        var allowed=new[]{"NEW","CREATE_PENDING","POLLING","READY","FAILED","RECONCILE_REQUIRED"};if(!allowed.Contains(status))throw new InvalidOperationException("Trạng thái job nhãn Ozon không hợp lệ.");
+        if(taskId.Length>256 || safeError.Length>512)throw new InvalidOperationException("Dữ liệu checkpoint nhãn vượt giới hạn an toàn.");
+        var now=DateTimeOffset.UtcNow;using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText=@"INSERT INTO ozon_label_jobs(store_id,posting_number,task_id,status,safe_error,updated_at) VALUES($s,$p,$t,$st,$e,$at)
+ON CONFLICT(store_id,posting_number) DO UPDATE SET task_id=CASE WHEN excluded.task_id='' THEN ozon_label_jobs.task_id ELSE excluded.task_id END,status=excluded.status,safe_error=excluded.safe_error,updated_at=excluded.updated_at";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$p",postingNumber);cmd.Parameters.AddWithValue("$t",taskId);cmd.Parameters.AddWithValue("$st",status);cmd.Parameters.AddWithValue("$e",safeError);cmd.Parameters.AddWithValue("$at",now.ToString("O"));cmd.ExecuteNonQuery();
+        return GetOrCreateOzonLabelJob(store,postingNumber);
     }
 }
