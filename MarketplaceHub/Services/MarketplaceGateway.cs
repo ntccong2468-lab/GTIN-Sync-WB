@@ -31,13 +31,7 @@ public sealed partial class MarketplaceGateway
 
     public async Task<IReadOnlyList<ProductRow>> SyncProductsAsync(StoreProfile s, CancellationToken ct = default)
     {
-        return s.Marketplace switch
-        {
-            Marketplace.Wildberries => await WbProducts(s, ct),
-            Marketplace.Ozon => await OzonProducts(s, ct),
-            Marketplace.Yandex => await YandexProducts(s, ct),
-            _ => Array.Empty<ProductRow>()
-        };
+        return await ReadAllCatalogProductsAsync(s,ct);
     }
 
     private async Task<IReadOnlyList<ProductRow>> WbProducts(StoreProfile s, CancellationToken ct)
@@ -1759,7 +1753,7 @@ public sealed partial class MarketplaceGateway
                         if (id.Length > 0 && statuses.Length > 0 && statuses.All(x =>
                                 x.Equals("accepted", StringComparison.OrdinalIgnoreCase) ||
                                 x.Equals("passed", StringComparison.OrdinalIgnoreCase) ||
-                                x.Equals("success", StringComparison.OrdinalIgnoreCase)))
+                                x.Equals("success", StringComparison.OrdinalIgnoreCase) || x.Equals("valid",StringComparison.OrdinalIgnoreCase)))
                             confirmed.Add((productId, id));
                     }
                 foreach (var pair in obj) Walk(pair.Value);
@@ -1902,7 +1896,7 @@ public sealed partial class MarketplaceGateway
     public async Task<PriceUpdateResult> CreateShipmentAsync(
         StoreProfile store,
         IReadOnlyList<FbsOrderRow> orders,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string? existingSupplyId = null, string? name = null, IProgress<string>? progress = null)
     {
         try
         {
@@ -1921,40 +1915,7 @@ public sealed partial class MarketplaceGateway
                 return new PriceUpdateResult(true, string.Join(Environment.NewLine, messages));
             }
 
-            var ids = orders
-                .Select(x => long.TryParse(x.ExternalOrderId, out var id) ? id : 0)
-                .Where(x => x > 0)
-                .Distinct()
-                .ToArray();
-            if (ids.Length == 0) return new PriceUpdateResult(false, "Không có WB order ID hợp lệ.");
-            if (ids.Length > 100) return new PriceUpdateResult(false, "WB chỉ cho thêm tối đa 100 đơn vào supply trong một request.");
-
-            using var create = await http.SendAsync(
-                Request(HttpMethod.Post, "https://marketplace-api.wildberries.ru/api/v3/supplies", store,
-                    JsonSerializer.Serialize(new { name = "MarketplaceHub " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") })), ct);
-            var createText = await create.Content.ReadAsStringAsync(ct);
-            Ensure(create, createText);
-
-            var supplyId = JsonNode.Parse(createText)?["id"]?.ToString()
-                           ?? JsonNode.Parse(createText)?["supplyId"]?.ToString();
-            if (string.IsNullOrWhiteSpace(supplyId))
-                return new PriceUpdateResult(false, "WB đã tạo supply nhưng không trả supplyId.");
-
-            using var add = await http.SendAsync(
-                Request(new HttpMethod("PATCH"),
-                    $"https://marketplace-api.wildberries.ru/api/marketplace/v3/supplies/{Uri.EscapeDataString(supplyId)}/orders",
-                    store,
-                    JsonSerializer.Serialize(new { orders = ids })), ct);
-            var addText = await add.Content.ReadAsStringAsync(ct);
-            if (!add.IsSuccessStatusCode)
-                return new PriceUpdateResult(false,
-                    $"Đã tạo supply {supplyId} nhưng không thêm được đơn. HTTP {(int)add.StatusCode}: {Short(addText)}",
-                    supplyId);
-
-            return new PriceUpdateResult(
-                true,
-                $"Đã tạo shipment {supplyId} và thêm {ids.Length} đơn. Các đơn đã chuyển sang confirm.",
-                supplyId);
+            return await CreateWbShipmentAsync(store, orders, existingSupplyId, name, ct, progress);
         }
         catch (Exception ex)
         {
@@ -1977,14 +1938,11 @@ public sealed partial class MarketplaceGateway
             if (string.IsNullOrWhiteSpace(code))
                 return new PriceUpdateResult(false, "Mã KIZ/SGTIN trống.");
 
-            using var res = await http.SendAsync(
-                Request(HttpMethod.Put,
-                    $"https://marketplace-api.wildberries.ru/api/v3/orders/{parsedId}/meta/sgtin",
-                    store,
-                    JsonSerializer.Serialize(new { sgtins = new[] { code.Trim() } })), ct);
-            var text = await res.Content.ReadAsStringAsync(ct);
-            if (!res.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"WB SGTIN HTTP {(int)res.StatusCode}: {Short(text)}");
+            await wbLabelGate.WaitAsync(ct).ConfigureAwait(false);
+            try {
+                await WbMarketplaceRequestAsync(store,HttpMethod.Put,$"/api/v3/orders/{parsedId}/meta/sgtin",
+                    JsonSerializer.Serialize(new {sgtins=new[]{code.Trim()}}),ct,null).ConfigureAwait(false);
+            } finally {wbLabelGate.Release();}
             return new PriceUpdateResult(true, "WB đã nhận mã KIZ/SGTIN cho đơn.", orderId);
         }
         catch (Exception ex)

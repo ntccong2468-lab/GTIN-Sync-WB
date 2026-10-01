@@ -88,3 +88,10 @@ public sealed record ZnakPipelineRow(
     DateTimeOffset UpdatedAt);
 
 public sealed record AuditRow(DateTimeOffset At, string Module, string Action, string Detail);
+
+public sealed record WbSupply(string Id, string Name, DateTimeOffset CreatedAt, bool Done)
+{
+    public override string ToString() => Id + " · " + Name + " · " + CreatedAt.ToOffset(TimeSpan.FromHours(3)).ToString("HH:mm");
+}
+public sealed record WbOrderStatus(string SupplierStatus, string WbStatus);
+public sealed record WbShipmentChoice(string? SupplyId, string Name);

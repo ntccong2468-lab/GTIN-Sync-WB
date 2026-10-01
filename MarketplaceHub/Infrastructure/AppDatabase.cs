@@ -5,7 +5,7 @@ using System.Text;
 
 namespace MarketplaceHub.Infrastructure;
 
-public sealed class AppDatabase
+public sealed partial class AppDatabase
 {
     public string DbPath { get; }
     private string ConnectionString => $"Data Source={DbPath}";
@@ -143,6 +143,9 @@ CREATE TABLE IF NOT EXISTS znak_pipeline(
 );";
         cmd.ExecuteNonQuery();
         EnsureZnakColumns(c);
+        InitializeWbShipmentTables(c);
+        InitializeMarketplaceFbsTables(c);
+        EnsureProductCatalogTables(c);
     }
 
     private static void EnsureZnakColumns(SqliteConnection c)
@@ -352,8 +355,10 @@ ON CONFLICT(store_id,external_order_id,sku) DO UPDATE SET
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
         using var cmd = c.CreateCommand();
-        cmd.CommandText = @"INSERT INTO kiz_pool(code,gtin,status,assigned_order,updated_at) VALUES($c,$g,$s,$o,$at)
-ON CONFLICT(code) DO UPDATE SET gtin=$g,status=$s,assigned_order=$o,updated_at=$at";
+        cmd.CommandText = @"INSERT INTO kiz_pool(code,gtin,status,assigned_order,updated_at) VALUES($c,$g,COALESCE((SELECT status FROM wb_kiz_reservations WHERE code=$c),(SELECT status FROM marketplace_kiz_reservations WHERE code=$c),$s),COALESCE((SELECT order_id FROM wb_kiz_reservations WHERE code=$c),(SELECT marketplace||':'||store_id||':'||order_id||':'||item_id||':'||unit_index FROM marketplace_kiz_reservations WHERE code=$c),$o),$at)
+ON CONFLICT(code) DO UPDATE SET gtin=CASE WHEN kiz_pool.status IN('RESERVED','ASSIGNED') THEN kiz_pool.gtin ELSE excluded.gtin END,
+status=CASE WHEN kiz_pool.status IN('RESERVED','ASSIGNED') THEN kiz_pool.status ELSE excluded.status END,
+assigned_order=CASE WHEN kiz_pool.status IN('RESERVED','ASSIGNED') THEN kiz_pool.assigned_order ELSE excluded.assigned_order END,updated_at=$at";
         cmd.Parameters.AddWithValue("$c", code);
         cmd.Parameters.AddWithValue("$g", gtin);
         cmd.Parameters.AddWithValue("$s", status);
@@ -656,7 +661,14 @@ ON CONFLICT(store_id,sku) DO UPDATE SET gtin=$g,stage=$st,external_order_id=$o,d
             h.Parameters.AddWithValue("$id", id);
             h.ExecuteNonQuery();
         }
-        foreach (var table in new[] { "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline" })
+        using(var owned=c.CreateCommand()) {
+            owned.Transaction=tx;owned.CommandText="DELETE FROM kiz_pool WHERE code IN(SELECT code FROM wb_kiz_reservations WHERE store_id=$id UNION SELECT code FROM marketplace_kiz_reservations WHERE store_id=$id)";
+            owned.Parameters.AddWithValue("$id",id);owned.ExecuteNonQuery();
+        }
+        using(var batches=c.CreateCommand()) {
+            batches.Transaction=tx;batches.CommandText="DELETE FROM marketplace_fbs_batch_orders WHERE batch_id IN(SELECT id FROM marketplace_fbs_batches WHERE store_id=$id)";batches.Parameters.AddWithValue("$id",id);batches.ExecuteNonQuery();
+        }
+        foreach (var table in new[] { "marketplace_fbs_batches", "marketplace_fbs_actions", "marketplace_kiz_reservations", "product_variants", "product_catalog_checkpoint", "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline", "wb_supply_orders", "wb_kiz_reservations" })
         {
             using var extra = c.CreateCommand();
             extra.Transaction = tx;

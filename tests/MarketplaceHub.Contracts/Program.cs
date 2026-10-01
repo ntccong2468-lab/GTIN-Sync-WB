@@ -5,8 +5,10 @@ using System.Reflection;
 using System.Text;
 
 var failures = new List<string>();
+var checks=0;
 async Task Check(string name, Func<Task> test)
 {
+    checks++;
     try { await test(); Console.WriteLine("PASS " + name); }
     catch (Exception ex) { failures.Add(name); Console.WriteLine("FAIL " + name + ": " + ex.Message); }
 }
@@ -242,7 +244,131 @@ await Check("WB invalid or pending KIZ decision blocks print preparation", async
         Expect(rejected,"Unvalidated KIZ was allowed to print.");
     }
 });
-Console.WriteLine($"{22 - failures.Count}/22 contracts passed");
+await Check("WB 119 selected orders are added to one shipment in two batches", async () =>
+{
+    var members=new HashSet<long>();var creates=0;var batches=new List<int>();
+    var api=Api(r=>
+    {
+        var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/status")) {
+            var ids=System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray();
+            return Json(System.Text.Json.JsonSerializer.Serialize(new{orders=ids.Select(x=>new{id=x!.GetValue<long>(),supplierStatus=members.Contains(x.GetValue<long>())?"confirm":"new",wbStatus="waiting"})}));
+        }
+        if(r.Method==HttpMethod.Post && path.EndsWith("/supplies")){creates++;return Json("{\"id\":\"WB-GI-TEST\"}",HttpStatusCode.Created);}
+        if(r.Method.Method=="PATCH"){
+            var ids=System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x=>x!.GetValue<long>()).ToArray();
+            batches.Add(ids.Length);foreach(var id in ids)members.Add(id);return Json("",HttpStatusCode.NoContent);
+        }
+        if(path.EndsWith("/order-ids"))return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+        return Json("{\"id\":\"WB-GI-TEST\",\"done\":false,\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}");
+    },(_,_)=>Task.CompletedTask);
+    var orders=Enumerable.Range(1,119).Select(id=>new FbsOrderRow(1,Marketplace.Wildberries,id.ToString(),"A","A",1,"new",false,"{}")).ToArray();
+    var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),orders);
+    Expect(result.Success && creates==1 && batches.SequenceEqual(new[]{100,19}) && members.Count==119,"119-order shipment was rejected, recreated or incomplete: "+result.Message);
+});
+await Check("WB invalid or foreign-store order IDs never create a shipment", async () =>
+{
+    foreach(var bad in new[]{new FbsOrderRow(1,Marketplace.Wildberries,"invalid","A","A",1,"new",false,"{}"),new FbsOrderRow(2,Marketplace.Wildberries,"2","A","A",1,"new",false,"{}")}) {
+        var creates=0;
+        var api=Api(r=> {if(r.Method==HttpMethod.Post){creates++;return Json("{\"id\":\"WB-GI-TEST\"}",HttpStatusCode.Created);}return Json("",HttpStatusCode.NoContent);},(_,_)=>Task.CompletedTask);
+        var valid=new FbsOrderRow(1,Marketplace.Wildberries,"1","A","A",1,"new",false,"{}");
+        var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),new[]{valid,bad});
+        Expect(!result.Success && creates==0,"Invalid/foreign ID was silently dropped or added to this shop.");
+    }
+});
+
+await Check("WB today shipment picker paginates and uses Moscow day", async () =>
+{
+    var calls=0;var now=new DateTimeOffset(2026,10,1,21,30,0,TimeSpan.Zero);
+    var api=Api(r=>{
+        calls++;
+        return calls==1 ? Json("{\"next\":42,\"supplies\":[{\"id\":\"TODAY\",\"name\":\"today\",\"done\":false,\"createdAt\":\"2026-10-01T21:05:00Z\"},{\"id\":\"YESTERDAY\",\"done\":false,\"createdAt\":\"2026-10-01T20:59:00Z\"}]}")
+            : Json("{\"next\":0,\"supplies\":[{\"id\":\"CLOSED\",\"done\":true,\"createdAt\":\"2026-10-01T22:00:00Z\"},{\"id\":\"TODAY-2\",\"done\":false,\"createdAt\":\"2026-10-01T21:10:00Z\"}]}");
+    },(_,_)=>Task.CompletedTask);
+    var result=await api.GetWbTodaySuppliesAsync(Store(Marketplace.Wildberries),now:now);
+    Expect(calls==2 && result.Select(x=>x.Id).ToHashSet().SetEquals(new[]{"TODAY","TODAY-2"}),"Closed/yesterday supplies included or pagination stopped early.");
+});
+await Check("WB existing shipment is rechecked before adding and never recreated", async () =>
+{
+    foreach(var invalid in new[]{false,true}) {
+        var creates=0;var adds=0;var members=new HashSet<long>();
+        var api=Api(r=>{
+            var path=r.RequestUri!.AbsolutePath;
+            if(path.EndsWith("/status"))return Json("{\"orders\":[{\"id\":1,\"supplierStatus\":\""+(members.Contains(1)?"confirm":"new")+"\",\"wbStatus\":\"waiting\"}]}");
+            if(r.Method==HttpMethod.Post){creates++;return Json("{\"id\":\"NEW\"}",HttpStatusCode.Created);}
+            if(r.Method.Method=="PATCH"){adds++;members.Add(1);return Json("",HttpStatusCode.NoContent);}
+            if(path.EndsWith("/order-ids"))return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+            return Json("{\"id\":\"EXISTING\",\"done\":"+(invalid?"true":"false")+",\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}");
+        },(_,_)=>Task.CompletedTask);
+        var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),new[]{new FbsOrderRow(1,Marketplace.Wildberries,"1","A","A",1,"new",false,"{}")},existingSupplyId:"EXISTING");
+        Expect(result.Success==!invalid && creates==0 && adds==(invalid?0:1),"Existing supply was recreated or closed supply was used.");
+    }
+});
+await Check("WB partial second batch failure keeps the shipment and first hundred orders", async () =>
+{
+    var creates=0;var adds=0;var members=new HashSet<long>();
+    var api=Api(r=>{
+        var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/status")){var ids=System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray();return Json(System.Text.Json.JsonSerializer.Serialize(new{orders=ids.Select(x=>new{id=x!.GetValue<long>(),supplierStatus="new",wbStatus="waiting"})}));}
+        if(r.Method==HttpMethod.Post){creates++;return Json("{\"id\":\"PARTIAL\"}",HttpStatusCode.Created);}
+        if(r.Method.Method=="PATCH") {
+            adds++;if(adds==2)return Json("{\"message\":\"warehouse mismatch\"}",HttpStatusCode.Conflict);
+            foreach(var x in System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray())members.Add(x!.GetValue<long>());
+            return Json("",HttpStatusCode.NoContent);
+        }
+        return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+    },(_,_)=>Task.CompletedTask);
+    var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),Enumerable.Range(1,119).Select(id=>new FbsOrderRow(1,Marketplace.Wildberries,id.ToString(),"A","A",1,"new",false,"{}")).ToArray());
+    Expect(!result.Success && result.ExternalTaskId=="PARTIAL" && creates==1 && adds==2 && members.Count==100 && result.Message.Contains("100/119"),"Partial shipment lost its checkpoint or continued after failure.");
+});
+await Check("WB empty membership readback blocks shipment success", async () =>
+{
+    var api=Api(r=>r.RequestUri!.AbsolutePath.EndsWith("/status")?Json("{\"orders\":[{\"id\":1,\"supplierStatus\":\"new\",\"wbStatus\":\"waiting\"}]}"):
+        r.Method==HttpMethod.Post?Json("{\"id\":\"READBACK\"}",HttpStatusCode.Created):r.Method.Method=="PATCH"?Json("",HttpStatusCode.NoContent):Json("{\"orderIds\":[]}"),(_,_)=>Task.CompletedTask);
+    var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),new[]{new FbsOrderRow(1,Marketplace.Wildberries,"1","A","A",1,"new",false,"{}")});
+    Expect(!result.Success && result.ExternalTaskId=="READBACK","PATCH acceptance was mistaken for verified shipment membership.");
+});
+await Check("WB cancelled order never creates or modifies a shipment", async () =>
+{
+    var mutations=0;var api=Api(r=>{if(r.Method!=HttpMethod.Get && !r.RequestUri!.AbsolutePath.EndsWith("/status"))mutations++;return Json("{\"orders\":[{\"id\":1,\"supplierStatus\":\"new\",\"wbStatus\":\"canceled\"}]}");},(_,_)=>Task.CompletedTask);
+    var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),new[]{new FbsOrderRow(1,Marketplace.Wildberries,"1","A","A",1,"new",false,"{}")});
+    Expect(!result.Success && mutations==0,"Cancelled order was packed.");
+});
+await Check("WB retry resumes confirmed orders already in the selected supply", async () =>
+{
+    var mutations=0;var api=Api(r=>{
+        var p=r.RequestUri!.AbsolutePath;
+        if(p.EndsWith("/status"))return Json("{\"orders\":[{\"id\":1,\"supplierStatus\":\"confirm\",\"wbStatus\":\"waiting\"}]}");
+        if(r.Method!=HttpMethod.Get)mutations++;
+        if(p.EndsWith("/order-ids"))return Json("{\"orderIds\":[1]}");
+        return Json("{\"id\":\"RETRY\",\"done\":false,\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}");
+    },(_,_)=>Task.CompletedTask);
+    var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),new[]{new FbsOrderRow(1,Marketplace.Wildberries,"1","A","A",1,"confirm",false,"{}")},existingSupplyId:"RETRY");
+    Expect(result.Success && mutations==0,"Retry moved/readded confirmed orders or created another supply.");
+});
+
+await Check("WB final shipment membership cannot lose an earlier batch", async () =>
+{
+    var batchNo=0;var members=new HashSet<long>();
+    var api=Api(r=>{
+        var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/status")) {
+            var ids=System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray();
+            return Json(System.Text.Json.JsonSerializer.Serialize(new{orders=ids.Select(x=>new{id=x!.GetValue<long>(),supplierStatus=batchNo==0?"new":"confirm",wbStatus="waiting"})}));
+        }
+        if(r.Method==HttpMethod.Post)return Json("{\"id\":\"LOST-BATCH\"}",HttpStatusCode.Created);
+        if(r.Method.Method=="PATCH") {
+            batchNo++;members.Clear();
+            foreach(var x in System.Text.Json.Nodes.JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray())members.Add(x!.GetValue<long>());
+            return Json("",HttpStatusCode.NoContent);
+        }
+        return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+    },(_,_)=>Task.CompletedTask);
+    var result=await api.CreateShipmentAsync(Store(Marketplace.Wildberries),Enumerable.Range(1,119).Select(id=>new FbsOrderRow(1,Marketplace.Wildberries,id.ToString(),"A","A",1,"new",false,"{}")).ToArray());
+    Expect(!result.Success && result.ExternalTaskId=="LOST-BATCH" && batchNo==2,"A shipment missing the first hundred orders was reported successful.");
+});
+
+Console.WriteLine($"{checks - failures.Count}/{checks} contracts passed");
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;
 
 sealed class FixtureHttp(Func<HttpRequestMessage, HttpResponseMessage> respond) : HttpMessageHandler

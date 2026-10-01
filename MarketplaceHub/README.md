@@ -1,4 +1,4 @@
-# Marketplace Hub 0.7.2
+# Marketplace Hub 0.7.3
 
 Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh, nền mint, card trắng bo tròn và bố cục báo cáo trực quan.
 
@@ -27,7 +27,7 @@ Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh
 
 ## Bộ cài
 
-`MarketplaceHub-Setup-0.7.2-win-x64.exe`
+`MarketplaceHub-Setup-0.7.3-win-x64.exe`
 
 ## Sửa sticker và quy trình in WB 0.7.2
 
@@ -59,8 +59,30 @@ Bản 0.7.0 tái cấu trúc giao diện theo dashboard sáng xanh: sidebar xanh
 
 ## Kiểm tra và giới hạn
 
-Các dự án `tests/MarketplaceHub.Contracts`, `tests/MarketplaceHub.Print` và `tests/MarketplaceHub.UI` dùng dữ liệu giả lập, không gọi tài khoản bán hàng. CI Windows chạy cả ba trước khi đóng bộ cài; EXE đã publish và EXE sau cài đặt đều phải qua self-test và khởi động giao diện.
+Các dự án `tests/MarketplaceHub.Contracts`, `tests/MarketplaceHub.Fbs`, `tests/MarketplaceHub.ProductSync`, `tests/MarketplaceHub.FbsState`, `tests/MarketplaceHub.Print` và `tests/MarketplaceHub.UI` dùng dữ liệu giả lập, không gọi tài khoản bán hàng. CI Windows chạy tất cả trước khi đóng bộ cài; EXE đã publish và EXE sau cài đặt đều phải qua self-test và khởi động giao diện.
 
 Báo cáo quyết toán trực tiếp hiện hỗ trợ WB. Ozon / Yandex hiển thị dữ liệu sản phẩm, đơn hàng và lịch sử đồng bộ; chưa có adapter quyết toán cho hai sàn này.
 
 WB in bộ trang trực tiếp qua máy in được chọn; PDF giữ để xem trước/in lại. Ozon/Yandex vẫn dùng lệnh Print của ứng dụng PDF mặc định trên Windows. Kiểm thử CI không xác nhận bản in vật lý hay quyền/token API thật của người bán. KIZ bắt buộc cần GTIN hợp lệ và mã sẵn có, hoặc cấu hình SUZ / chứng thư CryptoPro để mua mã.
+
+## Shipment WB và tự gắn KIZ 0.7.3
+
+Chọn tất cả đơn đang lọc ở tab Đơn mới sẽ hiện hai nút: Tạo shipment mới và Thêm shipment hôm nay. Dialog chỉ đưa shipment đang mở của cửa hàng này, cùng ngày Moscow. Đóng đơn hoặc xuất nhãn từ đơn mới đều đi qua dialog này; không lấy sticker khi đơn còn new.
+
+Một lựa chọn119 đơn tạo một shipment, thêm theo lô100+19. App đọc lại membership và trạng thái confirm trước KIZ. Thất bại một phần vẫn giữ supplyId để mở/tiếp tục từ Shipment hôm nay; không tự tạo lại lô. Sau khi thêm đơn, app dùng GTIN của đúng size/chrtId/SKU, giữ riêng KIZ theo cửa hàng/đơn trước khi gửi và đọc lại metadata trước khi báo xanh. Mất kết nối sau PUT sẽ giữ mã cũ để đối soát trên lần thử tiếp theo. Nhập lại file KIZ không biến mã RESERVED/ASSIGNED thành mã sẵn sàng.
+
+Trang Supply hiển thị mọi đơn thực có trong lô, ảnh, thông tin sản phẩm, KIZ đã xác nhận, Xuất nhãn dán và nút giao hàng riêng. Export tạo PDF/phiếu A4 rồi mở xem trước; chỉ gửi máy in khi seller nhấp In. Lô không đủ dữ liệu đơn/KIZ sẽ dừng và báo cụ thể. Các bảng SQLite bổ sung giữ membership và reservation; không xóa dữ liệu cũ khi nâng cấp.
+
+Kiểm thử bằng API fixture và WindowsCI; không dùng token seller thật hoặc máy in vật lý.
+
+## Nhận đơn Ozon / Yandex và đồng bộ sản phẩm 0.7.3
+
+Chọn đơn mới → Nhận và đóng gói → tạo lượt mới hoặc thêm vào lượt hôm nay. Lượt này nhóm các posting/order đã có trên sàn; không tạo Supply WB cho Ozon/Yandex. App đọc lại toàn bộ hàng, kiểm tra trạng thái/hủy và barcode đúng SKU, giữ một KIZ cho mỗi đơn vị bắt buộc, gửi đầy đủ phân bổ rồi chờ sàn xác nhận đóng trước khi xuất PDF. Ozon cần cả `ship_available` và trạng thái chấp nhận của từng exemplar; mã đầy đủ gồm dấu GS và đuôi mật mã được giữ nguyên.
+
+Yandex giữ mọi item và số lượng với `allowRemove=false`. Khi sàn chỉ trả mã hộp mà chưa trả phân bố hàng, seller phải xác nhận layout hộp thực tế; ứng dụng lưu layout cho lần thử tiếp theo. Ozon multibox hoặc tích hợp giao hàng ngoài Ozon được báo rõ để xử lý trên seller portal, tránh tự gộp sai thành một gói.
+
+Mất phản hồi khi gửi KIZ vẫn giữ mã cho từng đơn vị. Lệnh ship/READY_TO_SHIP được ghi trước khi gửi; khi kết quả chưa rõ, tạo lượt mới cũng không gửi lại lệnh đó. Ở tab Đang đóng gói/Đang giao, nút **Lượt đóng hàng** mở lượt đã lưu, kể cả lượt cũ chưa hoàn tất; không thêm đơn mới vào lượt khác ngày Moscow.
+
+Nhãn sàn giữ PDF chính thức riêng Ozon/Yandex; KIZ được xuất thành PDF 58×40, một trang mỗi đơn vị. Tự xuất lượt mới bỏ qua đơn đã có nhãn; nút Xuất nhãn cho phép xuất/in lại có chủ ý. Việc in dùng trình xem PDF trên Windows.
+
+Trang **Đồng bộ sản phẩm** hỗ trợ cả ba sàn: chạy/tiếp tục/tạm dừng, checkpoint theo cửa hàng/tài khoản, nhịp gọi và retry quota trên đúng cursor, tìm kiếm/lọc thiếu GTIN, 50 biến thể mỗi trang. Catalog lưu tất cả size/barcode của WB, ảnh thuộc đúng SKU, mã offer Yandex ổn định khi marketSku thay đổi và giữ giá cũ nếu API chưa trả giá mới. Trang cuối không được xác nhận hoàn tất khi còn thiếu sản phẩm theo total; lỗi không xóa catalog hay mapping đã lưu. Barcode sai checksum hoặc nhiều GTIN chưa phân biệt được sẽ chặn cấp KIZ để seller đối soát.

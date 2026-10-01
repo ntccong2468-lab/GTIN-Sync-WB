@@ -118,6 +118,7 @@ public sealed partial class MainForm : Form
 
         AddSide(menu, "▦  Báo cáo", ShowReport);
         AddSide(menu, "↻  Đồng bộ dữ liệu", ShowSyncCenter);
+        AddSide(menu, "▦  Đồng bộ sản phẩm", ShowProductSynchronization);
         AddSide(menu, "₽  Thay đổi giá", ShowPriceTools);
         AddSide(menu, "⇄  Sao chép bài đăng", ShowCopyListing);
         AddSide(menu, "▱  Đóng hàng FBS", ShowFbs);
@@ -957,6 +958,12 @@ public sealed partial class MainForm : Form
         selectAll.Margin = new Padding(10, 14, 0, 0);
         actions.Controls.Add(selectAll);
         var changingSelectAll = false;
+        var loadingFbsRows=false;
+        var shipmentChoices=new FlowLayoutPanel {Left=4,Top=250,Height=52,Width=900,BackColor=C.Main,Visible=false,WrapContents=false};
+        var newSupply=ActionButton("Tạo shipment mới",180,true);
+        var addSupply=ActionButton("Thêm shipment hôm nay",230);
+        var selectionCount=new Label{AutoSize=true,ForeColor=C.Muted,Margin=new Padding(15,14,0,0)};
+        shipmentChoices.Controls.Add(newSupply);shipmentChoices.Controls.Add(addSupply);shipmentChoices.Controls.Add(selectionCount);work.Controls.Add(shipmentChoices);
 
         var card = CardPanel();
         card.Left = 4; card.Top = 260;
@@ -966,6 +973,19 @@ public sealed partial class MainForm : Form
 
         var grid = FbsGrid(); grid.Dock = DockStyle.Fill; card.Controls.Add(grid);
         string mode = "new";
+        void UpdateShipmentChoices()
+        {
+            var count=CheckedOrders(grid).Select(x=>x.ExternalOrderId).Distinct().Count();
+            var wb=CurrentStore()?.Marketplace==Marketplace.Wildberries;
+            shipmentChoices.Visible=mode=="new" && count>0;
+            newSupply.Text=wb?"Tạo shipment mới":"Nhận và đóng gói đơn";addSupply.Visible=wb;
+            selectionCount.Text=$"{count} đơn đã chọn";
+            createShipment.Text=mode!="new"?(wb?"Shipment hôm nay":"Lượt đóng hàng"):"Đóng đơn FBS";
+            createShipment.Visible=true;
+            shipmentChoices.Top=actions.Bottom+4;shipmentChoices.Width=actions.Width;
+            card.Top=shipmentChoices.Visible?shipmentChoices.Bottom+8:actions.Bottom+12;
+            card.Height=Math.Max(260,work.ClientSize.Height-card.Top-30);
+        }
 
         void SetMode(string value)
         {
@@ -983,6 +1003,8 @@ public sealed partial class MainForm : Form
 
         void LoadRows()
         {
+            loadingFbsRows=true;
+            try {
             grid.EndEdit();
             var checkedKeys = CheckedOrders(grid).Select(o => (o.ExternalOrderId, o.Sku)).ToHashSet();
             DisposeImages(card);
@@ -1009,26 +1031,42 @@ public sealed partial class MainForm : Form
                 var price = product?.Price is null ? "" : $"{product.Price:0.##} ₽";
                 var labelType = store.Marketplace switch
                 {
-                    Marketplace.Wildberries => "WB · PNG 58×40",
+                    Marketplace.Wildberries => "WB · 58×40 + KIZ",
                     Marketplace.Ozon => "Ozon · PDF gốc",
                     Marketplace.Yandex => "Yandex · A9 58×40",
                     _ => store.Marketplace.ToString()
                 };
-                var row = grid.Rows.Add(checkedKeys.Contains((order.ExternalOrderId, order.Sku)), orderText, null, productText, labelType, price);
+                var row = grid.Rows.Add(selectAll.Checked || checkedKeys.Contains((order.ExternalOrderId, order.Sku)), orderText, null, productText, labelType, price);
                 grid.Rows[row].Tag = order;
                 grid.Rows[row].Height = 98;
                 var image = ProductImageUrl(product);
                 if (!string.IsNullOrWhiteSpace(image)) _ = LoadImageAsync(grid, row, 2, image);
             }
+            } finally {loadingFbsRows=false;UpdateShipmentChoices();}
         }
 
         selectAll.CheckedChanged += (_, _) =>
         {
             if (changingSelectAll) return;
-            foreach (DataGridViewRow row in grid.Rows)
-                if (!row.IsNewRow) row.Cells[0].Value = selectAll.Checked;
-            grid.EndEdit();
+            var check=selectAll.Checked;
+            changingSelectAll=true;
+            try {
+                foreach (DataGridViewRow row in grid.Rows)
+                    if (!row.IsNewRow) row.Cells[0].Value = check;
+                grid.EndEdit();
+            } finally {changingSelectAll=false;}
+            UpdateShipmentChoices();
         };
+
+        grid.CurrentCellDirtyStateChanged+=(_,_)=>{if(grid.IsCurrentCellDirty)grid.CommitEdit(DataGridViewDataErrorContexts.Commit);};
+        grid.CellValueChanged+=(_,e)=> {
+            if(loadingFbsRows || changingSelectAll || e.ColumnIndex!=0)return;
+            changingSelectAll=true;
+            selectAll.Checked=grid.Rows.Count>0 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true);
+            changingSelectAll=false;UpdateShipmentChoices();
+        };
+        newSupply.Click+=async(_,_)=>{var store=CurrentStore();if(store is null)return;if(store.Marketplace==Marketplace.Wildberries)await BeginWbShipmentAsync(store,CheckedOrders(grid),kizOption.Checked,pageToken);else await BeginMarketplaceFbsAsync(store,CheckedOrders(grid),pageToken,kizOption.Checked);};
+        addSupply.Click+=async(_,_)=>{var store=CurrentStore();if(store is not null)await BeginWbShipmentAsync(store,CheckedOrders(grid),kizOption.Checked,pageToken,true);};
 
         newTab.Click += (_, _) => SetMode("new");
         packTab.Click += (_, _) => SetMode("pack");
@@ -1054,19 +1092,11 @@ public sealed partial class MainForm : Form
         {
             var store = CurrentStore(); if (store is null) return;
             var selected = CheckedOrders(grid);
+            if(mode!="new"){if(store.Marketplace==Marketplace.Wildberries)await OpenTodayWbSupplyAsync(store,pageToken);else OpenMarketplaceBatch(store);return;}
             if (selected.Count == 0) { ShowInfo("Hãy đánh dấu ít nhất một đơn mới."); return; }
+            if(store.Marketplace==Marketplace.Wildberries){await BeginWbShipmentAsync(store,selected,kizOption.Checked,pageToken);return;}
 
-            createShipment.Enabled = false;
-            var result = await CreateShipmentWithKizAsync(store, selected, kizOption.Checked);
-            if (pageToken.IsCancellationRequested) return;
-            createShipment.Enabled = true;
-            ShowInfo(result.Message);
-            if (result.Success)
-            {
-                await app.SyncOrdersAsync(store);
-                if (pageToken.IsCancellationRequested) return;
-                SetMode("pack");
-            }
+            await BeginMarketplaceFbsAsync(store,selected,pageToken,kizOption.Checked);
         };
 
         printLabels.Click += async (_, _) =>
@@ -1082,39 +1112,19 @@ public sealed partial class MainForm : Form
             if (store.Marketplace == Marketplace.Wildberries)
             {
                 printLabels.Enabled = false;
-                try { await PrepareWbPrintAsync(store, selected, includeKiz, pageToken); }
+                try {
+                    if(selected.Any(x=>IsNew(x.Status)))await BeginWbShipmentAsync(store,selected,includeKiz,pageToken);
+                    else {
+                        var supplies=selected.Select(x=>app.Db.FindWbSupplyForOrder(store.Id,x.ExternalOrderId)??SupplyIdFrom(x)).Distinct().ToArray();
+                        if(supplies.Length==1 && !string.IsNullOrWhiteSpace(supplies[0]))await ExportWbSupplyAsync(store,supplies[0],pageToken);
+                        else await OpenTodayWbSupplyAsync(store,pageToken);
+                    }
+                }
                 finally { if (!printLabels.IsDisposed) printLabels.Enabled = true; }
                 return;
             }
 
-            printLabels.Enabled = false;
-            var errors = new List<string>();
-            var printed = 0;
-            foreach (var order in selected)
-            {
-                var label = await app.Api.DownloadLabelAsync(store, order.ExternalOrderId, pageToken);
-                if (pageToken.IsCancellationRequested) return;
-                app.Db.Audit("In nhãn", label.Success ? "Đã tải" : "Lỗi", $"{order.ExternalOrderId}:{label.Message}");
-                if (!label.Success || string.IsNullOrWhiteSpace(label.FilePath))
-                {
-                    errors.Add($"{order.ExternalOrderId}: {label.Message}");
-                    continue;
-                }
-                if (PrintLabelFile(store.Marketplace, label.FilePath, out var printError)) printed++;
-                else { errors.Add($"{order.ExternalOrderId}: {printError}"); continue; }
-
-                if (includeKiz)
-                {
-                    foreach (var code in app.Db.Kiz().Where(x => x.Assigned.Equals(order.ExternalOrderId, StringComparison.OrdinalIgnoreCase)).Select(x => x.Code))
-                    {
-                        if (!PrintKizLabel(code, order.ExternalOrderId, store.Marketplace, out var kizError))
-                            errors.Add($"{order.ExternalOrderId} KIZ: {kizError}");
-                    }
-                }
-            }
-            printLabels.Enabled = true;
-            var summary = $"Đã gửi {printed}/{selected.Count} nhãn tới máy in.";
-            ShowInfo(errors.Count == 0 ? summary : summary + Environment.NewLine + string.Join(Environment.NewLine, errors));
+            await ExportMarketplaceFbsLabelsAsync(store,selected,pageToken);
         };
 
         SetWorkResize((_, _) => {
@@ -1125,7 +1135,7 @@ public sealed partial class MainForm : Form
             clear.Left = category.Right + 10;
             actions.Width = available;
             actions.Height = available < 1000 ? 100 : 52;
-            card.Top = actions.Bottom + 12;
+            UpdateShipmentChoices();
             card.Width = available;
             card.Height = Math.Max(260, work.ClientSize.Height - card.Top - 30);
             var compact = available < 900;
@@ -1143,6 +1153,11 @@ public sealed partial class MainForm : Form
 
     private void ShowFbsSupplyDetail(FbsOrderRow order, string? supplyOverride = null)
     {
+        var wbStore=CurrentStore();
+        if(wbStore?.Marketplace==Marketplace.Wildberries) {
+            var known=supplyOverride??app.Db.FindWbSupplyForOrder(wbStore.Id,order.ExternalOrderId)??SupplyIdFrom(order);
+            if(!string.IsNullOrWhiteSpace(known)){_=OpenWbSupplyAsync(wbStore,known,pageCts.Token);return;}
+        }
         ClearWork();
         var pageToken = pageCts.Token;
         activePage = ShowFbs;
@@ -1166,21 +1181,14 @@ public sealed partial class MainForm : Form
             if (store.Marketplace == Marketplace.Wildberries)
             {
                 print.Enabled = false;
-                try { await PrepareWbPrintAsync(store, new[] { order }, order.NeedsKiz, pageToken); }
+                try {
+                    if(IsNew(order.Status))await BeginWbShipmentAsync(store,new[]{order},true,pageToken);
+                    else ShowInfo("Hãy mở shipment của đơn trước khi xuất nhãn.");
+                }
                 finally { if (!print.IsDisposed) print.Enabled = true; }
                 return;
             }
-            print.Enabled = false;
-            var result = await app.Api.DownloadLabelAsync(store, order.ExternalOrderId, pageToken);
-            app.Db.Audit("In nhãn", result.Success ? "Đã tải" : "Lỗi", $"{order.ExternalOrderId}:{result.Message}");
-            if (pageToken.IsCancellationRequested || print.IsDisposed) return;
-            print.Enabled = true;
-            if (!result.Success || string.IsNullOrWhiteSpace(result.FilePath)) { ShowInfo(result.Message); return; }
-
-            if (PrintLabelFile(store.Marketplace, result.FilePath, out var error))
-                ShowInfo($"Đã gửi nhãn {MarketplaceName(store.Marketplace)} tới máy in mặc định.");
-            else
-                ShowInfo($"Đã tải nhãn nhưng chưa in được: {error}\nFile: {result.FilePath}");
+            await ExportMarketplaceFbsLabelsAsync(store,new[]{order},pageToken);
         };
         work.Controls.Add(print);
 
@@ -1228,6 +1236,10 @@ public sealed partial class MainForm : Form
         if (!move.Enabled) move.Text = "Đơn đã đóng gói";
         move.Click += async (_, _) =>
         {
+            if(store.Marketplace==Marketplace.Wildberries && IsNew(order.Status)) {
+                await BeginWbShipmentAsync(store,new[]{order},true,pageToken);return;
+            }
+            if(store.Marketplace!=Marketplace.Wildberries){await BeginMarketplaceFbsAsync(store,new[]{order},pageToken);return;}
             move.Enabled = false;
             if (IsNew(order.Status))
             {
@@ -1327,125 +1339,28 @@ public sealed partial class MainForm : Form
         StoreProfile store,
         IReadOnlyList<FbsOrderRow> orders,
         bool useKiz,
-        CancellationToken operationToken)
+        CancellationToken operationToken, WbShipmentChoice? choice = null, IProgress<string>? progress = null)
     {
         if (orders.Count == 0) return new PriceUpdateResult(false, "Chưa chọn đơn hàng.");
 
         if (store.Marketplace == Marketplace.Wildberries)
         {
-            var requirements = new List<(FbsOrderRow Order, ProductRow Product, string Gtin)>();
-            foreach (var order in orders.Where(x => x.NeedsKiz))
-            {
-                if (!useKiz)
-                    return new PriceUpdateResult(false, $"Đơn {order.ExternalOrderId} bắt buộc KIZ. Hãy bật “Tự động KIZ + in KIZ”.");
-
-                var product = FindProductForOrder(store, order);
-                if (product is null) return new PriceUpdateResult(false, $"Không tìm thấy sản phẩm local cho đơn {order.ExternalOrderId}.");
-                var gtin = AppServices.NormalizeGtin14(ProductMeta(product).Barcode);
-                if (string.IsNullOrWhiteSpace(gtin))
-                    return new PriceUpdateResult(false, $"Đơn {order.ExternalOrderId} cần KIZ nhưng {product.Sku} chưa có GTIN hợp lệ.");
-                requirements.Add((order, product, gtin));
-            }
-
-            foreach (var group in requirements.GroupBy(x => x.Gtin))
-            {
-                var first = group.First();
-                var ensured = await app.EnsureKizQuantityAsync(store.Id, first.Product.Sku, group.Key, group.Count(), operationToken);
-                if (!ensured.Ok) return new PriceUpdateResult(false, $"Không đủ KIZ cho GTIN {group.Key}: {ensured.Message}");
-            }
-
-            var shipment = await app.Api.CreateShipmentAsync(store, orders, operationToken);
-            if (!shipment.Success) return shipment;
-
-            var attachErrors = new List<string>();
-            foreach (var item in requirements)
-            {
-                var code = app.Db.FindAvailableKiz(item.Gtin);
-                if (string.IsNullOrWhiteSpace(code))
-                {
-                    attachErrors.Add($"{item.Order.ExternalOrderId}: không còn KIZ sẵn sàng cho {item.Gtin}");
-                    continue;
-                }
-
-                var attached = await app.Api.AttachWbSgtinAsync(store, item.Order.ExternalOrderId, code, operationToken);
-                if (!attached.Success) { attachErrors.Add($"{item.Order.ExternalOrderId}: {attached.Message}"); continue; }
-                app.Db.MarkKizAssigned(code, item.Order.ExternalOrderId);
-            }
-
-            if (attachErrors.Count > 0)
-                return new PriceUpdateResult(false,
-                    $"{shipment.Message}\nShipment đã tạo nhưng có lỗi gắn KIZ:\n{string.Join(Environment.NewLine, attachErrors)}",
-                    shipment.ExternalTaskId);
-
-            app.Db.Audit("FBS", "Tạo shipment", $"{shipment.ExternalTaskId}:{orders.Count}");
-            return new PriceUpdateResult(true,
-                requirements.Count == 0 ? shipment.Message : $"{shipment.Message} Đã gắn {requirements.Count} KIZ vào WB.",
-                shipment.ExternalTaskId);
+            if(choice is null)return new(false,"Hãy chọn tạo shipment mới hoặc thêm vào shipment hôm nay trước khi gắn KIZ.");
+            if(!useKiz && orders.Any(x=>x.NeedsKiz))return new(false,"Đơn bắt buộc KIZ. Hãy bật tự động KIZ trước khi đóng đơn.");
+            var shipment=await app.Api.CreateShipmentAsync(store,orders,operationToken,choice.SupplyId,choice.Name,progress);
+            if(string.IsNullOrWhiteSpace(shipment.ExternalTaskId))return shipment;
+            IReadOnlyList<FbsOrderRow> full;
+            try {full=await app.ReadWbSupplyOrdersAsync(store,shipment.ExternalTaskId,operationToken);}
+            catch(Exception ex){return new(false,shipment.Message+"\n"+ex.Message,shipment.ExternalTaskId);}
+            if(!shipment.Success)return shipment;
+            var selectedIds=orders.Select(x=>x.ExternalOrderId).ToHashSet(StringComparer.Ordinal);
+            if(!selectedIds.IsSubsetOf(full.Select(x=>x.ExternalOrderId)))
+                return new(false,"Shipment không còn đủ các đơn đã chọn. Chưa gắn KIZ hoặc xuất nhãn; đồng bộ và chọn lại shipment này.",shipment.ExternalTaskId);
+            var marked=await app.EnsureWbSupplyKizAsync(store,full,ResolveWbGtins(store,full),useKiz,operationToken,progress);
+            return new(marked.Success,shipment.Message+"\n"+marked.Message,shipment.ExternalTaskId);
         }
 
-        foreach (var orderGroup in orders.GroupBy(x => x.ExternalOrderId, StringComparer.OrdinalIgnoreCase))
-        {
-            var lines = orderGroup.ToList();
-            var codesByOffer = new Dictionary<string, IReadOnlyList<string>>(StringComparer.OrdinalIgnoreCase);
-            var codesToAssign = new List<string>();
-
-            if (lines.Any(x => x.NeedsKiz))
-            {
-                if (!useKiz)
-                    return new PriceUpdateResult(false, $"Đơn {orderGroup.Key} bắt buộc KIZ. Hãy bật “Tự động KIZ + in KIZ”.");
-
-                var needs = new List<(FbsOrderRow Order, ProductRow Product, string Gtin)>();
-                foreach (var line in lines.Where(x => x.NeedsKiz))
-                {
-                    var product = FindProductForOrder(store, line);
-                    if (product is null)
-                        return new PriceUpdateResult(false, $"Không tìm thấy sản phẩm {line.Sku} của đơn {orderGroup.Key}.");
-                    var gtin = AppServices.NormalizeGtin14(ProductMeta(product).Barcode);
-                    if (string.IsNullOrWhiteSpace(gtin))
-                        return new PriceUpdateResult(false, $"{line.Sku} cần KIZ nhưng chưa có GTIN hợp lệ.");
-                    needs.Add((line, product, gtin));
-                }
-
-                foreach (var gtinGroup in needs.GroupBy(x => x.Gtin))
-                {
-                    var required = gtinGroup.Sum(x => Math.Max(1, x.Order.Quantity));
-                    var first = gtinGroup.First();
-                    var ensured = await app.EnsureKizQuantityAsync(store.Id, first.Product.Sku, gtinGroup.Key, required, operationToken);
-                    if (!ensured.Ok) return new PriceUpdateResult(false, ensured.Message);
-
-                    var pool = app.Db.Kiz().Where(x => x.Gtin == gtinGroup.Key && x.Status == "AVAILABLE")
-                        .Select(x => x.Code).Distinct().Take(required).ToList();
-                    if (pool.Count < required) return new PriceUpdateResult(false, $"Kho KIZ không đủ cho GTIN {gtinGroup.Key}.");
-
-                    var offset = 0;
-                    foreach (var item in gtinGroup)
-                    {
-                        var qty = Math.Max(1, item.Order.Quantity);
-                        var slice = pool.Skip(offset).Take(qty).ToArray();
-                        offset += qty;
-                        codesByOffer[item.Order.Sku] = slice;
-                        codesToAssign.AddRange(slice);
-                    }
-                }
-            }
-
-            PriceUpdateResult preparation;
-            if (store.Marketplace == Marketplace.Ozon)
-                preparation = await app.Api.PrepareOzonKizAsync(store, orderGroup.Key, codesByOffer, operationToken);
-            else
-                preparation = await app.Api.PrepareYandexBoxesAsync(store, lines.First(), codesByOffer, operationToken);
-
-            if (!preparation.Success) return preparation;
-
-            foreach (var code in codesToAssign)
-                app.Db.MarkKizAssigned(code, orderGroup.Key);
-
-            var packed = await app.Api.PackOrderAsync(store, lines.First(), operationToken);
-            if (!packed.Success) return packed;
-        }
-
-        return new PriceUpdateResult(true,
-            $"Đã đóng {orders.Select(x => x.ExternalOrderId).Distinct(StringComparer.OrdinalIgnoreCase).Count()} đơn {MarketplaceName(store.Marketplace)}.");
+        return await app.PackMarketplaceFbsAsync(store,orders.Select(x=>x.ExternalOrderId),item=>ResolveMarketplaceGtin(store,item),useKiz,operationToken,progress);
     }
 
     private void ShowZnakRegistration()
@@ -2408,40 +2323,12 @@ public sealed partial class MainForm : Form
     {
         if (!pageProducts.TryGetValue(store.Id, out var products))
             pageProducts[store.Id] = products = app.Db.Products(store.Id);
-        var direct = products.FirstOrDefault(x => x.Sku.Equals(order.Sku, StringComparison.OrdinalIgnoreCase));
-        if (direct is not null) return direct;
-
-        try
-        {
-            var raw = JsonNode.Parse(order.RawJson);
-            var ids = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var key in new[] { "nmId", "nmID", "product_id", "sku", "article" })
-            {
-                var value = raw?[key]?.ToString();
-                if (!string.IsNullOrWhiteSpace(value)) ids.Add(value);
-            }
-            foreach (var value in raw?["skus"]?.AsArray() ?? new JsonArray())
-                if (value is not null) ids.Add(value.ToString());
-
-            var byId = products.FirstOrDefault(x => ids.Contains(x.ExternalId) || ids.Contains(x.Sku));
-            if (byId is not null) return byId;
-
-            return products.FirstOrDefault(p =>
-            {
-                var barcode = ProductMeta(p).Barcode;
-                return !string.IsNullOrWhiteSpace(barcode) && ids.Contains(barcode);
-            });
-        }
-        catch { return null; }
+        return ProductCatalog.ResolveOrder(store,order,products);
     }
 
     private string ProductImageUrl(ProductRow? product)
     {
-        if (product is null) return "";
-        var direct = NormalizeImageUrl(product.ImageUrl);
-        if (!string.IsNullOrWhiteSpace(direct)) return direct;
-        try { return FirstHttpImage(JsonNode.Parse(product.RawJson)); }
-        catch { return ""; }
+        return product is null ? "" : ProductCatalog.Image(product);
     }
 
     private static string NormalizeImageUrl(string? value)
@@ -2809,7 +2696,8 @@ public sealed partial class MainForm : Form
 
     private static string TranslateKizStatus(string s) => s switch
     {
-        "AVAILABLE" => "Sẵn sàng", "RESERVED" => "Đã giữ", "ASSIGNED" => "Đã gán",
+        "AVAILABLE" => "Sẵn sàng", "RESERVED" => "Đã giữ cho đơn, chờ WB xác nhận",
+        "ASSIGNED" => "Đã gán",
         "SHIPPED" => "Đã giao", "CONSUMED" => "Đã sử dụng", "INTRODUCED" => "Đã lưu thông",
         "INVALID" => "Không hợp lệ", "RETIRED" => "Đã ngừng", _ => s
     };

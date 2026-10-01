@@ -1,0 +1,125 @@
+using MarketplaceHub.Core;
+using Microsoft.Data.Sqlite;
+
+namespace MarketplaceHub.Infrastructure;
+
+public sealed record MarketplaceFbsBatch(string Id,long StoreId,string Name,DateTimeOffset CreatedAt,string Status);
+public sealed record MarketplaceUnitKiz(string ItemId,int Unit,string Gtin,string Code,string Status);
+
+public sealed partial class AppDatabase
+{
+    private static void InitializeMarketplaceFbsTables(SqliteConnection c)
+    {
+        using var cmd=c.CreateCommand();cmd.CommandText=@"
+CREATE TABLE IF NOT EXISTS marketplace_kiz_reservations(code TEXT PRIMARY KEY,store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,order_id TEXT NOT NULL,item_id TEXT NOT NULL,unit_index INTEGER NOT NULL,gtin TEXT NOT NULL,status TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(store_id,marketplace,order_id,item_id,unit_index));
+CREATE TABLE IF NOT EXISTS marketplace_fbs_batches(id TEXT PRIMARY KEY,store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL,status TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS marketplace_fbs_actions(store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,order_id TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(store_id,marketplace,order_id));
+CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,order_id TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',layout_json TEXT NOT NULL DEFAULT '',PRIMARY KEY(batch_id,order_id));";cmd.ExecuteNonQuery();
+    }
+
+    public MarketplaceFbsBatch CreateMarketplaceFbsBatch(StoreProfile store,IEnumerable<string> orderIds,string? existingId=null)
+    {
+        var ids=orderIds.Distinct(StringComparer.Ordinal).ToArray();if(ids.Length==0 && existingId is null)throw new InvalidOperationException("Chưa chọn đơn FBS.");
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();
+        MarketplaceFbsBatch batch;
+        if(existingId is null) {
+            var now=DateTimeOffset.UtcNow;var id=Guid.NewGuid().ToString("N");var name=store.Marketplace+" "+now.ToOffset(TimeSpan.FromHours(3)).ToString("yyyy-MM-dd HH:mm");
+            using var insert=c.CreateCommand();insert.Transaction=tx;insert.CommandText="INSERT INTO marketplace_fbs_batches VALUES($id,$s,$m,$n,$at,'OPEN')";
+            insert.Parameters.AddWithValue("$id",id);insert.Parameters.AddWithValue("$s",store.Id);insert.Parameters.AddWithValue("$m",store.Marketplace.ToString());insert.Parameters.AddWithValue("$n",name);insert.Parameters.AddWithValue("$at",now.ToString("O"));insert.ExecuteNonQuery();batch=new(id,store.Id,name,now,"OPEN");
+        } else {
+            using var read=c.CreateCommand();read.Transaction=tx;read.CommandText="SELECT name,created_at,status FROM marketplace_fbs_batches WHERE id=$id AND store_id=$s AND marketplace=$m";
+            read.Parameters.AddWithValue("$id",existingId);read.Parameters.AddWithValue("$s",store.Id);read.Parameters.AddWithValue("$m",store.Marketplace.ToString());
+            using var row=read.ExecuteReader();if(!row.Read())throw new InvalidOperationException("Lượt FBS không thuộc cửa hàng đang chọn.");
+            batch=new(existingId,store.Id,row.GetString(0),DateTimeOffset.Parse(row.GetString(1)),row.GetString(2));
+            if(ids.Length>0 && MarketplaceHub.Services.MarketplaceGateway.WbBusinessDay(batch.CreatedAt)!=MarketplaceHub.Services.MarketplaceGateway.WbBusinessDay(DateTimeOffset.UtcNow))throw new InvalidOperationException("Chỉ thêm đơn vào lượt FBS của hôm nay theo giờ Moscow.");
+        }
+        foreach(var id in ids) {
+            using var cmd=c.CreateCommand();cmd.Transaction=tx;cmd.CommandText="INSERT OR IGNORE INTO marketplace_fbs_batch_orders(batch_id,order_id,status) VALUES($b,$o,'PENDING')";cmd.Parameters.AddWithValue("$b",batch.Id);cmd.Parameters.AddWithValue("$o",id);cmd.ExecuteNonQuery();
+        }
+        tx.Commit();return batch;
+    }
+
+    public IReadOnlyList<MarketplaceFbsBatch> TodayMarketplaceFbsBatches(StoreProfile store)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT id,name,created_at,status FROM marketplace_fbs_batches WHERE store_id=$s AND marketplace=$m ORDER BY created_at DESC";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());var result=new List<MarketplaceFbsBatch>();
+        using var row=cmd.ExecuteReader();while(row.Read()) {var at=DateTimeOffset.Parse(row.GetString(2));if(MarketplaceHub.Services.MarketplaceGateway.WbBusinessDay(at)==MarketplaceHub.Services.MarketplaceGateway.WbBusinessDay(DateTimeOffset.UtcNow) || HasUnfinishedMarketplaceBatch(c,row.GetString(0)))result.Add(new(row.GetString(0),store.Id,row.GetString(1),at,row.GetString(3)));}return result;
+    }
+
+    private static bool HasUnfinishedMarketplaceBatch(SqliteConnection c,string id)
+    {using var cmd=c.CreateCommand();cmd.CommandText="SELECT COUNT(*) FROM marketplace_fbs_batch_orders WHERE batch_id=$b AND status NOT IN('PACKED','LABELS_READY')";cmd.Parameters.AddWithValue("$b",id);return Convert.ToInt64(cmd.ExecuteScalar())>0;}
+
+    public IReadOnlyList<(string Id,string Status,string Error,string Layout)> MarketplaceFbsBatchOrders(StoreProfile store,string batchId)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT o.order_id,o.status,o.error,o.layout_json FROM marketplace_fbs_batch_orders o JOIN marketplace_fbs_batches b ON b.id=o.batch_id WHERE b.id=$b AND b.store_id=$s AND b.marketplace=$m ORDER BY o.order_id";
+        cmd.Parameters.AddWithValue("$b",batchId);cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());var result=new List<(string,string,string,string)>();using var row=cmd.ExecuteReader();while(row.Read())result.Add((row.GetString(0),row.GetString(1),row.GetString(2),row.GetString(3)));return result;
+    }
+
+    public void SaveMarketplaceFbsOrder(StoreProfile store,string batchId,string orderId,string status,string error="",string? layout=null)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="UPDATE marketplace_fbs_batch_orders SET status=$status,error=$e,layout_json=COALESCE($layout,layout_json) WHERE batch_id=$b AND order_id=$o AND EXISTS(SELECT 1 FROM marketplace_fbs_batches WHERE id=$b AND store_id=$s AND marketplace=$m)";
+        cmd.Parameters.AddWithValue("$status",status);cmd.Parameters.AddWithValue("$e",error);cmd.Parameters.AddWithValue("$layout",(object?)layout??DBNull.Value);cmd.Parameters.AddWithValue("$b",batchId);cmd.Parameters.AddWithValue("$o",orderId);cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());if(cmd.ExecuteNonQuery()!=1)throw new InvalidOperationException("Đơn không thuộc lượt FBS này.");
+    }
+
+    public IReadOnlyList<MarketplaceUnitKiz> MarketplaceKizReservations(StoreProfile store,string orderId)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT item_id,unit_index,gtin,code,status FROM marketplace_kiz_reservations WHERE store_id=$s AND marketplace=$m AND order_id=$o ORDER BY item_id,unit_index";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());cmd.Parameters.AddWithValue("$o",orderId);var result=new List<MarketplaceUnitKiz>();using var r=cmd.ExecuteReader();while(r.Read())result.Add(new(r.GetString(0),r.GetInt32(1),r.GetString(2),r.GetString(3),r.GetString(4)));return result;
+    }
+
+    public string? ReserveMarketplaceKiz(StoreProfile store,string orderId,string itemId,int unit,string gtin,string? remoteCode=null)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();var owner=$"{store.Marketplace}:{store.Id}:{orderId}:{itemId}:{unit}";
+        using(var existing=c.CreateCommand()) {
+            existing.Transaction=tx;existing.CommandText="SELECT code,gtin FROM marketplace_kiz_reservations WHERE store_id=$s AND marketplace=$m AND order_id=$o AND item_id=$i AND unit_index=$u";
+            UnitParameters(existing,store,orderId,itemId,unit);using var row=existing.ExecuteReader();if(row.Read()) {
+                if(row.GetString(1)!=gtin || remoteCode is not null && MarketplaceHub.Services.MarketplaceFbsPayloads.NormalizeCode(row.GetString(0))!=MarketplaceHub.Services.MarketplaceFbsPayloads.NormalizeCode(remoteCode))throw new InvalidOperationException("Đơn vị hàng đã giữ KIZ/GTIN khác. Đối soát trước khi đổi mã.");
+                var retained=row.GetString(0);row.Close();ValidateMarketplaceKizOwner(c,tx,store,orderId,itemId,unit,gtin,retained);return retained;
+            }
+        }
+        var code=remoteCode;
+        if(code is null) {
+            using var select=c.CreateCommand();select.Transaction=tx;select.CommandText="SELECT code FROM kiz_pool WHERE gtin=$g AND status='AVAILABLE' AND assigned_order='' AND code NOT IN(SELECT code FROM wb_kiz_reservations) AND code NOT IN(SELECT code FROM marketplace_kiz_reservations) ORDER BY updated_at LIMIT 1";select.Parameters.AddWithValue("$g",gtin);code=select.ExecuteScalar()?.ToString();if(code is null)return null;
+        }
+        using(var conflict=c.CreateCommand()) {
+            conflict.Transaction=tx;conflict.CommandText="SELECT (SELECT COUNT(*) FROM wb_kiz_reservations WHERE code=$c)+(SELECT COUNT(*) FROM marketplace_kiz_reservations WHERE code=$c)+(SELECT COUNT(*) FROM kiz_pool WHERE code=$c AND (gtin!=$g OR status!='AVAILABLE' OR assigned_order!=''))";
+            conflict.Parameters.AddWithValue("$c",code);conflict.Parameters.AddWithValue("$g",gtin);if(Convert.ToInt64(conflict.ExecuteScalar())>0)throw new InvalidOperationException("KIZ thuộc đơn khác/cửa hàng khác hoặc chưa đối soát. Không ghi đè chủ sở hữu.");
+        }
+        using(var reserve=c.CreateCommand()) {
+            reserve.Transaction=tx;reserve.CommandText="INSERT INTO marketplace_kiz_reservations VALUES($c,$s,$m,$o,$i,$u,$g,'RESERVED',$at)";UnitParameters(reserve,store,orderId,itemId,unit);reserve.Parameters.AddWithValue("$c",code);reserve.Parameters.AddWithValue("$g",gtin);reserve.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));reserve.ExecuteNonQuery();
+        }
+        using(var update=c.CreateCommand()) {
+            update.Transaction=tx;update.CommandText="UPDATE kiz_pool SET status='RESERVED',assigned_order=$o WHERE code=$c AND status='AVAILABLE' AND assigned_order=''";update.Parameters.AddWithValue("$o",owner);update.Parameters.AddWithValue("$c",code);update.ExecuteNonQuery();
+        }
+        tx.Commit();return code;
+    }
+
+    public void ConfirmMarketplaceKiz(StoreProfile store,string orderId,string itemId,int unit,string gtin,string code)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();
+        ValidateMarketplaceKizOwner(c,tx,store,orderId,itemId,unit,gtin,code);
+        using(var confirm=c.CreateCommand()) {
+            confirm.Transaction=tx;confirm.CommandText="UPDATE marketplace_kiz_reservations SET status='ASSIGNED',updated_at=$at WHERE code=$c AND store_id=$s AND marketplace=$m AND order_id=$o AND item_id=$i AND unit_index=$u AND gtin=$g";UnitParameters(confirm,store,orderId,itemId,unit);confirm.Parameters.AddWithValue("$c",code);confirm.Parameters.AddWithValue("$g",gtin);confirm.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));if(confirm.ExecuteNonQuery()!=1)throw new InvalidOperationException("KIZ không thuộc đơn vị hàng đang xác nhận.");
+        }
+        using(var update=c.CreateCommand()) {update.Transaction=tx;update.CommandText="UPDATE kiz_pool SET status='ASSIGNED' WHERE code=$c AND assigned_order=$owner AND status IN('RESERVED','ASSIGNED')";update.Parameters.AddWithValue("$c",code);update.Parameters.AddWithValue("$owner",$"{store.Marketplace}:{store.Id}:{orderId}:{itemId}:{unit}");update.ExecuteNonQuery();}tx.Commit();
+    }
+    private static void ValidateMarketplaceKizOwner(SqliteConnection c,SqliteTransaction tx,StoreProfile store,string order,string item,int unit,string gtin,string code)
+    {
+        using var conflict=c.CreateCommand();conflict.Transaction=tx;
+        conflict.CommandText="SELECT (SELECT COUNT(*) FROM wb_kiz_reservations WHERE code=$c)+(SELECT COUNT(*) FROM marketplace_kiz_reservations WHERE code=$c AND (store_id!=$s OR marketplace!=$m OR order_id!=$o OR item_id!=$i OR unit_index!=$u OR gtin!=$g))+(SELECT COUNT(*) FROM kiz_pool WHERE code=$c AND (gtin!=$g OR status NOT IN('RESERVED','ASSIGNED') OR assigned_order!=$owner))";
+        UnitParameters(conflict,store,order,item,unit);conflict.Parameters.AddWithValue("$c",code);conflict.Parameters.AddWithValue("$g",gtin);conflict.Parameters.AddWithValue("$owner",$"{store.Marketplace}:{store.Id}:{order}:{item}:{unit}");
+        if(Convert.ToInt64(conflict.ExecuteScalar())>0)throw new InvalidOperationException("Chủ sở hữu KIZ đã thay đổi. Dừng để đối soát; không xác nhận hoặc ghi đè mã.");
+    }
+
+    private static void UnitParameters(SqliteCommand cmd,StoreProfile s,string order,string item,int unit)
+    {cmd.Parameters.AddWithValue("$s",s.Id);cmd.Parameters.AddWithValue("$m",s.Marketplace.ToString());cmd.Parameters.AddWithValue("$o",order);cmd.Parameters.AddWithValue("$i",item);cmd.Parameters.AddWithValue("$u",unit);}
+
+    public bool MarketplaceShipAlreadySubmitted(StoreProfile store,string orderId)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT COUNT(*) FROM marketplace_fbs_actions WHERE store_id=$s AND marketplace=$m AND order_id=$o";cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());cmd.Parameters.AddWithValue("$o",orderId);return Convert.ToInt64(cmd.ExecuteScalar())>0;
+    }
+    public bool TryBeginMarketplaceShip(StoreProfile store,string orderId)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="INSERT OR IGNORE INTO marketplace_fbs_actions VALUES($s,$m,$o,'SUBMITTED')";cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());cmd.Parameters.AddWithValue("$o",orderId);return cmd.ExecuteNonQuery()==1;
+    }
+}

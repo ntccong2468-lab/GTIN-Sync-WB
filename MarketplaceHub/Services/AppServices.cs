@@ -10,7 +10,7 @@ using System.Text.RegularExpressions;
 
 namespace MarketplaceHub.Services;
 
-public sealed class AppServices
+public sealed partial class AppServices
 {
     public AppDatabase Db { get; } = new();
     public MarketplaceGateway Api { get; } = new();
@@ -22,21 +22,7 @@ public sealed class AppServices
 
     private async Task<(bool Ok, string Message)> SyncProductsCoreAsync(StoreProfile store, CancellationToken ct)
     {
-        var run = Db.StartSyncRun(store.Id, "products");
-        try
-        {
-            var rows = await Api.SyncProductsAsync(store, ct);
-            await Task.Run(() => Db.ReplaceProducts(store.Id, store.Marketplace, rows), ct);
-            Db.SaveSyncState(store.Id, "products", "", "", "", "");
-            Db.FinishSyncRun(run, true, rows.Count, rows.Count);
-            return (true, $"Đã đồng bộ {rows.Count} sản phẩm.");
-        }
-        catch (Exception ex)
-        {
-            Db.SaveSyncState(store.Id, "products", "", "", "", ex.Message);
-            Db.FinishSyncRun(run, false, 0, 0, ex.Message);
-            return (false, ex.Message);
-        }
+        return await SyncProductsResumableCoreAsync(store,ct);
     }
 
     public Task<(bool Ok, string Message)> SyncOrdersAsync(StoreProfile store, CancellationToken ct = default) =>

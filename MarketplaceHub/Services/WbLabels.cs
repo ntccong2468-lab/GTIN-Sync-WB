@@ -176,6 +176,11 @@ public sealed partial class MarketplaceGateway
 
     private async Task<string> WbLabelRequestAsync(StoreProfile store, string endpoint, string[] ids,
         CancellationToken ct, IProgress<string>? progress)
+        => await WbMarketplaceRequestAsync(store, HttpMethod.Post, endpoint,
+            JsonSerializer.Serialize(new { orders = ids.Select(x => long.Parse(x, CultureInfo.InvariantCulture)).ToArray() }), ct, progress).ConfigureAwait(false);
+
+    private async Task<string> WbMarketplaceRequestAsync(StoreProfile store, HttpMethod method, string endpoint, string? json,
+        CancellationToken ct, IProgress<string>? progress)
     {
         for (var attempt = 0; ; attempt++)
         {
@@ -186,14 +191,13 @@ public sealed partial class MarketplaceGateway
                 await wbLabelDelay(wait, ct).ConfigureAwait(false);
             }
             ct.ThrowIfCancellationRequested();
-            using var request = Request(HttpMethod.Post, "https://marketplace-api.wildberries.ru" + endpoint,
-                store, JsonSerializer.Serialize(new { orders = ids.Select(x => long.Parse(x, CultureInfo.InvariantCulture)).ToArray() }));
+            using var request = Request(method, "https://marketplace-api.wildberries.ru" + endpoint, store, json);
             using var response = await http.SendAsync(request, ct).ConfigureAwait(false);
             wbLabelNotBefore = DateTimeOffset.UtcNow.AddMilliseconds(250);
             var body = await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false);
             if ((int)response.StatusCode != 429)
             {
-                if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"WB HTTP {(int)response.StatusCode}. Kiểm tra quyền Marketplace của token và trạng thái đơn.");
+                if (!response.IsSuccessStatusCode) throw new InvalidOperationException($"WB HTTP {(int)response.StatusCode}. Kiểm tra quyền Marketplace của token và trạng thái đơn. {Short(body)}");
                 return body;
             }
             var seconds = 1d;

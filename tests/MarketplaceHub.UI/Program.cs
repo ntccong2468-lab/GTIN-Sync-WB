@@ -12,8 +12,10 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
         var failures = new List<string>();
+        var checks=0;
         void Check(string name, Action test)
         {
+            checks++;
             try { test(); Console.WriteLine("PASS " + name); }
             catch (Exception ex) { failures.Add(name); Console.WriteLine("FAIL " + name + ": " + ex.GetBaseException().Message); }
         }
@@ -100,16 +102,18 @@ internal static class Program
                 var handler = new AsyncFixtureHttp((r, ct) =>
                 {
                     Interlocked.Increment(ref requests);
-                    if (r.RequestUri!.AbsolutePath.EndsWith("/boxes")) return response.Task;
-                    return Task.FromResult(Json("{\"status\":\"OK\",\"orders\":[]}"));
+                    return response.Task;
                 });
                 typeof(MarketplaceGateway).GetField("http", instance)!.SetValue(app.Api, new HttpClient(handler));
                 var order = app.Db.Orders(store.Id).First();
                 typeof(MainForm).GetMethod("ShowFbsSupplyDetail", instance)!.Invoke(form, new object?[] { order, null });
+                using var accept = new System.Windows.Forms.Timer { Interval = 10 };
+                accept.Tick += (_, _) => { var chooser = Application.OpenForms.Cast<Form>().FirstOrDefault(f => f.GetType().Name == "MarketplaceBatchDialog"); if (chooser is not null) { accept.Stop(); chooser.DialogResult = DialogResult.OK; chooser.Close(); } };
+                accept.Start();
                 All(form).OfType<Button>().Single(b => b.Text.Contains("Tạo shipment")).PerformClick();
                 Expect(requests > 0, "Shipment request never started.");
                 Page(form, "ShowReport");
-                response.SetResult(Json("{\"status\":\"OK\"}"));
+                response.SetResult(Json("{\"order\":{\"id\":1,\"status\":\"PROCESSING\",\"substatus\":\"STARTED\",\"items\":[{\"id\":2,\"offerId\":\"A\",\"count\":2}]}}"));
                 var deadline = DateTime.UtcNow.AddSeconds(3);
                 while (DateTime.UtcNow < deadline) { Application.DoEvents(); Thread.Sleep(1); }
                 Expect(All(form).Any(c => c.Text == "Báo cáo"), "Old completion navigated back to FBS detail.");
@@ -140,7 +144,7 @@ internal static class Program
             {
                 var count = 0;
                 typeof(MarketplaceGateway).GetField("http", instance)!.SetValue(app.Api,
-                    new HttpClient(new AsyncFixtureHttp((_, _) => { count++; return Task.FromResult(Json("{\"status\":\"OK\"}")); })));
+                    new HttpClient(new AsyncFixtureHttp((_, _) => { count++; return Task.FromResult(Json("{\"order\":{\"id\":1,\"status\":\"PROCESSING\",\"substatus\":\"STARTED\",\"items\":[{\"id\":2,\"offerId\":\"A\",\"count\":2},{\"id\":3,\"offerId\":\"B\",\"count\":2,\"hasCis\":true}]}}")); })));
                 var a = app.Db.Orders(store.Id).First();
                 app.Db.ReplaceProducts(store.Id, Marketplace.Yandex, new[] {
                     new ProductRow(store.Id, Marketplace.Yandex, "A", "A", "Quần A", 1250, "", "{}"),
@@ -150,7 +154,7 @@ internal static class Program
                 var packed = (Task<PriceUpdateResult>)typeof(MainForm).GetMethod("CreateShipmentWithKizAsync", instance)!
                     .Invoke(form, new object[] { store, new[] { a }, true })!;
                 Pump(packed);
-                Expect(!packed.Result.Success && count == 0 && packed.Result.Message.Contains("GTIN"), "Unselected mandatory-KIZ line was skipped before shipping.");
+                Expect(!packed.Result.Success && count > 0 && packed.Result.Message.Contains("GTIN"), "Unselected mandatory-KIZ line was skipped before shipping.");
             });
             Check("Partial sync and full sync never overlap for one store", () =>
             {
@@ -185,10 +189,10 @@ internal static class Program
             });
             Check("WB print uses the selected size instead of the card's first size", () =>
             {
-                var order = new FbsOrderRow(store.Id,Marketplace.Wildberries,"101","SKU","fixture",1,"confirm",false,"{\"chrtId\":2,\"skus\":[\"2222222222222\"]}");
-                var product = new ProductRow(store.Id,Marketplace.Wildberries,"100","SKU","fixture",null,"","{\"sizes\":[{\"chrtID\":1,\"techSize\":\"48\",\"skus\":[\"1111111111111\"]},{\"chrtID\":2,\"techSize\":\"50\",\"skus\":[\"2222222222222\"]}]}");
+                var order = new FbsOrderRow(store.Id,Marketplace.Wildberries,"101","SKU","fixture",1,"confirm",false,"{\"chrtId\":2,\"skus\":[\"4601234567886\"]}");
+                var product = new ProductRow(store.Id,Marketplace.Wildberries,"100","SKU","fixture",null,"","{\"sizes\":[{\"chrtID\":1,\"techSize\":\"48\",\"skus\":[\"4601234567893\"]},{\"chrtID\":2,\"techSize\":\"50\",\"skus\":[\"4601234567886\"]}]}");
                 var result = (WbPrintOrder)typeof(MainForm).GetMethod("BuildWbPrintOrder",instance)!.Invoke(form,new object[] {order,product,new LabelResult(true,"fixture",null,"official","1","2"),Array.Empty<string>(),true})!;
-                Expect(result.Size=="50" && result.Barcode=="2222222222222","The first card size/barcode was printed for another variant.");
+                Expect(result.Size=="50" && result.Barcode=="4601234567886","The first card size/barcode was printed for another variant.");
             });
             Check("WB print options and preview render without retaining image handles", () =>
             {
@@ -207,8 +211,8 @@ internal static class Program
             });
             Check("WB rejects a stale sole catalog size when order identity disagrees", () =>
             {
-                var order=new FbsOrderRow(store.Id,Marketplace.Wildberries,"101","SKU","fixture",1,"confirm",false,"{\"chrtId\":2,\"skus\":[\"2222222222222\"]}");
-                var product=new ProductRow(store.Id,Marketplace.Wildberries,"100","SKU","fixture",null,"","{\"sizes\":[{\"chrtID\":1,\"techSize\":\"48\",\"skus\":[\"1111111111111\"]}]}");
+                var order=new FbsOrderRow(store.Id,Marketplace.Wildberries,"101","SKU","fixture",1,"confirm",false,"{\"chrtId\":2,\"skus\":[\"4601234567886\"]}");
+                var product=new ProductRow(store.Id,Marketplace.Wildberries,"100","SKU","fixture",null,"","{\"sizes\":[{\"chrtID\":1,\"techSize\":\"48\",\"skus\":[\"4601234567893\"]}]}");
                 var rejected=false;
                 try {typeof(MainForm).GetMethod("BuildWbPrintOrder",instance)!.Invoke(form,new object[] {order,product,new LabelResult(true,"fixture",null,"official","1","2"),Array.Empty<string>(),true});}
                 catch(TargetInvocationException ex) {rejected=ex.InnerException is InvalidOperationException;}
@@ -226,9 +230,184 @@ internal static class Program
                 Expect(!document.DefaultPageSettings.Landscape && document.PrinterSettings.Copies==1,"Driver defaults override prepared page order/copies.");
                 Expect(document.DefaultPageSettings.PaperSize.Width==228 && document.DefaultPageSettings.PaperSize.Height==157,"58×40 paper size was lost.");
             });
+            Check("WB filtered select-all shows create and add shipment choices", () =>
+            {
+                var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-selection","","","","","fixture",true));
+                try {
+                    app.Db.UpsertOrders(wb.Id,Marketplace.Wildberries,new[]{new FbsOrderRow(wb.Id,Marketplace.Wildberries,"101","A","Quần nam A",1,"new",false,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"102","B","Quần nam B",1,"new",false,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"103","C","Bộ thể thao",1,"new",false,"{}")});
+                    typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,null);
+                    for(var i=0;i<picker.Items.Count;i++)if(picker.Items[i] is StoreProfile s && s.Id==wb.Id)picker.SelectedIndex=i;
+                    Page(form,"ShowFbs");Application.DoEvents();
+                    var grid=All(form).OfType<DataGridView>().Single();
+                    var all=All(form).OfType<CheckBox>().Single(c=>c.Text=="Chọn tất cả đơn đang hiển thị");
+                    all.Checked=true;Application.DoEvents();
+                    Expect(grid.Rows.Count==3 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true),"Select-all selected only the first row.");
+                    var search=All(form).OfType<TextBox>().Single(c=>c.PlaceholderText.Contains("Tìm theo đơn"));search.Text="Quần";Application.DoEvents();
+                    Expect(grid.Rows.Count==2 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true),"Filtering lost select-all selection.");
+                    Expect(All(form).Any(c=>c.Text=="Tạo shipment mới" && c.Visible) && All(form).Any(c=>c.Text=="Thêm shipment hôm nay" && c.Visible),"Shipment choices did not appear after selecting orders.");
+                } finally {app.Db.DeleteStore(wb.Id);typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,null);}
+            });
+            Check("WB reserved KIZ stays with its shop and order across retries and imports", () =>
+            {
+                var a=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-reserve-A","","","","","fixture",true));
+                var b=app.Db.SaveStore(a with{Id=0,Name=marker+"-reserve-B"});
+                const string gtin="04609999999999";
+                var code1="01"+gtin+"21"+Guid.NewGuid().ToString("N");var code2="01"+gtin+"21"+Guid.NewGuid().ToString("N");
+                try {
+                    app.Db.UpsertKiz(code1,gtin,"AVAILABLE");app.Db.UpsertKiz(code2,gtin,"AVAILABLE");
+                    var first=app.Db.ReserveWbKiz(a.Id,"1",gtin);
+                    var retry=app.Db.ReserveWbKiz(a.Id,"1",gtin);
+                    var other=app.Db.ReserveWbKiz(b.Id,"1",gtin);
+                    Expect(first==retry && first!=other && first is not null && other is not null,"Reservation was reused by another shop or changed on retry.");
+                    app.Db.UpsertKiz(first!,gtin,"AVAILABLE");
+                    Expect(app.Db.Kiz().Single(x=>x.Code==first).Status=="RESERVED","Reimport released a reserved KIZ.");
+                    app.Db.ConfirmWbKiz(a.Id,"1",gtin,first!);
+                    Expect(app.Db.Kiz().Single(x=>x.Code==first).Status=="ASSIGNED","Confirmed KIZ state was not retained.");
+                } finally {app.Db.DeleteStore(a.Id);app.Db.DeleteStore(b.Id);}
+            });
+            Check("WB uncertain KIZ PUT resumes by reading metadata without assigning a new code", () =>
+            {
+                var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-retry","","","","","fixture",true));
+                const string gtin="04608888888888";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");
+                var row=new FbsOrderRow(wb.Id,Marketplace.Wildberries,"777","SKU","fixture",1,"confirm",true,"{}");
+                var httpField=typeof(MarketplaceGateway).GetField("http",instance)!;var old=httpField.GetValue(app.Api);
+                var applied=false;var puts=0;
+                var client=new HttpClient(new AsyncFixtureHttp((r,ct)=>{
+                    var path=r.RequestUri!.AbsolutePath;
+                    if(path.EndsWith("/status"))return Task.FromResult(Json("{\"orders\":[{\"id\":777,\"supplierStatus\":\"confirm\",\"wbStatus\":\"waiting\"}]}"));
+                    if(r.Method==HttpMethod.Put){puts++;applied=true;throw new HttpRequestException("connection lost after WB accepted request");}
+                    return Task.FromResult(Json(System.Text.Json.JsonSerializer.Serialize(new{orders=new[]{new{id=777,metaDetails=new[]{new{key="sgtin",value=applied?code:null,decision=applied?"filled":"required"}}}}})));
+                }));
+                try {
+                    app.Db.UpsertKiz(code,gtin,"AVAILABLE");app.Db.StoreWbSupplyMembership(wb.Id,"RETRY",new[]{"777"});httpField.SetValue(app.Api,client);
+                    var ids=new Dictionary<string,string>{{"777",gtin}};
+                    var first=app.EnsureWbSupplyKizAsync(wb,new[]{row},ids,true);Pump(first);
+                    Expect(!first.Result.Success && app.Db.Kiz().Single(x=>x.Code==code).Status=="RESERVED","Uncertain code was released or marked confirmed.");
+                    var retry=app.EnsureWbSupplyKizAsync(wb,new[]{row},ids,true);Pump(retry);
+                    Expect(retry.Result.Success && puts==1 && app.Db.Kiz().Single(x=>x.Code==code).Status=="ASSIGNED","Retry sent another KIZ or did not confirm remote code.");
+                } finally {httpField.SetValue(app.Api,old);client.Dispose();app.Db.DeleteStore(wb.Id);}
+            });
+            Check("WB shipment choices show only today's open supplies", () =>
+            {
+                var now=DateTimeOffset.UtcNow;
+                using var dialog=new WbShipmentDialog(119,new[]{new WbSupply("OPEN","Today",now,false),new WbSupply("OLD","Yesterday",now.AddDays(-1),false),new WbSupply("CLOSED","Closed",now,true)},true);
+                dialog.Show(form);Application.DoEvents();
+                var combo=All(dialog).OfType<ComboBox>().Single();
+                Expect(combo.Items.Count==1 && ((WbSupply)combo.Items[0]!).Id=="OPEN" && dialog.Choice.SupplyId=="OPEN","Unsafe shipment choices were offered.");
+                var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);
+                using(var image=new Bitmap(dialog.Width,dialog.Height)){dialog.DrawToBitmap(image,new Rectangle(Point.Empty,dialog.Size));image.Save(Path.Combine(dir,"WbShipmentChoice.png"));}
+                dialog.Close();
+            });
+            Check("WB remote KIZ cannot steal another marketplace assignment", () =>
+            {
+                const string gtin="04607777777777";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");
+                app.Db.UpsertKiz(code,gtin,"ASSIGNED","OZON-LEGACY-ORDER");
+                var blocked=false;try{app.Db.ConfirmWbKiz(store.Id,"WB-ORDER",gtin,code);}catch(InvalidOperationException){blocked=true;}
+                var saved=app.Db.Kiz().Single(x=>x.Code==code);
+                Expect(blocked && saved.Status=="ASSIGNED" && saved.Assigned=="OZON-LEGACY-ORDER","WB overwrote another marketplace's KIZ owner.");
+            });
+            Check("WB marking validation rejects GTIN mismatch duplicates ownership and cancelled rows", () =>
+            {
+                var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-validate","","","","","fixture",true));
+                const string gtin="04606666666666";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");
+                var rows=new[]{new FbsOrderRow(wb.Id,Marketplace.Wildberries,"901","A","A",1,"confirm",true,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"902","B","B",1,"confirm",true,"{}")};
+                var gtins=rows.ToDictionary(x=>x.ExternalOrderId,_=>gtin);
+                try {
+                    var duplicated=rows.ToDictionary(x=>x.ExternalOrderId,_=>new WbPrintKizMetadata(true,new[]{code}));
+                    Expect(!app.ValidateWbSupplyKiz(wb,rows,gtins,duplicated).Success,"Duplicate code was accepted for delivery.");
+                    var one=new Dictionary<string,WbPrintKizMetadata>{{"901",new(true,new[]{code})}};
+                    Expect(!app.ValidateWbSupplyKiz(wb,new[]{rows[0]},new Dictionary<string,string>{{"901","04605555555555"}},one).Success,"Wrong GTIN was accepted for delivery.");
+                    Expect(!app.ValidateWbSupplyKiz(wb,new[]{rows[0] with{Status="cancel"}},gtins,one).Success,"Cancelled order was accepted for delivery.");
+                    app.Db.UpsertKiz(code,gtin,"ASSIGNED","YANDEX-LEGACY-ORDER");
+                    Expect(!app.ValidateWbSupplyKiz(wb,new[]{rows[0]},gtins,one).Success,"A code owned by another marketplace was accepted for delivery.");
+                } finally {app.Db.DeleteStore(wb.Id);}
+            });
+            Check("WB invalid marking and cancelled membership never send deliver", () =>
+            {
+                var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-deliver","","","","","fixture",true));
+                const string gtin="04603333333333";
+                var field=typeof(MarketplaceGateway).GetField("http",instance)!;var old=field.GetValue(app.Api);var deliveries=0;
+                try {
+                    foreach(var scenario in new[]{"gtin","duplicate","owner","cancel"}) {
+                        var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");var code2="01"+gtin+"21"+Guid.NewGuid().ToString("N");
+                        app.Db.UpsertOrders(wb.Id,Marketplace.Wildberries,new[]{new FbsOrderRow(wb.Id,Marketplace.Wildberries,"991","A","A",1,"confirm",true,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"992","B","B",1,"confirm",true,"{}")});
+                        if(scenario=="owner")app.Db.UpsertKiz(code,gtin,"ASSIGNED","OZON-OWNER");
+                        using var client=new HttpClient(new AsyncFixtureHttp((r,_)=>{
+                            var path=r.RequestUri!.AbsolutePath;
+                            if(path.EndsWith("/deliver")){deliveries++;return Task.FromResult(Json("{}"));}
+                            if(path.EndsWith("/order-ids"))return Task.FromResult(Json("{\"orderIds\":[991,992]}"));
+                            if(path.EndsWith("/status"))return Task.FromResult(Json(System.Text.Json.JsonSerializer.Serialize(new{orders=new[]{new{id=991,supplierStatus="confirm",wbStatus=scenario=="cancel"?"canceled":"waiting"},new{id=992,supplierStatus="confirm",wbStatus="waiting"}}})));
+                            if(path.EndsWith("/meta"))return Task.FromResult(Json(System.Text.Json.JsonSerializer.Serialize(new{orders=new[]{new{id=991,metaDetails=new[]{new{key="sgtin",value=new[]{code},decision="filled"}}},new{id=992,metaDetails=new[]{new{key="sgtin",value=new[]{scenario=="duplicate"?code:code2},decision="filled"}}}}})));
+                            return Task.FromResult(Json("{\"id\":\"DELIVER-SAFE\",\"done\":false,\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}"));
+                        }));
+                        field.SetValue(app.Api,client);
+                        var gtins=new Dictionary<string,string>{{"991",scenario=="gtin"?"04604444444444":gtin},{"992",gtin}};
+                        var task=app.DeliverVerifiedWbSupplyAsync(wb,"DELIVER-SAFE",gtins);Pump(task);
+                        Expect(!task.Result.Success,"Unsafe scenario was delivered: "+scenario);
+                    }
+                    Expect(deliveries==0,"A deliver request was sent before marking verification.");
+                }finally{field.SetValue(app.Api,old);app.Db.DeleteStore(wb.Id);}
+            });
+            Check("WB server membership hydrates every cached row with current status", () =>
+            {
+                var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-hydrate","","","","","fixture",true));
+                var field=typeof(MarketplaceGateway).GetField("http",instance)!;var old=field.GetValue(app.Api);
+                using var client=new HttpClient(new AsyncFixtureHttp((r,_)=>Task.FromResult(r.RequestUri!.AbsolutePath.EndsWith("/order-ids")?Json("{\"orderIds\":[321,322]}"):Json("{\"orders\":[{\"id\":321,\"supplierStatus\":\"confirm\",\"wbStatus\":\"waiting\"},{\"id\":322,\"supplierStatus\":\"confirm\",\"wbStatus\":\"waiting\"}]}"))));
+                try {
+                    app.Db.UpsertOrders(wb.Id,Marketplace.Wildberries,new[]{new FbsOrderRow(wb.Id,Marketplace.Wildberries,"321","A","A",1,"new",false,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"322","B","B",1,"new",false,"{}")});
+                    field.SetValue(app.Api,client);var task=app.ReadWbSupplyOrdersAsync(wb,"FULL-SUPPLY");Pump(task);
+                    Expect(task.Result.Count==2 && task.Result.All(x=>x.Status=="confirm" && app.Db.FindWbSupplyForOrder(wb.Id,x.ExternalOrderId)=="FULL-SUPPLY"),"Whole server membership was not hydrated and recorded.");
+                }finally{field.SetValue(app.Api,old);app.Db.DeleteStore(wb.Id);}
+            });
+            Check("Product synchronization view paginates fifty exact variants", () =>
+            {
+                var catalogStore=app.Db.SaveStore(new StoreProfile(0,Marketplace.Yandex,marker+"-catalog","","fixture","456","789","",true));
+                try {
+                    var scope=ProductCatalog.Scope(catalogStore);app.Db.BeginProductCatalog(catalogStore,scope);
+                    var entries=Enumerable.Range(1,51).Select(i=>ProductCatalog.Entry(new ProductRow(catalogStore.Id,Marketplace.Yandex,i.ToString(),"SKU-"+i,"Quần "+i,null,"","{\"offer\":{\"barcodes\":[\"4601234567893\"],\"size\":\"48\"}}"))).ToArray();
+                    app.Db.ApplyProductCatalogPage(catalogStore,"",scope,new ProductCatalogPage(entries,"",true));
+                    typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,null);
+                    for(var i=0;i<picker.Items.Count;i++)if(picker.Items[i] is StoreProfile shop && shop.Id==catalogStore.Id)picker.SelectedIndex=i;
+                    Page(form,"ShowProductSynchronization");
+                    var deadline=DateTime.UtcNow.AddSeconds(8);
+                    while(DateTime.UtcNow<deadline && All(form).OfType<DataGridView>().Single().Rows.Count==0){Application.DoEvents();Thread.Sleep(1);}
+                    var grid=All(form).OfType<DataGridView>().Single();Expect(grid.Rows.Count==50,"Product view rendered all variants without pagination.");
+                    var next=All(form).OfType<Button>().Single(b=>b.Text=="›");next.PerformClick();Application.DoEvents();Expect(grid.Rows.Count==1,"Second variant page was incorrect.");
+                    var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);
+                    using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"ProductSynchronization.png"));}
+                }finally{app.Db.DeleteStore(catalogStore.Id);typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,null);}
+            });
+            Check("WB full supply detail renders all orders and verified KIZ state", () =>
+            {
+                var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-detail","","","","","fixture",true));
+                try {
+                    var rows=new[]{new FbsOrderRow(wb.Id,Marketplace.Wildberries,"1","A","Quần nam",1,"confirm",true,"{}"),new FbsOrderRow(wb.Id,Marketplace.Wildberries,"2","B","Bộ thể thao",1,"confirm",true,"{}")};
+                    app.Db.ReplaceProducts(wb.Id,Marketplace.Wildberries,new[]{new ProductRow(wb.Id,Marketplace.Wildberries,"100","A","Quần nam",1000,"","{\"sizes\":[{\"chrtID\":1,\"techSize\":\"48\",\"skus\":[\"4601234567893\"]}]}"),new ProductRow(wb.Id,Marketplace.Wildberries,"200","B","Bộ thể thao",2000,"","{\"sizes\":[{\"chrtID\":2,\"techSize\":\"50\",\"skus\":[\"4601234567894\"]}]}")});
+                    var marking=new Dictionary<string,WbPrintKizMetadata>{{"1",new(true,new[]{"010460123456789321fixture"})},{"2",new(true,Array.Empty<string>())}};
+                    typeof(MainForm).GetMethod("ShowWbSupplyDetail",instance)!.Invoke(form,new object?[]{wb,new WbSupply("WB-GI-FIXTURE","Today",DateTimeOffset.UtcNow,false),rows,marking,null});
+                    Application.DoEvents();
+                    var grid=All(form).OfType<DataGridView>().Single();
+                    Expect(grid.Rows.Count==2 && grid.Rows[0].Cells["kiz"].Value!.ToString()!.Contains("Đã tích KIZ") && grid.Rows[1].Cells["kiz"].Value!.ToString()!.Contains("Chưa gắn"),"Full shipment or confirmed KIZ status was missing.");
+                    var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);
+                    using(var image=new Bitmap(form.Width,form.Height)){form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"WbSupplyDetail.png"));}
+                } finally {app.Db.DeleteStore(wb.Id);}
+            });
+
+            Check("Ozon batch detail shows every posting and retained unit progress", () =>
+            {
+                var oz=app.Db.SaveStore(new StoreProfile(0,Marketplace.Ozon,marker+"-batch","123","fixture","","","",true));
+                try {
+                    app.Db.UpsertOrders(oz.Id,Marketplace.Ozon,new[]{new FbsOrderRow(oz.Id,Marketplace.Ozon,"P1","A","Quần nam",2,"awaiting_deliver",false,"{}"),new FbsOrderRow(oz.Id,Marketplace.Ozon,"P1","B","Áo khoác",1,"awaiting_deliver",false,"{}"),new FbsOrderRow(oz.Id,Marketplace.Ozon,"P2","C","Bộ thể thao",1,"awaiting_packaging",false,"{}")});
+                    var batch=app.Db.CreateMarketplaceFbsBatch(oz,new[]{"P1","P2"});app.Db.SaveMarketplaceFbsOrder(oz,batch.Id,"P1","PACKED");app.Db.SaveMarketplaceFbsOrder(oz,batch.Id,"P2","ERROR","Cần đồng bộ barcode đúng biến thể");
+                    typeof(MainForm).GetMethod("ShowMarketplaceFbsBatch",instance)!.Invoke(form,new object?[]{oz,batch.Id,null});Application.DoEvents();
+                    var grid=All(form).OfType<DataGridView>().Single(g=>g.Name=="marketplaceBatchOrders");Expect(grid.Rows.Count==2 && grid.Rows[0].Cells["items"].Value!.ToString()!.Contains("Áo khoác") && grid.Rows[1].Cells["error"].Value!.ToString()!.Contains("barcode"),"Whole batch or recovery reason was hidden.");
+                    var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);using var image=new Bitmap(form.Width,form.Height);form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"OzonFbsBatch.png"));
+                }finally{app.Db.DeleteStore(oz.Id);}
+            });
+
         }
         finally { app.Db.DeleteStore(store.Id); }
-        Console.WriteLine($"{16 - failures.Count}/16 UI regressions passed");
+        Console.WriteLine($"{checks - failures.Count}/{checks} UI regressions passed");
         return failures.Count == 0 ? 0 : 1;
     }
 }

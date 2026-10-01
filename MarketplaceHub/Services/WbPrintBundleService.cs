@@ -167,7 +167,7 @@ public sealed class WbPrintBundleService
         return image;
     }
 
-    private static SKBitmap RenderProduct(WbPrintOrder order, string kiz, bool productLabel)
+    internal static SKBitmap RenderProduct(WbPrintOrder order, string kiz, bool productLabel)
     {
         var image = new SKBitmap(Width,Height,SKColorType.Bgra8888,SKAlphaType.Premul);
         try

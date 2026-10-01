@@ -32,9 +32,9 @@ public sealed partial class MainForm
                     throw new InvalidOperationException($"Chưa tạo bộ nhãn: {failures.Length}/{orders.Count} đơn chưa có sticker hợp lệ.\n{detail}"+
                         (failures.Length>10 ? $"\nCòn {failures.Length-10} đơn cùng lỗi; xem lịch sử in." : ""));
                 }
-                var remoteKiz = options.IncludeKiz
-                    ? await app.Api.GetWbPrintKizAsync(store,orders.Select(x=>x.ExternalOrderId),cancel.Token,progress)
-                    : new Dictionary<string,WbPrintKizMetadata>();
+                var remoteKiz = await app.Api.GetWbPrintKizAsync(store,orders.Select(x=>x.ExternalOrderId),cancel.Token,progress);
+                var markingValidation=app.ValidateWbSupplyKiz(store,orders,ResolveWbGtins(store,orders),remoteKiz);
+                if(!markingValidation.Success)throw new InvalidOperationException(markingValidation.Message);
                 cancel.Token.ThrowIfCancellationRequested();
                 var input=orders.Select(order=>
                 {
@@ -86,7 +86,10 @@ public sealed partial class MainForm
                     throw new InvalidOperationException($"{order.ExternalOrderId}: chưa xác định được size/barcode chính xác của biến thể WB. Hãy đồng bộ lại sản phẩm và đơn.");
                 size=variant?["techSize"]?.ToString()??(sizes.Count>1 ? "" : size);
                 var variantCodes=(variant?["skus"] as JsonArray)?.Select(x=>x?.ToString()??"").ToArray()??Array.Empty<string>();
-                barcode=skus.Length>0 ? variantCodes.FirstOrDefault(skus.Contains)??barcode : variantCodes.FirstOrDefault()??"";
+                var candidates=(skus.Length>0 ? variantCodes.Where(skus.Contains) : variantCodes).ToArray();
+                var gtin=ProductCatalog.UniqueGtin(candidates);
+                if(requireProduct && gtin.Length==0)throw new InvalidOperationException($"{order.ExternalOrderId}: barcode của biến thể thiếu hoặc có nhiều GTIN khác nhau. Chưa chọn mã để in/gắn KIZ.");
+                barcode=gtin.Length>0?candidates.First(x=>ProductCatalog.NormalizeGtin(x)==gtin):"";
             }
             else if(barcode.Length==0)barcode=meta.Barcode;
         }

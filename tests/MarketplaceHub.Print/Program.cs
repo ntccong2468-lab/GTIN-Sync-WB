@@ -116,5 +116,15 @@ Check("One KIZ cannot be printed for two different WB orders", () =>
     catch(InvalidOperationException ex){rejected=ex.Message.Contains("KIZ");}
     Expect(rejected,"The same KIZ was reused for multiple orders.");
 });
+
+Check("Ozon and Yandex KIZ PDFs retain one page per unit and reject duplicates", () =>
+{
+    foreach(var market in new[]{"Ozon","Yandex"}) {
+        var folder=Path.Combine(output,market);Directory.CreateDirectory(folder);
+        var items=new[]{order with{Quantity=2,KizCodes=new[]{code,code+"2"}}};
+        var path=MarketplaceKizPdfService.Write(market,items,folder);var data=File.ReadAllText(path);Expect(data.StartsWith("%PDF-") && System.Text.RegularExpressions.Regex.Matches(data,@"/Type /Page\b").Count==2,"Missing per-unit KIZ pages.");
+        var rejected=false;try{MarketplaceKizPdfService.Write(market,new[]{order with{Quantity=2,KizCodes=new[]{code,code}}},folder);}catch(InvalidOperationException){rejected=true;}Expect(rejected,"Duplicate unit codes were printed.");
+    }
+});
 Console.WriteLine($"{checks-failures.Count}/{checks} print regressions passed");
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;
