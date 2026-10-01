@@ -34,7 +34,7 @@ public sealed class OzonDiagnosticsDialog : Form
 
     private void AddField(string label,TextBox box,int left,int top,int width)
     {
-        Controls.Add(new Label{Left=left,Top=top,AutoSize=true,Text=label,ForeColor=C.Muted});box.SetBounds(left,top+24,width,30);box.BackColor=C.Input;box.ForeColor=C.Text;box.BorderStyle=BorderStyle.FixedSingle;Controls.Add(box);
+        Controls.Add(new Label{Left=left,Top=top,AutoSize=true,Text=label,ForeColor=C.Muted});box.SetBounds(left,top+24,width,30);box.BackColor=C.Card;box.ForeColor=C.Text;box.BorderStyle=BorderStyle.FixedSingle;Controls.Add(box);
     }
 
     private async void RunAsync(object? sender,EventArgs e)
