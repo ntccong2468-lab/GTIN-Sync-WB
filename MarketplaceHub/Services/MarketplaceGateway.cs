@@ -1456,7 +1456,8 @@ public sealed partial class MarketplaceGateway
         StoreProfile store,
         string postingNumber,
         IReadOnlyDictionary<string, IReadOnlyList<string>> codesByOffer,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<bool>? beforeSet = null)
     {
         try
         {
@@ -1564,6 +1565,8 @@ public sealed partial class MarketplaceGateway
                 ["posting_number"] = postingNumber,
                 ["products"] = setProducts
             }.ToJsonString();
+            if(beforeSet is not null&&!beforeSet())
+                return new PriceUpdateResult(false,"Một luồng khác đã bắt đầu gửi KIZ/exemplar cho posting này.");
             using var setRes = await http.SendAsync(Request(HttpMethod.Post,
                 "https://api-seller.ozon.ru/v6/fbs/posting/product/exemplar/set", store, setBody), ct);
             var setText = await setRes.Content.ReadAsStringAsync(ct);

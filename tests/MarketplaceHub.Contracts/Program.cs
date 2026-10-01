@@ -112,6 +112,14 @@ await Check("Ozon errors never expose raw KIZ response bodies", async () =>
         new Dictionary<string, IReadOnlyList<string>> { ["A"] = new[] { secret } });
     Expect(!result.Success && !result.Message.Contains(secret, StringComparison.Ordinal), "Raw Ozon body leaked into a user-visible error.");
 });
+await Check("Ozon readback errors never expose echoed KIZ bodies", async () =>
+{
+    const string secret = "010460123456789321READBACK-SECRET";
+    var api = Api(_ => Json("{\"error\":\"" + secret + "\"}", HttpStatusCode.BadRequest));
+    try { await api.ReadMarketplaceFbsAsync(Store(Marketplace.Ozon), "P"); }
+    catch (Exception ex) { Expect(!ex.Message.Contains(secret, StringComparison.Ordinal), "Readback leaked raw Ozon response body."); return; }
+    throw new Exception("Fixture did not fail.");
+});
 await Check("Yandex complete box sends one CIS per unit without removing items", async () =>
 {
     var boxChecked = false;

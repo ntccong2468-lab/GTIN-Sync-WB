@@ -14,6 +14,8 @@ public interface ILicenseStorage
 {
     SignedLicenseFile? Load();
     void Save(SignedLicenseFile value);
+    DateTimeOffset? LoadLastSeen();
+    void SaveLastSeen(DateTimeOffset value);
 }
 
 public interface ILicenseServerClient
@@ -95,6 +97,34 @@ public sealed class FileLicenseStorage : ILicenseStorage
             File.Move(staging, primaryPath, true);
         }
     }
+
+    public DateTimeOffset? LoadLastSeen()
+    {
+        lock(gate)
+        {
+            try
+            {
+                var path=primaryPath+".clock";if(!File.Exists(path))return null;
+                var protectedBytes=File.ReadAllBytes(path);
+                var bytes=System.Security.Cryptography.ProtectedData.Unprotect(protectedBytes,
+                    Encoding.UTF8.GetBytes("MarketplaceHub-license-clock"),System.Security.Cryptography.DataProtectionScope.CurrentUser);
+                return DateTimeOffset.FromUnixTimeMilliseconds(BitConverter.ToInt64(bytes));
+            }
+            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException or ArgumentException){return null;}
+        }
+    }
+
+    public void SaveLastSeen(DateTimeOffset value)
+    {
+        lock(gate)
+        {
+            var directory=Path.GetDirectoryName(primaryPath)??throw new InvalidOperationException("License path has no directory.");Directory.CreateDirectory(directory);
+            var bytes=BitConverter.GetBytes(value.ToUnixTimeMilliseconds());
+            var protectedBytes=System.Security.Cryptography.ProtectedData.Protect(bytes,
+                Encoding.UTF8.GetBytes("MarketplaceHub-license-clock"),System.Security.Cryptography.DataProtectionScope.CurrentUser);
+            var path=primaryPath+".clock";var staging=path+".tmp";File.WriteAllBytes(staging,protectedBytes);File.Move(staging,path,true);
+        }
+    }
 }
 
 public sealed class HttpLicenseServerClient : ILicenseServerClient
@@ -149,14 +179,16 @@ public sealed class LicenseAccessService
     private readonly Ed25519LicenseVerifier verifier;
     private readonly ILicenseServerClient server;
     private readonly Func<DateTimeOffset> clock;
+    private readonly Func<string> fingerprint;
 
     public LicenseAccessService(ILicenseStorage storage, Ed25519LicenseVerifier verifier,
-        ILicenseServerClient server, Func<DateTimeOffset>? clock = null)
+        ILicenseServerClient server, Func<DateTimeOffset>? clock = null, Func<string>? fingerprint = null)
     {
         this.storage = storage;
         this.verifier = verifier;
         this.server = server;
         this.clock = clock ?? (() => DateTimeOffset.UtcNow);
+        this.fingerprint = fingerprint ?? DeviceFingerprint.Get;
     }
 
     public static LicenseAccessService CreateDefault()
@@ -168,7 +200,7 @@ public sealed class LicenseAccessService
         var http = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(15) };
         var url = Environment.GetEnvironmentVariable("MARKETPLACEHUB_LICENSE_URL") ?? "https://wcode.online";
         return new LicenseAccessService(new FileLicenseStorage(primary, wcode),
-            new Ed25519LicenseVerifier(ProductionPublicKey), new HttpLicenseServerClient(http, url));
+            new Ed25519LicenseVerifier(ProductionPublicKey), new HttpLicenseServerClient(http, url), fingerprint:DeviceFingerprint.Get);
     }
 
     public LicenseGateResult CanOpenAddStore() => EvaluateCached(storage.Load(), LicenseGateCode.ValidCached);
@@ -180,11 +212,12 @@ public sealed class LicenseAccessService
         var cached = EvaluateCached(file, LicenseGateCode.ValidCached);
         if (!cached.Allowed) return cached;
         var payload = verifier.Verify(file)!;
+        var localFingerprint=fingerprint();
         LicenseServerResult response;
         try
         {
             response = await server.ValidateStoreCreationAsync(new LicenseValidationRequest(
-                payload.LicenseKey, payload.Fingerprint,
+                payload.LicenseKey, localFingerprint,
                 Assembly.GetExecutingAssembly().GetName().Version?.ToString() ?? "0",
                 marketplace.ToString(), currentStoreCount, currentMarketplaceStoreCount), ct);
         }
@@ -200,11 +233,16 @@ public sealed class LicenseAccessService
         if (onlinePayload is null)
             return LicenseGateResult.Block(LicenseGateCode.InvalidSignature,
                 "Phản hồi license không có chữ ký hợp lệ. Chưa lưu cửa hàng.");
+        if(!string.Equals(onlinePayload.LicenseKey,payload.LicenseKey,StringComparison.Ordinal)
+            ||!string.Equals(onlinePayload.Fingerprint,localFingerprint,StringComparison.Ordinal))
+            return LicenseGateResult.Block(LicenseGateCode.DeviceMismatch,
+                "Phản hồi license không thuộc license hoặc thiết bị hiện tại. Chưa lưu cửa hàng.");
         var validity = EvaluatePayload(onlinePayload, LicenseGateCode.ValidOnline);
         if (!validity.Allowed) return validity;
         var limit = CheckStoreLimit(onlinePayload, marketplace, currentStoreCount, currentMarketplaceStoreCount);
         if (!limit.Allowed) return limit;
-        storage.Save(response.LicenseFile!);
+        try { storage.Save(response.LicenseFile!); storage.SaveLastSeen(clock()); }
+        catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException) { }
         return LicenseGateResult.Allow(LicenseGateCode.ValidOnline, "License đã được xác thực online.");
     }
 
@@ -214,10 +252,17 @@ public sealed class LicenseAccessService
             return LicenseGateResult.Block(LicenseGateCode.NotActivated,
                 "Chưa tìm thấy license đã kích hoạt trên máy này.");
         var payload = verifier.Verify(file);
-        return payload is null
-            ? LicenseGateResult.Block(LicenseGateCode.InvalidSignature,
-                "License lưu trên máy không có chữ ký hợp lệ.")
-            : EvaluatePayload(payload, allowedCode);
+        if(payload is null)
+            return LicenseGateResult.Block(LicenseGateCode.InvalidSignature,
+                "License lưu trên máy không có chữ ký hợp lệ.");
+        if(!string.Equals(payload.Fingerprint,fingerprint(),StringComparison.Ordinal))
+            return LicenseGateResult.Block(LicenseGateCode.DeviceMismatch,
+                "License lưu trên máy thuộc thiết bị khác. Hãy kích hoạt license trên máy này.");
+        var result=EvaluatePayload(payload, allowedCode);
+        if(result.Allowed)
+            try { storage.SaveLastSeen(clock()); }
+            catch(Exception ex) when(ex is IOException or UnauthorizedAccessException or System.Security.Cryptography.CryptographicException) { }
+        return result;
     }
 
     private LicenseGateResult EvaluatePayload(LicensePayload payload, LicenseGateCode allowedCode)
@@ -225,7 +270,8 @@ public sealed class LicenseAccessService
         var now = clock();
         var issued = DateTimeOffset.FromUnixTimeMilliseconds(payload.IssuedAt);
         var expires = DateTimeOffset.FromUnixTimeMilliseconds(payload.ExpiresAt);
-        if (now + ClockSkew < issued)
+        var lastSeen=storage.LoadLastSeen();
+        if (now + ClockSkew < issued || lastSeen is not null && now + ClockSkew < lastSeen.Value)
             return LicenseGateResult.Block(LicenseGateCode.ClockTampered,
                 "Thời gian hệ thống không khớp với lần xác thực license.");
         if (!payload.Status.Equals("valid", StringComparison.OrdinalIgnoreCase) || now >= expires)

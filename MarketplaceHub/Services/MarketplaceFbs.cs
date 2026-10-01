@@ -267,6 +267,8 @@ public sealed partial class MarketplaceGateway
     {
         using var response=await http.SendAsync(request,ct);
         var body=await response.Content.ReadAsStringAsync(ct);
+        if(!response.IsSuccessStatusCode&&marketplace==Marketplace.Ozon)
+            throw new HttpRequestException(SafeOzonHttpMessage(response.StatusCode,response.Headers.RetryAfter?.ToString()));
         Ensure(response,body);
         var root=JsonNode.Parse(body) as JsonObject??throw new InvalidOperationException("Sàn trả JSON không hợp lệ.");
         if(root["errors"] is JsonArray errors && errors.Count>0 || marketplace==Marketplace.Yandex && root["status"]?.ToString()=="ERROR")

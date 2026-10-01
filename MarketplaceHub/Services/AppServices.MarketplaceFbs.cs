@@ -214,8 +214,10 @@ public sealed partial class AppServices
             if(existing.State=="VERIFIED")return new(true,"Ozon đã xác thực KIZ/exemplar ở lần trước.",snapshot.OrderId);
             return new(false,"Kết quả gửi KIZ/exemplar Ozon trước đó chưa rõ. Không tự gửi lại; hãy đối soát trạng thái exemplar.");
         }
-        if(!Db.TryBeginOzonExemplarMutation(store,snapshot.OrderId,fingerprint))
-            return new(false,"Một luồng khác đã bắt đầu gửi KIZ/exemplar cho posting này.");
+        var required=snapshot.Items.Where(x=>x.RequiresKiz).ToArray();
+        if(required.Select(x=>x.Offer).Distinct(StringComparer.Ordinal).Count()!=required.Length)
+            return new(false,"Ozon có nhiều product ID cùng offer_id. Dừng để đối soát ánh xạ KIZ; chưa gửi mutation.");
+        var claimed=false;
         try
         {
             var byOffer=new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal);
@@ -224,17 +226,22 @@ public sealed partial class AppServices
                 if(!codes.TryGetValue(item.Id,out var unitCodes))throw new InvalidOperationException("Thiếu KIZ cho item Ozon.");
                 byOffer[item.Offer]=unitCodes;
             }
-            var result=await Api.PrepareOzonKizAsync(store,snapshot.OrderId,byOffer,ct).ConfigureAwait(false);
-            Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,result.Success?"VERIFIED":"RECONCILE_REQUIRED",result.Success?"":"submit_not_verified");
-            return result.Success?result:new(false,result.Message+" Checkpoint được giữ; ứng dụng không tự gửi mutation lần hai.");
+            var result=await Api.PrepareOzonKizAsync(store,snapshot.OrderId,byOffer,ct,()=>
+            {
+                claimed=Db.TryBeginOzonExemplarMutation(store,snapshot.OrderId,fingerprint);return claimed;
+            }).ConfigureAwait(false);
+            if(claimed)Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,result.Success?"VERIFIED":"RECONCILE_REQUIRED",result.Success?"":"submit_not_verified");
+            return result.Success?result:claimed
+                ?new(false,result.Message+" Checkpoint được giữ; ứng dụng không tự gửi mutation lần hai.")
+                :result;
         }
         catch(OperationCanceledException)
         {
-            Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,"RECONCILE_REQUIRED","cancelled_during_submit");throw;
+            if(claimed)Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,"RECONCILE_REQUIRED","cancelled_during_submit");throw;
         }
         catch(Exception)
         {
-            Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,"RECONCILE_REQUIRED","submit_outcome_unknown");
+            if(claimed)Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,"RECONCILE_REQUIRED","submit_outcome_unknown");
             return new(false,"Kết quả gửi KIZ/exemplar Ozon chưa rõ. Không tự gửi lại; hãy đối soát trạng thái exemplar.");
         }
     }

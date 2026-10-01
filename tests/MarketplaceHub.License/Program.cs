@@ -58,7 +58,8 @@ LicenseAccessService Service(
         new MemoryLicenseStorage(cached),
         new Ed25519LicenseVerifier(Convert.ToBase64String(publicKey)),
         new DelegateLicenseServerClient(online),
-        () => now);
+        () => now,
+        () => "fp-test");
 
 await Check("signed unexpired cache opens Add Store without an online request", async () =>
 {
@@ -84,6 +85,16 @@ await Check("invalid signature blocks opening Add Store", async () =>
     bytes[^1] ^= 1;
     var result = Service(file with { Payload = Convert.ToBase64String(bytes) }, (_, _) => throw new Exception()).CanOpenAddStore();
     Expect(!result.Allowed && result.Code == LicenseGateCode.InvalidSignature, "Tampered payload was accepted.");
+    await Task.CompletedTask;
+});
+
+await Check("cache copied from another device is rejected", async () =>
+{
+    var storage = new MemoryLicenseStorage(Signed());
+    var service = new LicenseAccessService(storage, new Ed25519LicenseVerifier(Convert.ToBase64String(publicKey)),
+        new DelegateLicenseServerClient((_, _) => throw new Exception()), () => now, () => "another-device");
+    var result = service.CanOpenAddStore();
+    Expect(!result.Allowed && result.Code == LicenseGateCode.DeviceMismatch, "A copied device-bound cache was accepted.");
     await Task.CompletedTask;
 });
 
@@ -140,10 +151,35 @@ await Check("malformed online signature blocks save and keeps previous cache", a
     var storage = new MemoryLicenseStorage(cached);
     var bad = Signed() with { Signature = Convert.ToBase64String(Encoding.UTF8.GetBytes("bad")) };
     var service = new LicenseAccessService(storage, new Ed25519LicenseVerifier(Convert.ToBase64String(publicKey)),
-        new DelegateLicenseServerClient((_, _) => Task.FromResult(LicenseServerResult.Accepted(bad))), () => now);
+        new DelegateLicenseServerClient((_, _) => Task.FromResult(LicenseServerResult.Accepted(bad))), () => now, () => "fp-test");
     var result = await service.ValidateBeforeCreateStoreAsync(Marketplace.Ozon, 0, 0);
     Expect(!result.Allowed && result.Code == LicenseGateCode.InvalidSignature, "Bad online signature was accepted.");
     Expect(ReferenceEquals(storage.Load(), cached), "A bad online response replaced the known-good cache.");
+});
+
+await Check("online response for another license or device is rejected", async () =>
+{
+    var otherPayload = new LicensePayload(1, "WC-OTHER", "other-device", "standard", 1, "valid",
+        now.AddDays(-1).ToUnixTimeMilliseconds(), now.AddDays(30).ToUnixTimeMilliseconds(), 3, null);
+    var bytes = JsonSerializer.SerializeToUtf8Bytes(otherPayload, LicenseJson.Options);
+    var signer = new Ed25519Signer(); signer.Init(true, privateKey); signer.BlockUpdate(bytes, 0, bytes.Length);
+    var other = new SignedLicenseFile(Convert.ToBase64String(bytes), Convert.ToBase64String(signer.GenerateSignature()), "Ed25519");
+    var result = await Service(Signed(), (_, _) => Task.FromResult(LicenseServerResult.Accepted(other)))
+        .ValidateBeforeCreateStoreAsync(Marketplace.Ozon, 0, 0);
+    Expect(!result.Allowed && result.Code == LicenseGateCode.DeviceMismatch, "A signed response for another identity was accepted.");
+});
+
+await Check("last known time blocks rolling clock back into an expired window", async () =>
+{
+    var storage = new MemoryLicenseStorage(Signed(expiresAt: now.AddDays(2)));
+    var verifier = new Ed25519LicenseVerifier(Convert.ToBase64String(publicKey));
+    var server = new DelegateLicenseServerClient((_, _) => throw new Exception());
+    var current = new LicenseAccessService(storage, verifier, server, () => now, () => "fp-test");
+    Expect(current.CanOpenAddStore().Allowed, "Fixture cache should be valid at the current time.");
+    var rollback = new LicenseAccessService(storage, verifier, server, () => now.AddDays(-2), () => "fp-test");
+    var result = rollback.CanOpenAddStore();
+    Expect(!result.Allowed && result.Code == LicenseGateCode.ClockTampered, "Persisted last-known time did not detect rollback.");
+    await Task.CompletedTask;
 });
 
 await Check("failed online validation writes no store row", async () =>
@@ -195,8 +231,11 @@ return failures.Count == 0 ? 0 : 1;
 sealed class MemoryLicenseStorage(SignedLicenseFile? value) : ILicenseStorage
 {
     private SignedLicenseFile? current = value;
+    private DateTimeOffset? lastSeen;
     public SignedLicenseFile? Load() => current;
     public void Save(SignedLicenseFile value) => current = value;
+    public DateTimeOffset? LoadLastSeen() => lastSeen;
+    public void SaveLastSeen(DateTimeOffset value) => lastSeen = value;
 }
 
 sealed class DelegateLicenseServerClient(

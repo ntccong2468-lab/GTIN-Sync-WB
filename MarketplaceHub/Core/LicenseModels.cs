@@ -28,6 +28,7 @@ public enum LicenseGateCode
     Expired,
     Invalid,
     InvalidSignature,
+    DeviceMismatch,
     ClockTampered,
     NetworkUnavailable,
     Maintenance,

@@ -128,6 +128,26 @@ await Check("Ozon exemplar mutation fingerprint survives restart and blocks a se
     var persisted=app.Db.OzonExemplarMutation(oz,"P-EXEMPLAR");
     Expect(persisted is not null&&persisted.Fingerprint==fingerprint&&persisted.State=="RECONCILE_REQUIRED","Ambiguous exemplar state did not survive restart.");return Task.CompletedTask;
 });
+await Check("Ozon duplicate offer is rejected before exemplar mutation",async()=>{
+    var oz=Store(Marketplace.Ozon);var requests=0;Http(_=>{requests++;return Json("{}");});
+    var snapshot=new MarketplaceFbsSnapshot(oz.Id,Marketplace.Ozon,"P-DUP","awaiting_packaging","",new[]{
+        new MarketplaceFbsItem("100","SAME","A",1,true,new JsonObject()),
+        new MarketplaceFbsItem("200","SAME","B",1,true,new JsonObject())},new JsonObject(),false,"");
+    var method=typeof(AppServices).GetMethod("PrepareDurableOzonKizAsync",BindingFlags.Instance|BindingFlags.NonPublic)!;
+    var task=(Task<PriceUpdateResult>)method.Invoke(app,new object[]{oz,snapshot,new Dictionary<string,IReadOnlyList<string>>{{"100",new[]{"code-a"}},{"200",new[]{"code-b"}}},CancellationToken.None})!;
+    var result=await task;Expect(!result.Success&&requests==0&&app.Db.OzonExemplarMutation(oz,"P-DUP") is null,"Duplicate offer overwrote KIZ or created a mutation checkpoint.");
+});
+await Check("Ozon rejected preflight does not lock exemplar retry",async()=>{
+    var oz=Store(Marketplace.Ozon);Http(r=>r.RequestUri!.AbsolutePath switch{
+        "/v3/posting/fbs/get"=>Json("{\"result\":{\"requirements\":{\"products_requiring_mandatory_mark\":[100]},\"products\":[{\"product_id\":100,\"offer_id\":\"A\",\"quantity\":1}]}}"),
+        "/v6/fbs/posting/product/exemplar/create-or-get"=>Json("{\"products\":[{\"product_id\":100,\"exemplars\":[{\"exemplar_id\":1}]}]}"),
+        "/v5/fbs/posting/product/exemplar/validate"=>Json("{\"products\":[{\"product_id\":100,\"exemplars\":[{\"status\":\"rejected\"}]}]}"),
+        _=>throw new Exception("Mutation set must not run after rejected validation")});
+    var snapshot=new MarketplaceFbsSnapshot(oz.Id,Marketplace.Ozon,"P-REJECT","awaiting_packaging","",new[]{new MarketplaceFbsItem("100","A","A",1,true,new JsonObject())},new JsonObject(),false,"");
+    var method=typeof(AppServices).GetMethod("PrepareDurableOzonKizAsync",BindingFlags.Instance|BindingFlags.NonPublic)!;
+    var result=await (Task<PriceUpdateResult>)method.Invoke(app,new object[]{oz,snapshot,new Dictionary<string,IReadOnlyList<string>>{{"100",new[]{"code-a"}}},CancellationToken.None})!;
+    Expect(!result.Success&&app.Db.OzonExemplarMutation(oz,"P-REJECT") is null,"Known preflight rejection permanently locked the posting.");
+});
 }finally{foreach(var store in stores)app.Db.DeleteStore(store.Id);}
 Console.WriteLine($"{checks-failures.Count}/{checks} persistence and FBS workflow checks passed");return failures.Count==0?0:1;
 sealed class FixtureHttp(Func<HttpRequestMessage,HttpResponseMessage> response):HttpMessageHandler

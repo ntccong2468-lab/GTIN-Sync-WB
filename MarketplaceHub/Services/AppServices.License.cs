@@ -11,9 +11,10 @@ public sealed partial class AppServices
     public async Task<StoreCreationResult> CreateStoreAsync(StoreProfile store, CancellationToken ct = default)
     {
         if (store.Id != 0) return new StoreCreationResult(false, "Chỉ cửa hàng mới dùng luồng tạo có license.");
-        await storeCreationGate.WaitAsync(ct);
+        var entered=false;
         try
         {
+            await storeCreationGate.WaitAsync(ct);entered=true;
             var stores = Db.Stores();
             var decision = await License.ValidateBeforeCreateStoreAsync(
                 store.Marketplace,
@@ -32,6 +33,6 @@ public sealed partial class AppServices
         {
             return new StoreCreationResult(false, "Không thể lưu cửa hàng: " + ex.Message);
         }
-        finally { storeCreationGate.Release(); }
+        finally { if(entered)storeCreationGate.Release(); }
     }
 }

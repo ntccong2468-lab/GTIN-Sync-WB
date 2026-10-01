@@ -262,10 +262,12 @@ public sealed partial class MarketplaceGateway
         return path switch
         {
             "/v1/seller/info" => root["seller_id"] is not null || root["company"] is not null || root["result"] is JsonObject { Count: > 0 },
-            "/v1/roles" => root["result"] is JsonArray || root["roles"] is JsonArray,
-            "/v2/warehouse/list" => root["result"] is JsonArray,
-            "/v4/posting/fbs/unfulfilled/list" => root["result"] is JsonObject result && result["postings"] is JsonArray,
-            "/v3/posting/fbs/get" => root["result"] is JsonObject posting && (posting["posting_number"] is not null || posting["products"] is JsonArray),
+            "/v1/roles" => root["result"] is JsonArray { Count: > 0 } || root["roles"] is JsonArray { Count: > 0 },
+            "/v2/warehouse/list" => root["result"] is JsonArray { Count: > 0 },
+            "/v4/posting/fbs/unfulfilled/list" => root["result"] is JsonObject result && result["postings"] is JsonArray
+                && (result["cursor"] is not null || result["has_next"] is not null),
+            "/v3/posting/fbs/get" => root["result"] is JsonObject posting && posting["posting_number"] is not null
+                && posting["products"] is JsonArray && posting["requirements"] is JsonObject,
             _ => false
         };
     }
