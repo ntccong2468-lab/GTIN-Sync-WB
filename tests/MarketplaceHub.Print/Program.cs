@@ -75,13 +75,15 @@ Check("A4 picking groups exact variants and preserves quantity", () =>
 });
 Check("Final product-page KIZ and barcode decode at 203, 254 and 300 dpi", () =>
 {
-    var bundle=service.Prepare("fixture",new[]{order},new WbPrintOptions(true,true,false,1),output);
+    foreach(var marking in new[]{code,"010460123456789321serialABCDEFG\u001d91ABCD\u001d92"+new string('a',88)})
+    {
+    var bundle=service.Prepare("fixture",new[]{order with {KizCodes=new[]{marking}}},new WbPrintOptions(true,true,false,1),output);
     using var page=SKBitmap.Decode(bundle.Pages[0].Path);
     foreach(var dpi in new[]{203,254,300})
     {
         var scale=dpi/254f;
         using var raster=page.Resize(new SKImageInfo((int)(580*scale),(int)(400*scale)),SKFilterQuality.None);
-        foreach(var area in new[]{(new SKRectI(20,45,200,225),BarcodeFormat.DATA_MATRIX,code),(new SKRectI(25,278,555,343),BarcodeFormat.CODE_128,order.Barcode)})
+        foreach(var area in new[]{(new SKRectI(20,45,240,265),BarcodeFormat.DATA_MATRIX,marking),(new SKRectI(25,278,555,343),BarcodeFormat.CODE_128,order.Barcode)})
         {
             var rect=new SKRectI((int)(area.Item1.Left*scale),(int)(area.Item1.Top*scale),(int)(area.Item1.Right*scale),(int)(area.Item1.Bottom*scale));
             using var crop=new SKBitmap();raster.ExtractSubset(crop,rect);
@@ -91,6 +93,24 @@ Check("Final product-page KIZ and barcode decode at 203, 254 and 300 dpi", () =>
             Expect(decoded?.Text.TrimStart('\u001d')==area.Item3,$"Final {area.Item2} corrupted at {dpi}dpi.");
         }
     }
+    }
+});
+Check("Official WB PNG is preserved instead of reconstructed metadata", () =>
+{
+    var path=Path.Combine(output,"official.png");
+    using(var qr=WbPrintBundleService.RenderCode("!official-file-payload",BarcodeFormat.QR_CODE))
+    using(var data=qr.Encode(SKEncodedImageFormat.Png,100))
+    using(var file=File.Create(path))data.SaveTo(file);
+    using var page=WbPrintBundleService.RenderSticker(sticker with {FilePath=path,Barcode="other-metadata"});
+    var decoded=new BarcodeReaderGeneric().Decode(page.Bytes,page.Width,page.Height,RGBLuminanceSource.BitmapFormat.BGRA32);
+    Expect(decoded?.Text=="!official-file-payload","Official WB sticker was replaced by a synthetic one.");
+});
+Check("One KIZ cannot be printed for two different WB orders", () =>
+{
+    var rejected=false;
+    try {service.Prepare("fixture",new[]{order,order with {OrderId="102"}},new WbPrintOptions(true,true,false,1),output);}
+    catch(InvalidOperationException ex){rejected=ex.Message.Contains("KIZ");}
+    Expect(rejected,"The same KIZ was reused for multiple orders.");
 });
 Console.WriteLine($"{checks-failures.Count}/{checks} print regressions passed");
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;

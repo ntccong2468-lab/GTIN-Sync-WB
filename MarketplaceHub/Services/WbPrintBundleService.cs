@@ -28,6 +28,12 @@ public sealed class WbPrintBundleService
         if (orders.Count == 0) throw new InvalidOperationException("Chưa chọn đơn cần in.");
         if (orders.Select(x => x.OrderId).Distinct().Count() != orders.Count) throw new InvalidOperationException("Bộ nhãn có ID đơn bị trùng.");
         if (options.ProductCopies < 1 || options.ProductCopies > 20) throw new InvalidOperationException("Số bản nhãn sản phẩm phải từ 1 đến 20.");
+        if(options.IncludeKiz)
+        {
+            var codes=orders.SelectMany(x=>x.KizCodes).Select(x=>x.TrimStart('\u001d')).ToArray();
+            if(codes.Distinct(StringComparer.Ordinal).Count()!=codes.Length)
+                throw new InvalidOperationException("Một KIZ đang được dùng cho nhiều đơn/sản phẩm. Kiểm tra metadata WB trước khi in.");
+        }
         foreach (var order in orders)
         {
             if (!order.Label.Success) throw new InvalidOperationException($"{order.OrderId}: {order.Label.Message}");
@@ -170,15 +176,15 @@ public sealed class WbPrintBundleService
             if (!string.IsNullOrWhiteSpace(kiz))
             {
                 using var matrix = RenderCode(kiz,BarcodeFormat.DATA_MATRIX);
-                canvas.DrawBitmap(matrix,new SKRect(20,45,200,225));
-                Text(canvas,"KIZ · GS1",28,250,18,true);
+                canvas.DrawBitmap(matrix,new SKRect(20,45,240,265));
+                Text(canvas,"KIZ · GS1",28,30,18,true);
             }
-            Text(canvas,order.Brand,220,34,25,true,340);
-            Text(canvas,order.Name,220,73,21,true,340);
-            Text(canvas,"Арт: " + order.Article,220,115,23,true,340);
-            Text(canvas,"Цвет: " + order.Color,220,156,22,false,340);
-            Text(canvas,"Размер: " + order.Size,220,197,24,true,340);
-            Text(canvas,"WB · " + order.OrderId,220,239,20,false,340);
+            Text(canvas,order.Brand,260,34,25,true,300);
+            Text(canvas,order.Name,260,73,21,true,300);
+            Text(canvas,"Арт: " + order.Article,260,115,23,true,300);
+            Text(canvas,"Цвет: " + order.Color,260,156,22,false,300);
+            Text(canvas,"Размер: " + order.Size,260,197,24,true,300);
+            Text(canvas,"WB · " + order.OrderId,260,239,20,false,300);
             if (productLabel)
             {
                 using var barcode = RenderCode(order.Barcode,BarcodeFormat.CODE_128);
