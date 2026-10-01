@@ -230,7 +230,7 @@ internal static class Program
                 Expect(!document.DefaultPageSettings.Landscape && document.PrinterSettings.Copies==1,"Driver defaults override prepared page order/copies.");
                 Expect(document.DefaultPageSettings.PaperSize.Width==228 && document.DefaultPageSettings.PaperSize.Height==157,"58×40 paper size was lost.");
             });
-            Check("WB filtered select-all shows create and add shipment choices", () =>
+            Check("WB header select-all filters rows and reveals receipt action", () =>
             {
                 var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-selection","","","","","fixture",true));
                 try {
@@ -238,13 +238,15 @@ internal static class Program
                     typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,new object?[]{0L});
                     for(var i=0;i<picker.Items.Count;i++)if(picker.Items[i] is StoreProfile s && s.Id==wb.Id)picker.SelectedIndex=i;
                     Page(form,"ShowFbs");Application.DoEvents();
-                    var grid=All(form).OfType<DataGridView>().Single();
-                    var all=All(form).OfType<CheckBox>().Single(c=>c.Text=="Chọn tất cả đơn đang hiển thị");
-                    all.Checked=true;Application.DoEvents();
-                    Expect(grid.Rows.Count==3 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true),"Select-all selected only the first row.");
-                    var search=All(form).OfType<TextBox>().Single(c=>c.PlaceholderText.Contains("Tìm theo đơn"));search.Text="Quần";Application.DoEvents();
-                    Expect(grid.Rows.Count==2 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true),"Filtering lost select-all selection.");
-                    Expect(All(form).Any(c=>c.Text=="Tạo shipment mới" && c.Visible) && All(form).Any(c=>c.Text=="Thêm shipment hôm nay" && c.Visible),"Shipment choices did not appear after selecting orders.");
+                    var grid=All(form).OfType<DataGridView>().Single(x=>x.Name=="fbsNewOrders");
+                    Expect(grid.Columns[0] is DataGridViewCheckBoxColumn && grid.Columns[0].HeaderText=="☐" && grid.Columns[1].HeaderText=="ORDER ID","Select-all checkbox is not in the header beside ORDER ID.");
+                    typeof(DataGridView).GetMethod("OnColumnHeaderMouseClick",BindingFlags.Instance|BindingFlags.NonPublic)!.Invoke(grid,new object[]{new DataGridViewCellMouseEventArgs(0,-1,1,1,new MouseEventArgs(MouseButtons.Left,1,1,1,0))});
+                    Application.DoEvents();
+                    Expect(grid.Rows.Count==3 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true),"Header select-all did not select every visible order.");
+                    var search=All(form).OfType<TextBox>().Single(x=>x.PlaceholderText.Contains("Tìm theo đơn"));search.Text="Quần";Application.DoEvents();
+                    Expect(grid.Rows.Count==2 && grid.Rows.Cast<DataGridViewRow>().All(r=>r.Cells[0].Value is true),"Filtering lost selected visible orders.");
+                    Expect(All(form).Any(x=>x.Text=="Nhận đơn (2)" && x.Visible),"Receipt action did not appear after header selection.");
+                    Expect(!All(form).Any(x=>x.Text.Contains("KIZ") && x.Visible && x is Button),"New-order page exposes KIZ/printing before shipment receipt.");
                 } finally {app.Db.DeleteStore(wb.Id);typeof(MainForm).GetMethod("RefreshStores",instance)!.Invoke(form,new object?[]{0L});}
             });
             Check("WB reserved KIZ stays with its shop and order across retries and imports", () =>
