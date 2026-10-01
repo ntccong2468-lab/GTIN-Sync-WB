@@ -7,7 +7,7 @@ namespace MarketplaceHub.Services;
 
 public sealed partial class MarketplaceGateway
 {
-    private readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(60) };
+    private readonly HttpClient http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) };
 
     public async Task<ApiTestResult> TestAsync(StoreProfile s, CancellationToken ct = default)
     {
@@ -24,7 +24,9 @@ public sealed partial class MarketplaceGateway
             var body = await res.Content.ReadAsStringAsync(ct);
             return new ApiTestResult(
                 res.IsSuccessStatusCode,
-                res.IsSuccessStatusCode ? "Kết nối API thành công." : $"HTTP {(int)res.StatusCode}: {Short(body)}");
+                res.IsSuccessStatusCode ? "Kết nối API thành công." : s.Marketplace==Marketplace.Ozon
+                    ? SafeOzonHttpMessage(res.StatusCode,res.Headers.RetryAfter?.ToString())
+                    : $"HTTP {(int)res.StatusCode}: {Short(body)}");
         }
         catch (Exception ex) { return new ApiTestResult(false, ex.Message); }
     }
@@ -1145,6 +1147,7 @@ public sealed partial class MarketplaceGateway
 
     private static string AuthFriendly(StoreProfile store, System.Net.HttpStatusCode status, string body)
     {
+        if(store.Marketplace==Marketplace.Ozon)return SafeOzonHttpMessage(status,null);
         if ((int)status == 401 || (int)status == 403)
             return $"{store.Marketplace} từ chối thông tin API (HTTP {(int)status}). " +
                    "Hãy kiểm tra token/API key của đúng cửa hàng đích và quyền quản lý sản phẩm. " +
@@ -1321,7 +1324,7 @@ public sealed partial class MarketplaceGateway
                     using var picRes = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v1/product/pictures/import", dst, picturesBody), ct);
                     var picText = await picRes.Content.ReadAsStringAsync(ct);
                     if (!picRes.IsSuccessStatusCode)
-                        return new PriceUpdateResult(false, $"Sản phẩm Ozon đã tạo nhưng tải ảnh thất bại. HTTP {(int)picRes.StatusCode}: {Short(picText)}");
+                        return new PriceUpdateResult(false, "Sản phẩm Ozon đã tạo nhưng tải ảnh thất bại. "+SafeOzonHttpMessage(picRes.StatusCode,picRes.Headers.RetryAfter?.ToString()));
 
                     var verified = await VerifyOzonMediaAsync(dst, destinationProductId.Value, ct);
                     return new PriceUpdateResult(
@@ -1469,7 +1472,7 @@ public sealed partial class MarketplaceGateway
                 })), ct);
             var detailText = await detailRes.Content.ReadAsStringAsync(ct);
             if (!detailRes.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"Ozon posting detail HTTP {(int)detailRes.StatusCode}: {Short(detailText)}");
+                return new PriceUpdateResult(false, SafeOzonHttpMessage(detailRes.StatusCode, detailRes.Headers.RetryAfter?.ToString()));
 
             var posting = JsonNode.Parse(detailText)?["result"] ?? JsonNode.Parse(detailText);
             var requirements = posting?["requirements"];
@@ -1502,7 +1505,7 @@ public sealed partial class MarketplaceGateway
                 JsonSerializer.Serialize(new { posting_number = postingNumber })), ct);
             var createText = await createRes.Content.ReadAsStringAsync(ct);
             if (!createRes.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"Ozon create exemplar HTTP {(int)createRes.StatusCode}: {Short(createText)}");
+                return new PriceUpdateResult(false, SafeOzonHttpMessage(createRes.StatusCode, createRes.Headers.RetryAfter?.ToString()));
 
             var idsByProduct = CollectOzonExemplarIdsByProduct(JsonNode.Parse(createText));
             var validateProducts = new JsonArray();
@@ -1552,7 +1555,7 @@ public sealed partial class MarketplaceGateway
                 "https://api-seller.ozon.ru/v5/fbs/posting/product/exemplar/validate", store, validateBody), ct);
             var validateText = await validateRes.Content.ReadAsStringAsync(ct);
             if (!validateRes.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"Ozon validate KIZ HTTP {(int)validateRes.StatusCode}: {Short(validateText)}");
+                return new PriceUpdateResult(false, SafeOzonHttpMessage(validateRes.StatusCode, validateRes.Headers.RetryAfter?.ToString()));
             if (OzonHasRejectedExemplar(JsonNode.Parse(validateText)))
                 return new PriceUpdateResult(false, "Ozon từ chối ít nhất một KIZ/exemplar. Không chuyển đơn sang giao hàng.");
 
@@ -1565,7 +1568,7 @@ public sealed partial class MarketplaceGateway
                 "https://api-seller.ozon.ru/v6/fbs/posting/product/exemplar/set", store, setBody), ct);
             var setText = await setRes.Content.ReadAsStringAsync(ct);
             if (!setRes.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"Ozon set KIZ HTTP {(int)setRes.StatusCode}: {Short(setText)}");
+                return new PriceUpdateResult(false, SafeOzonHttpMessage(setRes.StatusCode, setRes.Headers.RetryAfter?.ToString()));
 
             for (var attempt = 0; attempt < 12; attempt++)
             {
@@ -1574,7 +1577,7 @@ public sealed partial class MarketplaceGateway
                     JsonSerializer.Serialize(new { posting_number = postingNumber })), ct);
                 var statusText = await statusRes.Content.ReadAsStringAsync(ct);
                 if (!statusRes.IsSuccessStatusCode)
-                    return new PriceUpdateResult(false, $"Ozon KIZ status HTTP {(int)statusRes.StatusCode}: {Short(statusText)}");
+                    return new PriceUpdateResult(false, SafeOzonHttpMessage(statusRes.StatusCode, statusRes.Headers.RetryAfter?.ToString()));
 
                 var statusNode = JsonNode.Parse(statusText);
                 if (OzonHasRejectedExemplar(statusNode))
@@ -1852,14 +1855,14 @@ public sealed partial class MarketplaceGateway
                 using var ship = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v4/posting/fbs/ship", s, body), ct);
                 var shipText = await ship.Content.ReadAsStringAsync(ct);
                 if (!ship.IsSuccessStatusCode)
-                    return new PriceUpdateResult(false, $"Ozon ship HTTP {(int)ship.StatusCode}: {Short(shipText)}");
+                    return new PriceUpdateResult(false, SafeOzonHttpMessage(ship.StatusCode,ship.Headers.RetryAfter?.ToString()));
 
                 await Task.Delay(1200, ct);
                 using var verify = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v3/posting/fbs/get", s,
                     JsonSerializer.Serialize(new { posting_number = order.ExternalOrderId, with = new { analytics_data = false, financial_data = false } })), ct);
                 var verifyText = await verify.Content.ReadAsStringAsync(ct);
                 if (!verify.IsSuccessStatusCode)
-                    return new PriceUpdateResult(false, $"Ozon verify HTTP {(int)verify.StatusCode}: {Short(verifyText)}");
+                    return new PriceUpdateResult(false, SafeOzonHttpMessage(verify.StatusCode,verify.Headers.RetryAfter?.ToString()));
 
                 var status = JsonNode.Parse(verifyText)?["result"]?["status"]?.ToString() ?? "";
                 var substatus = JsonNode.Parse(verifyText)?["result"]?["substatus"]?.ToString() ?? "";
@@ -2059,7 +2062,14 @@ public sealed partial class MarketplaceGateway
 
     private static void Ensure(HttpResponseMessage r, string body)
     {
-        if (!r.IsSuccessStatusCode) throw new HttpRequestException($"HTTP {(int)r.StatusCode}: {Short(body)}");
+        if (!r.IsSuccessStatusCode)
+        {
+            var host=r.RequestMessage?.RequestUri?.Host??"";
+            if(host.Equals("ozon.ru",StringComparison.OrdinalIgnoreCase)||host.EndsWith(".ozon.ru",StringComparison.OrdinalIgnoreCase)
+                ||host.Equals("ozone.ru",StringComparison.OrdinalIgnoreCase)||host.EndsWith(".ozone.ru",StringComparison.OrdinalIgnoreCase))
+                throw new HttpRequestException(SafeOzonHttpMessage(r.StatusCode,r.Headers.RetryAfter?.ToString()));
+            throw new HttpRequestException($"HTTP {(int)r.StatusCode}: {Short(body)}");
+        }
     }
 
     private static string Short(string s) => s.Length > 500 ? s[..500] : s;

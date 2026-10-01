@@ -19,6 +19,8 @@ jobs:
         run: dotnet run --project tests/MarketplaceHub.Fbs -c Release
       - name: Persistent FBS recovery
         run: dotnet run --project tests/MarketplaceHub.FbsState -c Release
+      - name: License add-store gates
+        run: dotnet run --project tests/MarketplaceHub.License -c Release
       - name: Stateful Ozon and Yandex mock API
         run: dotnet run --project tests/MarketplaceHub.MockApi -c Release
       - name: UI navigation and layout

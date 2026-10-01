@@ -95,6 +95,23 @@ await Check("Non-PDF success response is never sent to the label printer", async
     if (label.FilePath is not null) File.Delete(label.FilePath);
     Expect(!label.Success && label.FilePath is null, "JSON/error body was saved as an official PDF label.");
 });
+await Check("Ozon diagnostics rejects empty JSON instead of reporting green", async () =>
+{
+    var api = Api(_ => Json("{}"));
+    var report = await api.DiagnoseOzonAsync(Store(Marketplace.Ozon));
+    Expect(report.Steps.Count == 1 && !report.Steps[0].Success && report.Steps[0].Code == "invalid_schema",
+        "A 2xx empty object was reported as a healthy Ozon endpoint.");
+});
+await Check("Ozon errors never expose raw KIZ response bodies", async () =>
+{
+    const string secret = "010460123456789321SERIAL-SECRET";
+    var api = Api(r => r.RequestUri!.AbsolutePath.EndsWith("/get")
+        ? Json("{\"result\":{\"requirements\":{\"products_requiring_mandatory_mark\":[100]},\"products\":[{\"product_id\":100,\"offer_id\":\"A\",\"quantity\":1}]}}")
+        : Json("{\"error\":\"" + secret + "\"}", HttpStatusCode.BadRequest));
+    var result = await api.PrepareOzonKizAsync(Store(Marketplace.Ozon), "P",
+        new Dictionary<string, IReadOnlyList<string>> { ["A"] = new[] { secret } });
+    Expect(!result.Success && !result.Message.Contains(secret, StringComparison.Ordinal), "Raw Ozon body leaked into a user-visible error.");
+});
 await Check("Yandex complete box sends one CIS per unit without removing items", async () =>
 {
     var boxChecked = false;

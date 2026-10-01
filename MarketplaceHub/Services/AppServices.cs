@@ -12,10 +12,20 @@ namespace MarketplaceHub.Services;
 
 public sealed partial class AppServices
 {
-    public AppDatabase Db { get; } = new();
-    public MarketplaceGateway Api { get; } = new();
+    public AppDatabase Db { get; }
+    public MarketplaceGateway Api { get; }
+    public LicenseAccessService License { get; }
     private readonly HttpClient znakHttp = new() { Timeout = TimeSpan.FromSeconds(45) };
     private readonly ConcurrentDictionary<long, SemaphoreSlim> syncLocks = new();
+
+    public AppServices() : this(new AppDatabase(), new MarketplaceGateway(), LicenseAccessService.CreateDefault()) { }
+
+    public AppServices(AppDatabase db, MarketplaceGateway api, LicenseAccessService license)
+    {
+        Db = db;
+        Api = api;
+        License = license;
+    }
 
     public Task<(bool Ok, string Message)> SyncProductsAsync(StoreProfile store, CancellationToken ct = default) =>
         RunStoreSyncAsync(store, () => SyncProductsCoreAsync(store, ct), ct);

@@ -44,11 +44,12 @@ public sealed class OzonDiagnosticsDialog : Form
         try
         {
             var report=await api.DiagnoseOzonAsync(store,posting.Text.Trim(),operation.Token);
+            if(IsDisposed||Disposing)return;
             safeReport=report.SafeText;
             foreach(var step in report.Steps)grid.Rows.Add(step.Stage,step.Endpoint,step.Success?"OK":"LỖI",step.HttpStatus==0?"—":step.HttpStatus,step.ElapsedMs+" ms",step.Message+" "+step.NextAction);
             copy.Enabled=safeReport.Length>0;
         }
-        catch(OperationCanceledException){grid.Rows.Add("Đã dừng","—","DỪNG","—","—","Không có mutation nào được thực hiện.");}
+        catch(OperationCanceledException){if(!IsDisposed&&!Disposing)grid.Rows.Add("Đã dừng","—","DỪNG","—","—","Không có mutation nào được thực hiện.");}
         finally{if(!IsDisposed){run.Enabled=true;cancel.Enabled=false;}}
     }
 }

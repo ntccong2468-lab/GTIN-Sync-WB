@@ -112,12 +112,21 @@ await Check("Scanner prefix cannot bypass ownership or reimport a second physica
 await Check("Ozon label task survives restart state and ambiguous create blocks duplicates",()=>{
     var oz=Store(Marketplace.Ozon);var first=app.Db.GetOrCreateOzonLabelJob(oz,"P-LABEL");
     Expect(first.Status=="NEW"&&first.TaskId=="","Initial label checkpoint is invalid.");
-    app.Db.SaveOzonLabelJob(oz,"P-LABEL","","CREATE_PENDING");
+    Expect(app.Db.TryBeginOzonLabelCreate(oz,"P-LABEL")&&!app.Db.TryBeginOzonLabelCreate(oz,"P-LABEL"),"Concurrent/restarted create can claim a second Ozon label task.");
+    Expect(app.Db.GetOrCreateOzonLabelJob(oz,"P-LABEL").Status=="CREATE_PENDING","Create claim was not durable.");
     var blocked=app.Db.SaveOzonLabelJob(oz,"P-LABEL","","RECONCILE_REQUIRED","create_outcome_unknown");
     Expect(blocked.Status=="RECONCILE_REQUIRED"&&blocked.TaskId=="","Ambiguous label create was not retained.");
     var persisted=app.Db.GetOrCreateOzonLabelJob(oz,"P-LABEL");Expect(persisted.Status=="RECONCILE_REQUIRED","Restart reset ambiguous label job.");
     app.Db.SaveOzonLabelJob(oz,"P-READY","3001","POLLING");var ready=app.Db.SaveOzonLabelJob(oz,"P-READY","","READY");
     Expect(ready.TaskId=="3001"&&ready.Status=="READY","Existing task_id was discarded during recovery.");return Task.CompletedTask;
+});
+await Check("Ozon exemplar mutation fingerprint survives restart and blocks a second submit",()=>{
+    var oz=Store(Marketplace.Ozon);var fingerprint=new string('a',64);
+    Expect(app.Db.TryBeginOzonExemplarMutation(oz,"P-EXEMPLAR",fingerprint),"Initial exemplar mutation was not claimed.");
+    Expect(!app.Db.TryBeginOzonExemplarMutation(oz,"P-EXEMPLAR",fingerprint),"Second exemplar mutation bypassed durable claim.");
+    app.Db.SaveOzonExemplarMutation(oz,"P-EXEMPLAR",fingerprint,"RECONCILE_REQUIRED","submit_outcome_unknown");
+    var persisted=app.Db.OzonExemplarMutation(oz,"P-EXEMPLAR");
+    Expect(persisted is not null&&persisted.Fingerprint==fingerprint&&persisted.State=="RECONCILE_REQUIRED","Ambiguous exemplar state did not survive restart.");return Task.CompletedTask;
 });
 }finally{foreach(var store in stores)app.Db.DeleteStore(store.Id);}
 Console.WriteLine($"{checks-failures.Count}/{checks} persistence and FBS workflow checks passed");return failures.Count==0?0:1;

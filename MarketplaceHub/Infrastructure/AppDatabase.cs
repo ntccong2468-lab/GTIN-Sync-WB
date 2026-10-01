@@ -10,11 +10,16 @@ public sealed partial class AppDatabase
     public string DbPath { get; }
     private string ConnectionString => $"Data Source={DbPath}";
 
-    public AppDatabase()
+    public AppDatabase() : this(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "MarketplaceHub", "marketplacehub.db")) { }
+
+    public AppDatabase(string dbPath)
     {
-        var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MarketplaceHub");
+        var fullPath = Path.GetFullPath(dbPath);
+        var dir = Path.GetDirectoryName(fullPath) ?? throw new ArgumentException("Database path has no directory.", nameof(dbPath));
         Directory.CreateDirectory(dir);
-        DbPath = Path.Combine(dir, "marketplacehub.db");
+        DbPath = fullPath;
         Initialize();
     }
 
@@ -677,7 +682,7 @@ ON CONFLICT(store_id,sku) DO UPDATE SET gtin=$g,stage=$st,external_order_id=$o,d
         using(var batches=c.CreateCommand()) {
             batches.Transaction=tx;batches.CommandText="DELETE FROM marketplace_fbs_batch_orders WHERE batch_id IN(SELECT id FROM marketplace_fbs_batches WHERE store_id=$id)";batches.Parameters.AddWithValue("$id",id);batches.ExecuteNonQuery();
         }
-        foreach (var table in new[] { "marketplace_fbs_batches", "marketplace_fbs_actions", "marketplace_kiz_reservations", "ozon_label_jobs", "product_variants", "product_catalog_checkpoint", "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline", "wb_supply_orders", "wb_kiz_reservations" })
+        foreach (var table in new[] { "marketplace_fbs_batches", "marketplace_fbs_actions", "marketplace_kiz_reservations", "ozon_label_jobs", "ozon_exemplar_actions", "product_variants", "product_catalog_checkpoint", "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline", "wb_supply_orders", "wb_kiz_reservations" })
         {
             using var extra = c.CreateCommand();
             extra.Transaction = tx;

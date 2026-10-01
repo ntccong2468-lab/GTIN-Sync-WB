@@ -7,6 +7,7 @@ public sealed record MarketplaceFbsBatch(string Id,long StoreId,string Name,Date
 public sealed record MarketplaceUnitKiz(string ItemId,int Unit,string Gtin,string Code,string Status);
 public sealed record MarketplaceFbsBatchSummary(string Id,string Name,DateTimeOffset CreatedAt,string Status,int OrderCount,int Quantity);
 public sealed record OzonLabelJob(long StoreId,string PostingNumber,string TaskId,string Status,string SafeError,DateTimeOffset UpdatedAt);
+public sealed record OzonExemplarAction(long StoreId,string PostingNumber,string Fingerprint,string State,string SafeError,DateTimeOffset UpdatedAt);
 
 public sealed partial class AppDatabase
 {
@@ -17,7 +18,8 @@ CREATE TABLE IF NOT EXISTS marketplace_kiz_reservations(code TEXT PRIMARY KEY,st
 CREATE TABLE IF NOT EXISTS marketplace_fbs_batches(id TEXT PRIMARY KEY,store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL,status TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS marketplace_fbs_actions(store_id INTEGER NOT NULL,marketplace TEXT NOT NULL,order_id TEXT NOT NULL,state TEXT NOT NULL,PRIMARY KEY(store_id,marketplace,order_id));
 CREATE TABLE IF NOT EXISTS marketplace_fbs_batch_orders(batch_id TEXT NOT NULL,order_id TEXT NOT NULL,status TEXT NOT NULL,error TEXT NOT NULL DEFAULT '',layout_json TEXT NOT NULL DEFAULT '',PRIMARY KEY(batch_id,order_id));
-CREATE TABLE IF NOT EXISTS ozon_label_jobs(store_id INTEGER NOT NULL,posting_number TEXT NOT NULL,task_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,safe_error TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(store_id,posting_number));";cmd.ExecuteNonQuery();
+CREATE TABLE IF NOT EXISTS ozon_label_jobs(store_id INTEGER NOT NULL,posting_number TEXT NOT NULL,task_id TEXT NOT NULL DEFAULT '',status TEXT NOT NULL,safe_error TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(store_id,posting_number));
+CREATE TABLE IF NOT EXISTS ozon_exemplar_actions(store_id INTEGER NOT NULL,posting_number TEXT NOT NULL,fingerprint TEXT NOT NULL,state TEXT NOT NULL,safe_error TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,PRIMARY KEY(store_id,posting_number));";cmd.ExecuteNonQuery();
     }
 
     public IReadOnlySet<string> MarketplaceReceivedOrderIds(StoreProfile store)
@@ -184,5 +186,39 @@ CREATE TABLE IF NOT EXISTS ozon_label_jobs(store_id INTEGER NOT NULL,posting_num
 ON CONFLICT(store_id,posting_number) DO UPDATE SET task_id=CASE WHEN excluded.task_id='' THEN ozon_label_jobs.task_id ELSE excluded.task_id END,status=excluded.status,safe_error=excluded.safe_error,updated_at=excluded.updated_at";
         cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$p",postingNumber);cmd.Parameters.AddWithValue("$t",taskId);cmd.Parameters.AddWithValue("$st",status);cmd.Parameters.AddWithValue("$e",safeError);cmd.Parameters.AddWithValue("$at",now.ToString("O"));cmd.ExecuteNonQuery();
         return GetOrCreateOzonLabelJob(store,postingNumber);
+    }
+
+    public bool TryBeginOzonLabelCreate(StoreProfile store,string postingNumber)
+    {
+        GetOrCreateOzonLabelJob(store,postingNumber);
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText="UPDATE ozon_label_jobs SET status='CREATE_PENDING',safe_error='',updated_at=$at WHERE store_id=$s AND posting_number=$p AND status='NEW' AND task_id=''";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$p",postingNumber);cmd.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));
+        return cmd.ExecuteNonQuery()==1;
+    }
+
+    public OzonExemplarAction? OzonExemplarMutation(StoreProfile store,string postingNumber)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText="SELECT fingerprint,state,safe_error,updated_at FROM ozon_exemplar_actions WHERE store_id=$s AND posting_number=$p";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$p",postingNumber);using var row=cmd.ExecuteReader();
+        return row.Read()?new(store.Id,postingNumber,row.GetString(0),row.GetString(1),row.GetString(2),DateTimeOffset.Parse(row.GetString(3))):null;
+    }
+
+    public bool TryBeginOzonExemplarMutation(StoreProfile store,string postingNumber,string fingerprint)
+    {
+        if(fingerprint.Length!=64||fingerprint.Any(x=>!Uri.IsHexDigit(x)))throw new InvalidOperationException("Fingerprint exemplar Ozon không hợp lệ.");
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText="INSERT OR IGNORE INTO ozon_exemplar_actions(store_id,posting_number,fingerprint,state,updated_at) VALUES($s,$p,$f,'SUBMITTING',$at)";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$p",postingNumber);cmd.Parameters.AddWithValue("$f",fingerprint);cmd.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));return cmd.ExecuteNonQuery()==1;
+    }
+
+    public void SaveOzonExemplarMutation(StoreProfile store,string postingNumber,string fingerprint,string state,string safeError="")
+    {
+        if(!new[]{"SUBMITTING","RECONCILE_REQUIRED","VERIFIED"}.Contains(state))throw new InvalidOperationException("Trạng thái exemplar Ozon không hợp lệ.");
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText="UPDATE ozon_exemplar_actions SET state=$st,safe_error=$e,updated_at=$at WHERE store_id=$s AND posting_number=$p AND fingerprint=$f";
+        cmd.Parameters.AddWithValue("$st",state);cmd.Parameters.AddWithValue("$e",safeError.Length>512?safeError[..512]:safeError);cmd.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$p",postingNumber);cmd.Parameters.AddWithValue("$f",fingerprint);
+        if(cmd.ExecuteNonQuery()!=1)throw new InvalidOperationException("Không tìm thấy checkpoint exemplar Ozon tương ứng.");
     }
 }

@@ -158,6 +158,9 @@ public sealed partial class MarketplaceGateway
             if (json is null)
                 return (new(stage, path, false, (int)response.StatusCode, watch.ElapsedMilliseconds, "empty_response",
                     "Ozon trả phản hồi rỗng.", "Thử lại và kiểm tra trạng thái dịch vụ Ozon."), null);
+            if (!ValidDiagnosticShape(path, json))
+                return (new(stage, path, false, (int)response.StatusCode, watch.ElapsedMilliseconds, "invalid_schema",
+                    "Ozon trả JSON nhưng thiếu cấu trúc bắt buộc của endpoint.", "Không coi bước này là thành công; kiểm tra phiên bản API/contract rồi thử lại."), null);
             return (new(stage, path, true, (int)response.StatusCode, watch.ElapsedMilliseconds, "ok",
                 "Endpoint phản hồi đúng định dạng.", "Không cần xử lý."), json);
         }
@@ -252,6 +255,19 @@ public sealed partial class MarketplaceGateway
     {
         var normalized = value?.Trim() ?? "";
         return normalized.Length is > 0 and <= 256 && normalized.All(c => char.IsLetterOrDigit(c) || c is '.' or '_' or ':' or '-') ? normalized : "";
+    }
+    private static bool ValidDiagnosticShape(string path, JsonNode json)
+    {
+        if (json is not JsonObject root || root.Count == 0) return false;
+        return path switch
+        {
+            "/v1/seller/info" => root["seller_id"] is not null || root["company"] is not null || root["result"] is JsonObject { Count: > 0 },
+            "/v1/roles" => root["result"] is JsonArray || root["roles"] is JsonArray,
+            "/v2/warehouse/list" => root["result"] is JsonArray,
+            "/v4/posting/fbs/unfulfilled/list" => root["result"] is JsonObject result && result["postings"] is JsonArray,
+            "/v3/posting/fbs/get" => root["result"] is JsonObject posting && (posting["posting_number"] is not null || posting["products"] is JsonArray),
+            _ => false
+        };
     }
     private static bool IsOzonDocumentHost(string host)
     {

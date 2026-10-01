@@ -105,7 +105,12 @@ public sealed partial class MainForm : Form
         design.Left = 13; design.Top = 75; design.Click += (_, _) => ShowDesignTools(); p.Controls.Add(design);
 
         var addStore = NavButton("＋  Thêm cửa hàng", C.Purple, 238);
-        addStore.Left = 13; addStore.Top = 133; addStore.Click += (_, _) => ShowStores(true); p.Controls.Add(addStore);
+        addStore.Left = 13; addStore.Top = 133; addStore.Click += (_, _) =>
+        {
+            var gate = app.License.CanOpenAddStore();
+            if (!gate.Allowed) { ShowInfo(gate.Message); return; }
+            ShowStores(true);
+        }; p.Controls.Add(addStore);
 
 
         var menu = new FlowLayoutPanel
@@ -1831,10 +1836,24 @@ public sealed partial class MainForm : Form
         }
 
         StoreProfile Read() => new(id, (Marketplace)market.SelectedItem!, name.Text.Trim(), client.Text.Trim(), api.Text, business.Text.Trim(), campaign.Text.Trim(), token.Text, true);
-        save.Click += (_, _) =>
+        save.Click += async (_, _) =>
         {
             if (string.IsNullOrWhiteSpace(name.Text)) { ShowInfo("Hãy nhập tên cửa hàng."); return; }
-            var saved = app.Db.SaveStore(Read()); RefreshStores(saved.Id); ShowInfo("Đã lưu cửa hàng."); ShowDashboard();
+            save.Enabled = false;
+            try
+            {
+                if (id == 0)
+                {
+                    var result = await app.CreateStoreAsync(Read(), lifetimeCts.Token);
+                    if (!result.Success || result.Store is null) { ShowInfo(result.Message); return; }
+                    RefreshStores(result.Store.Id); ShowInfo(result.Message); ShowDashboard();
+                }
+                else
+                {
+                    var saved = app.Db.SaveStore(Read()); RefreshStores(saved.Id); ShowInfo("Đã lưu cửa hàng."); ShowDashboard();
+                }
+            }
+            finally { if (!save.IsDisposed) save.Enabled = true; }
         };
         test.Click += async (_, _) =>
         {

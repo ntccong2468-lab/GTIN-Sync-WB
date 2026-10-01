@@ -1,4 +1,6 @@
 using MarketplaceHub.Core;
+using System.Security.Cryptography;
+using System.Text;
 using System.Text.Json.Nodes;
 
 namespace MarketplaceHub.Services;
@@ -105,7 +107,9 @@ public sealed partial class AppServices
                 if(snapshot.CanPack && (!matching || store.Marketplace==Marketplace.Yandex)) {
                     progress?.Report($"{saved.Id} · gửi KIZ và phân bổ đủ hàng…");
                     PriceUpdateResult submitted;
-                    try {submitted=await Api.PrepareMarketplaceFbsKizAsync(store,snapshot,codes,layout,ct).ConfigureAwait(false);}
+                    try {submitted=store.Marketplace==Marketplace.Ozon
+                        ?await PrepareDurableOzonKizAsync(store,snapshot,codes,ct).ConfigureAwait(false)
+                        :await Api.PrepareMarketplaceFbsKizAsync(store,snapshot,codes,layout,ct).ConfigureAwait(false);}
                     catch(Exception ex){submitted=new(false,ex.Message);}
                     remote=await Api.ReadMarketplaceKizAsync(store,snapshot,ct).ConfigureAwait(false);
                     matching=MarketplaceCodesMatch(snapshot,codes,remote);
@@ -177,12 +181,13 @@ public sealed partial class AppServices
     private async Task<LabelResult> DownloadDurableOzonLabelAsync(StoreProfile store,string postingNumber,CancellationToken ct)
     {
         var job=Db.GetOrCreateOzonLabelJob(store,postingNumber);
-        if(job.Status=="RECONCILE_REQUIRED" && string.IsNullOrWhiteSpace(job.TaskId))
+        if((job.Status is "CREATE_PENDING" or "RECONCILE_REQUIRED") && string.IsNullOrWhiteSpace(job.TaskId))
             return new(false,"Kết quả tạo job nhãn Ozon trước đó chưa rõ. Mở bảng kiểm tra API/đối soát trên Ozon; ứng dụng không tự tạo job thứ hai.");
         var taskId=job.TaskId;
         if(string.IsNullOrWhiteSpace(taskId))
         {
-            Db.SaveOzonLabelJob(store,postingNumber,"","CREATE_PENDING");
+            if(!Db.TryBeginOzonLabelCreate(store,postingNumber))
+                return new(false,"Job nhãn Ozon đã được một luồng khác bắt đầu hoặc cần đối soát. Ứng dụng không tạo job thứ hai.");
             try
             {
                 taskId=await Api.CreateOzonLabelTaskAsync(store,new[]{postingNumber},ct).ConfigureAwait(false);
@@ -194,5 +199,43 @@ public sealed partial class AppServices
         var label=await Api.DownloadOzonLabelTaskAsync(store,postingNumber,taskId,ct).ConfigureAwait(false);
         Db.SaveOzonLabelJob(store,postingNumber,taskId,label.Success?"READY":label.Message.Contains("đang tạo",StringComparison.OrdinalIgnoreCase)?"POLLING":"FAILED",label.Success?"":"label_not_ready");
         return label;
+    }
+
+    private async Task<PriceUpdateResult> PrepareDurableOzonKizAsync(StoreProfile store,MarketplaceFbsSnapshot snapshot,
+        IReadOnlyDictionary<string,IReadOnlyList<string>> codes,CancellationToken ct)
+    {
+        var canonical=string.Join("\n",codes.OrderBy(x=>x.Key,StringComparer.Ordinal).SelectMany(x=>x.Value.Select((code,index)=>
+            x.Key+":"+index+":"+MarketplaceFbsPayloads.NormalizeCode(code))));
+        var fingerprint=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(snapshot.ItemFingerprint+"\n"+canonical))).ToLowerInvariant();
+        var existing=Db.OzonExemplarMutation(store,snapshot.OrderId);
+        if(existing is not null)
+        {
+            if(existing.Fingerprint!=fingerprint)return new(false,"Danh sách hàng/KIZ khác checkpoint exemplar đã gửi. Dừng để đối soát trên Ozon.");
+            if(existing.State=="VERIFIED")return new(true,"Ozon đã xác thực KIZ/exemplar ở lần trước.",snapshot.OrderId);
+            return new(false,"Kết quả gửi KIZ/exemplar Ozon trước đó chưa rõ. Không tự gửi lại; hãy đối soát trạng thái exemplar.");
+        }
+        if(!Db.TryBeginOzonExemplarMutation(store,snapshot.OrderId,fingerprint))
+            return new(false,"Một luồng khác đã bắt đầu gửi KIZ/exemplar cho posting này.");
+        try
+        {
+            var byOffer=new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal);
+            foreach(var item in snapshot.Items.Where(x=>x.RequiresKiz))
+            {
+                if(!codes.TryGetValue(item.Id,out var unitCodes))throw new InvalidOperationException("Thiếu KIZ cho item Ozon.");
+                byOffer[item.Offer]=unitCodes;
+            }
+            var result=await Api.PrepareOzonKizAsync(store,snapshot.OrderId,byOffer,ct).ConfigureAwait(false);
+            Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,result.Success?"VERIFIED":"RECONCILE_REQUIRED",result.Success?"":"submit_not_verified");
+            return result.Success?result:new(false,result.Message+" Checkpoint được giữ; ứng dụng không tự gửi mutation lần hai.");
+        }
+        catch(OperationCanceledException)
+        {
+            Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,"RECONCILE_REQUIRED","cancelled_during_submit");throw;
+        }
+        catch(Exception)
+        {
+            Db.SaveOzonExemplarMutation(store,snapshot.OrderId,fingerprint,"RECONCILE_REQUIRED","submit_outcome_unknown");
+            return new(false,"Kết quả gửi KIZ/exemplar Ozon chưa rõ. Không tự gửi lại; hãy đối soát trạng thái exemplar.");
+        }
     }
 }
