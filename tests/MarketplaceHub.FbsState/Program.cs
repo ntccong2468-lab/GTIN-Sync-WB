@@ -90,6 +90,19 @@ await Check("A remote KIZ for another GTIN prevents Yandex layout and ship",asyn
     var result=await app.PackMarketplaceFbsAsync(store,new[]{"7"},_=>"04601234567893",true);Expect(!result.Success && mutations==0 && app.Db.MarketplaceKizReservations(store,"7").Count==0,"Wrong variant KIZ was adopted or shipped.");
 });
 
+await Check("Received orders stay hidden and historical open shipments remain visible",()=>{
+    var wb=Store(Marketplace.Wildberries);var oz=Store(Marketplace.Ozon);
+    app.Db.UpsertOrders(wb.Id,Marketplace.Wildberries,new[]{new FbsOrderRow(wb.Id,Marketplace.Wildberries,"901","WB-A","WB A",1,"new",false,"{}")});
+    var old=new WbSupply("OLD-SUPPLY","MarketplaceHub yesterday",DateTimeOffset.UtcNow.AddDays(-1),false);
+    app.Db.UpsertWbSupply(wb.Id,old,1);app.Db.StoreWbSupplyMembership(wb.Id,old.Id,new[]{"901"});
+    Expect(app.Db.WbReceivedOrderIds(wb.Id).Contains("901")&&app.Db.WbSupplies(wb).Any(x=>x.Id==old.Id&&x.OrderCount==1),"WB receipt mask or older open shipment was lost.");
+    app.Db.UpsertOrders(oz.Id,Marketplace.Ozon,new[]{new FbsOrderRow(oz.Id,Marketplace.Ozon,"P-901","OZ-A","Ozon A",2,"awaiting_packaging",false,"{}")});
+    var batch=app.Db.CreateMarketplaceFbsBatch(oz,new[]{"P-901"});
+    Expect(app.Db.MarketplaceReceivedOrderIds(oz).Contains("P-901"),"Ozon received order can reappear as new.");
+    var listed=app.Db.MarketplaceFbsBatches(oz).Single(x=>x.Id==batch.Id);
+    Expect(listed.OrderCount==1&&listed.Quantity==2&&app.Db.MarketplaceFbsBatchOrders(oz,batch.Id).Single().Status=="PENDING"&&app.Db.MarketplaceKizReservations(oz,"P-901").Count==0,"Receipt started packing/KIZ or did not create one shipment row.");
+    return Task.CompletedTask;
+});
 await Check("Scanner prefix cannot bypass ownership or reimport a second physical KIZ",()=>{
     var wb=Store(Marketplace.Wildberries);var oz=Store(Marketplace.Ozon);const string gtin="04601234567893";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N")+"\u001d91ABCD\u001d92proof";
     app.Db.UpsertKiz(code,gtin,"AVAILABLE");var held=app.Db.ReserveWbKiz(wb.Id,"ALIAS",gtin);Expect(held==code,"Unexpected test allocation.");
