@@ -9,6 +9,10 @@ public static class WorkerTests
     static AppServices App(CoordinatorFixture f){var app=new AppServices(f.Db,new MarketplaceGateway(),WorkflowTestSupport.SignedLicense(()=>f.Clock.UtcNow),new(f.Suz,f.Legal,f.Clock));typeof(AppServices).GetProperty("LabelJobs")!.SetValue(app,f.Coordinator);return app;}
     public static async Task Run(WorkflowTestRunner r)
     {
+        await r.CheckAsync("pause_active_worker_blocks_next_mutation",async()=>{
+            using var f=CoordinatorFixture.Create();f.Stock();f.Physical();var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);f.Adapter.BeforeRead=async()=>{entered.TrySetResult();await release.Task;};var app=App(f);var task=app.ExportFbsLabelsAsync(f.Context.Snapshot.Target);await entered.Task;app.PauseFbsLabelJob(f.Context.JobId);release.SetResult();var result=await task;
+            Expect(f.Adapter.MutationCalls==0&&result.Stage==FbsLabelJobStage.Paused,"Paused worker still attached remote codes");
+        });
         await r.CheckAsync("pause_keeps_remote_id_and_reservation",()=>{
             using var f=CoordinatorFixture.Create();f.Stock();f.Physical();var request=new PurchaseIntentRequest(f.Context.JobId,1,f.Context.Profile!,WorkflowFixture.Gtin,2,"");request=request with{PayloadHash=SuzHttpClient.PayloadHash(request)};var intent=f.Db.GetOrCreatePurchaseIntent(request);f.Db.SavePurchaseOutcome(intent.Id,PurchaseStage.Polling,"SUZ-PAUSED",null,null);var before=f.Db.BoundScopedKiz(f.Context);var app=App(f);app.PauseFbsLabelJob(f.Context.JobId);
             Expect(f.Db.GetPurchaseIntent(intent.Id)!.RemoteOrderId=="SUZ-PAUSED"&&f.Db.BoundScopedKiz(f.Context).OrderBy(x=>x.Key.OrderId).SequenceEqual(before.OrderBy(x=>x.Key.OrderId)),"Pause released paid evidence or unit bindings");Expect(app.GetFbsLabelJob(f.Context.JobId)!.Stage==FbsLabelJobStage.Paused,"Pause was not persistent");return Task.CompletedTask;
