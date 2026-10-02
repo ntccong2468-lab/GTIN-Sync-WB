@@ -48,6 +48,7 @@ await Check("GTIN mapping isolates stores and archives without deleting KIZ",()=
     var code="010460123456789321mapping-"+Guid.NewGuid().ToString("N");app.Db.UpsertKiz(code,"04601234567893","AVAILABLE");
     archive!.Invoke(app.Db,new object[]{one,"A","11"});var hidden=page.Invoke(app.Db,new object[]{one,0,50,"","all"})!;
     Expect(Convert.ToInt32(hidden.GetType().GetProperty("Total")!.GetValue(hidden))==0&&app.Db.Kiz().Any(x=>x.Code==code),"Archiving deleted KIZ or left the mapping active.");
+    using(var c=new SqliteConnection("Data Source="+app.Db.DbPath)){c.Open();using var cleanup=c.CreateCommand();cleanup.CommandText="DELETE FROM kiz_pool WHERE code=$code AND status='AVAILABLE' AND assigned_order=''";cleanup.Parameters.AddWithValue("$code",code);cleanup.ExecuteNonQuery();}
     return Task.CompletedTask;
 });
 await Check("WB receive journal survives restart and retains its resolved supply",()=>{
