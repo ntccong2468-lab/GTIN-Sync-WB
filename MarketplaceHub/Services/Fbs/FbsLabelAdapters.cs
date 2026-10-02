@@ -48,16 +48,22 @@ public sealed class FbsLabelAdapter(AppServices app,Marketplace marketplace,Func
         }else{var result=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),item=>context.Snapshot.Units.First(x=>x.Unit.ItemId==item.Id&&x.Sku==item.Offer).Gtin,true,ct,batchId:context.Snapshot.Target.TargetId,workflowContext:context);if(!result.Success)throw new InvalidOperationException("marketplace_pack_unverified");}
         return context.Snapshot.Units.Where(x=>eligible.Contains(x.Unit.OrderId)).Select(x=>new UnitWorkflowResult(x.Unit,"Verified",codes.TryGetValue(x.Unit,out var raw)?app.Db.CodeProtector.Identity(raw):null,null)).ToArray();
     }
+    public async Task<IReadOnlyList<FbsUnitKey>> ReadCompletedUnitsAsync(FbsWorkflowContext context,CancellationToken ct)
+    {
+        var store=Store(context.Snapshot.Target);var result=new List<FbsUnitKey>();var assigned=await ReadAssignedCodesAsync(context,ct);var bound=app.Db.BoundScopedKiz(context);
+        if(marketplace==Marketplace.Wildberries){var statuses=await app.Api.GetWbOrderStatusesAsync(store,context.Snapshot.Units.Select(x=>x.Unit.OrderId).Distinct(),ct);foreach(var demand in context.Snapshot.Units)if(statuses.TryGetValue(demand.Unit.OrderId,out var status)&&status.SupplierStatus is "confirm" or "complete"&&!status.WbStatus.Contains("cancel",StringComparison.OrdinalIgnoreCase)&&(!demand.RequiresKiz||assigned.TryGetValue(demand.Unit,out var raw)&&bound.TryGetValue(demand.Unit,out var held)&&app.Db.CodeProtector.Identity(raw)==app.Db.CodeProtector.Identity(held)))result.Add(demand.Unit);}
+        else foreach(var group in context.Snapshot.Units.GroupBy(x=>x.Unit.OrderId)){var fresh=await app.ReadFreshMarketplaceFbsAsync(store,group.Key,ct);if(fresh.IsPacked&&group.All(d=>!d.RequiresKiz||assigned.TryGetValue(d.Unit,out var raw)&&bound.TryGetValue(d.Unit,out var held)&&app.Db.CodeProtector.Identity(raw)==app.Db.CodeProtector.Identity(held)))result.AddRange(group.Select(x=>x.Unit));}return result;
+    }
     public async Task<IReadOnlyList<VerifiedLabel>> DownloadLabelsAsync(FbsWorkflowContext context,IReadOnlyList<FbsUnitKey> eligibleUnits,CancellationToken ct)
     {
-        app.RequireWorkflowAuthorization(context);if(WorkflowIdentity.Snapshot(await ReadSnapshotAsync(context.Snapshot.Target,ct))!=WorkflowIdentity.Snapshot(context.Snapshot))throw new InvalidOperationException("snapshot_changed");
+        app.RequireWorkflowAuthorization(context,requireActive:false);if(WorkflowIdentity.Snapshot(await ReadSnapshotAsync(context.Snapshot.Target,ct))!=WorkflowIdentity.Snapshot(context.Snapshot))throw new InvalidOperationException("snapshot_changed");
         var assigned=await ReadAssignedCodesAsync(context,ct);var bound=app.Db.BoundScopedKiz(context);var legal=await app.WorkflowEligibility.VerifyAsync(context,bound,ct);var store=Store(context.Snapshot.Target);var result=new List<VerifiedLabel>();
         foreach(var group in context.Snapshot.Units.GroupBy(x=>x.Unit.OrderId)){
             if(group.Any(x=>!eligibleUnits.Contains(x.Unit)||!legal.Any(v=>v.Unit==x.Unit&&v.Stage=="Ready")||x.RequiresKiz&&(!assigned.TryGetValue(x.Unit,out var raw)||!bound.TryGetValue(x.Unit,out var held)||app.Db.CodeProtector.Identity(raw)!=app.Db.CodeProtector.Identity(held))))continue;
-            app.RequireWorkflowAuthorization(context);LabelResult label;
+            app.RequireWorkflowAuthorization(context,requireActive:false);LabelResult label;
             if(marketplace==Marketplace.Wildberries)label=await app.Api.DownloadLabelAsync(store,group.Key,ct);
-            else label=await app.ExportVerifiedMarketplaceLabelAsync(store,group.Key,item=>context.Snapshot.Units.Single(x=>x.Unit.OrderId==group.Key&&x.Unit.ItemId==item.Id&&x.Unit.UnitIndex==0).Gtin,ct,context);
-            app.RequireWorkflowAuthorization(context);if(!label.Success||string.IsNullOrWhiteSpace(label.FilePath))continue;
+            else label=await app.ExportVerifiedMarketplaceLabelAsync(store,group.Key,item=>context.Snapshot.Units.Single(x=>x.Unit.OrderId==group.Key&&x.Unit.ItemId==item.Id&&x.Unit.UnitIndex==0).Gtin,ct,context,artifactRecovery:!app.Db.GetLabelJob(context.JobId)!.Active);
+            app.RequireWorkflowAuthorization(context,requireActive:false);if(!label.Success||string.IsNullOrWhiteSpace(label.FilePath))continue;
             var remoteTask=marketplace==Marketplace.Ozon?app.Db.GetOrCreateOzonLabelJob(store,group.Key).TaskId:group.Key;
             result.Add(new(group.Key,label,group.Select(x=>x.Unit).ToArray(),marketplace+":official-label",Hash(remoteTask+"|"+WorkflowIdentity.Snapshot(context.Snapshot))));
         }return result;

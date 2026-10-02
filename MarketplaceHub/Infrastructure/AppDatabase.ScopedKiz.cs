@@ -70,7 +70,7 @@ public sealed partial class AppDatabase
     {using var c=WorkflowConnection();using var q=WfSql(c,null,"SELECT COUNT(*) FROM kiz_unit_bindings WHERE unit_key=$u AND code_hash=$h AND physical_at IS NOT NULL",("$u",WorkflowIdentity.Unit(unit)),("$h",hash));return Convert.ToInt64(q.ExecuteScalar())==1;}
     public IReadOnlyDictionary<FbsUnitKey,string> BoundScopedKiz(FbsWorkflowContext context)
     {
-        var protector=CodeProtector;using var c=WorkflowConnection();ValidateWorkflowContext(c,null,context);var result=new Dictionary<FbsUnitKey,string>();
+        var protector=CodeProtector;using var c=WorkflowConnection();ValidateWorkflowContext(c,null,context,requireActive:false);var result=new Dictionary<FbsUnitKey,string>();
         foreach(var demand in context.Snapshot.Units.Where(x=>x.RequiresKiz)){using var q=WfSql(c,null,"SELECT k.raw_enc,k.gtin,k.store_id,k.owner_inn,k.environment,k.conflict FROM kiz_unit_bindings b JOIN kiz_codes_scoped k ON k.code_hash=b.code_hash WHERE b.unit_key=$u",("$u",WorkflowIdentity.Unit(demand.Unit)));using var row=q.ExecuteReader();if(!row.Read())continue;if(context.Profile is null||row.GetString(1)!=demand.Gtin||row.GetInt64(2)!=context.Profile.StoreId||row.GetString(3)!=context.Profile.OwnerInn||row.GetString(4)!=context.Profile.Environment||row.GetInt32(5)!=0)throw new InvalidOperationException("binding_scope_conflict");result[demand.Unit]=protector.Unprotect(row.GetString(0));}return result;
     }
     public long WorkflowMappingVersion(StoreProfile store,string sku)
@@ -84,10 +84,10 @@ public sealed partial class AppDatabase
         using var q=WfSql(c,tx,"INSERT INTO wb_kiz_reservations(code,store_id,order_id,gtin,status,updated_at) VALUES($c,$s,$o,$g,'RESERVED',$at) ON CONFLICT(code) DO NOTHING",("$c",raw),("$s",unit.StoreId),("$o",unit.OrderId),("$g",demand.Gtin),("$at",DateTimeOffset.UtcNow.ToString("O")));q.ExecuteNonQuery();
         using var pool=WfSql(c,tx,"UPDATE kiz_pool SET status='RESERVED',assigned_order=$o WHERE code=$c AND status='AVAILABLE' AND assigned_order=''",("$c",raw),("$o","WB:"+unit.StoreId+":"+unit.OrderId));pool.ExecuteNonQuery();tx.Commit();
     }
-    private void ValidateWorkflowContext(SqliteConnection c,SqliteTransaction? tx,FbsWorkflowContext context)
+    private void ValidateWorkflowContext(SqliteConnection c,SqliteTransaction? tx,FbsWorkflowContext context,bool requireActive=true)
     {
         if(!GenerationMatches(c,tx,context.Snapshot.Target.StoreId,context.Snapshot.StoreGeneration))throw new InvalidOperationException("store_generation_changed");
-        using var job=WfSql(c,tx,"SELECT COUNT(*) FROM fbs_label_jobs WHERE id=$j AND revision=$r AND active=1 AND snapshot_hash=$h",("$j",context.JobId),("$r",context.Revision),("$h",WorkflowIdentity.Snapshot(context.Snapshot)));if(Convert.ToInt64(job.ExecuteScalar())!=1)throw new InvalidOperationException("job_snapshot_changed");
+        using var job=WfSql(c,tx,"SELECT COUNT(*) FROM fbs_label_jobs WHERE id=$j AND revision=$r AND ($active=0 OR active=1) AND snapshot_hash=$h",("$j",context.JobId),("$r",context.Revision),("$h",WorkflowIdentity.Snapshot(context.Snapshot)),("$active",requireActive?1:0));if(Convert.ToInt64(job.ExecuteScalar())!=1)throw new InvalidOperationException("job_snapshot_changed");
         if(context.Profile is {} p){using var profile=WfSql(c,tx,"SELECT profile_json FROM kiz_profiles WHERE store_id=$s AND current=1",("$s",context.Snapshot.Target.StoreId));if(profile.ExecuteScalar() is not string json||JsonSerializer.Deserialize<SuzProfile>(json)!=p)throw new InvalidOperationException("profile_version_changed");using var v=WfSql(c,tx,"SELECT value FROM kiz_crypto_metadata WHERE name='znak-credential-version'");if((string)v.ExecuteScalar()! !=p.CredentialVersion)throw new InvalidOperationException("credential_version_changed");}
     }
     private void InsertScopedCode(SqliteConnection c, SqliteTransaction tx, KizScope scope, string gtin, string raw, string allocation, string? intentId, string source, bool allowInvalid = false)

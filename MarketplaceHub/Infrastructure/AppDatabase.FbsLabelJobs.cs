@@ -111,13 +111,13 @@ UPDATE kiz_purchase_intents SET stage='DownloadUnknown' WHERE stage='Downloading
         if(json is null){using var current=WfSql(c,tx,"SELECT profile_json FROM kiz_profiles WHERE store_id=$s AND current=1",("$s",store));json=current.ExecuteScalar() as string;if(json is not null){using var bind=WfSql(c,tx,"INSERT INTO fbs_job_authorizations VALUES($j,$p)",("$j",jobId),("$p",json));bind.ExecuteNonQuery();}}
         tx.Commit();return json is null?null:JsonSerializer.Deserialize<SuzProfile>(json);
     }
-    public bool WorkflowAuthorizationMatches(FbsWorkflowContext context)
-    {try{using var c=WorkflowConnection();ValidateWorkflowContext(c,null,context);return true;}catch(InvalidOperationException){return false;}}
+    public bool WorkflowAuthorizationMatches(FbsWorkflowContext context,bool requireActive=true)
+    {try{using var c=WorkflowConnection();ValidateWorkflowContext(c,null,context,requireActive);return true;}catch(InvalidOperationException){return false;}}
     public IReadOnlyList<LabelArtifact> LabelJobArtifacts(string jobId)
     {using var c=WorkflowConnection();using var q=WfSql(c,null,"SELECT artifacts_json FROM fbs_label_jobs WHERE id=$j",("$j",jobId));return q.ExecuteScalar() is string json?JsonSerializer.Deserialize<LabelArtifact[]>(json)!:Array.Empty<LabelArtifact>();}
     public bool SaveLabelJobArtifacts(FbsWorkflowContext context,IReadOnlyList<LabelArtifact> artifacts)
     {
-        using var c=WorkflowConnection();using var tx=c.BeginTransaction(deferred:false);try{ValidateWorkflowContext(c,tx,context);}catch(InvalidOperationException){return false;}
+        using var c=WorkflowConnection();using var tx=c.BeginTransaction(deferred:false);try{ValidateWorkflowContext(c,tx,context,requireActive:false);}catch(InvalidOperationException){return false;}
         if(artifacts.Any(x=>x.JobId!=context.JobId||x.Revision!=context.Revision||x.Units.Any(u=>!context.Snapshot.Units.Any(d=>d.Unit==u))))throw new InvalidOperationException("artifact_outside_job");
         using var q=WfSql(c,tx,"UPDATE fbs_label_jobs SET artifacts_json=$a WHERE id=$j",("$j",context.JobId),("$a",JsonSerializer.Serialize(artifacts)));q.ExecuteNonQuery();tx.Commit();return true;
     }
@@ -128,8 +128,13 @@ UPDATE kiz_purchase_intents SET stage='DownloadUnknown' WHERE stage='Downloading
     public FbsLabelJob NewLabelRevision(string oldId,LabelJobSnapshot fresh)
     {
         var old=GetLabelJob(oldId)??throw new InvalidOperationException("job_deleted");if(old.Snapshot.Target!=fresh.Target)throw new InvalidOperationException("revision_target_changed");
-        using(var c=WorkflowConnection()){using var tx=c.BeginTransaction(deferred:false);if(!GenerationMatches(c,tx,fresh.Target.StoreId,fresh.StoreGeneration))throw new InvalidOperationException("store_generation_changed");using var q=WfSql(c,tx,"UPDATE fbs_label_jobs SET active=0 WHERE id=$j AND claimed=0",("$j",oldId));if(q.ExecuteNonQuery()!=1)throw new InvalidOperationException("job_busy");tx.Commit();}
-        var next=GetOrCreateLabelJob(fresh);using(var c=WorkflowConnection()){using var q=WfSql(c,null,"UPDATE fbs_label_jobs SET revision=$r WHERE id=$j",("$r",old.Revision+1),("$j",next.Id));q.ExecuteNonQuery();}return GetLabelJob(next.Id)!;
+        if(fresh.Units.Select(x=>x.Unit).Distinct().Count()!=fresh.Units.Count||fresh.Units.Any(x=>x.Unit.StoreId!=fresh.Target.StoreId||x.Unit.Marketplace!=fresh.Target.Marketplace||x.Unit.UnitIndex<0))throw new InvalidOperationException("invalid_unit_snapshot");
+        var next=Guid.NewGuid().ToString("N");using var c=WorkflowConnection();using var tx=c.BeginTransaction(deferred:false);
+        if(!GenerationMatches(c,tx,fresh.Target.StoreId,fresh.StoreGeneration))throw new InvalidOperationException("store_generation_changed");
+        using var close=WfSql(c,tx,"UPDATE fbs_label_jobs SET active=0 WHERE id=$j AND claimed=0 AND active=1 AND version=$v",("$j",oldId),("$v",old.Version));if(close.ExecuteNonQuery()!=1)throw new InvalidOperationException("job_busy");
+        using var insert=WfSql(c,tx,"INSERT INTO fbs_label_jobs(id,store_id,marketplace,target_kind,target_id,revision,snapshot_json,snapshot_hash,stage,active,generation,updated_at) VALUES($j,$s,$m,$kind,$target,$r,$snapshot,$hash,'Queued',1,$g,$at)",("$j",next),("$s",fresh.Target.StoreId),("$m",fresh.Target.Marketplace.ToString()),("$kind",fresh.Target.Kind.ToString()),("$target",fresh.Target.TargetId),("$r",old.Revision+1),("$snapshot",JsonSerializer.Serialize(fresh)),("$hash",WorkflowIdentity.Snapshot(fresh)),("$g",fresh.StoreGeneration),("$at",DateTimeOffset.UtcNow.ToString("O")));insert.ExecuteNonQuery();
+        foreach(var demand in fresh.Units){using var unit=WfSql(c,tx,"INSERT INTO fbs_job_units VALUES($j,$u,$r)",("$j",next),("$u",WorkflowIdentity.Unit(demand.Unit)),("$r",JsonSerializer.Serialize(new UnitWorkflowResult(demand.Unit,"Queued",null,null))));unit.ExecuteNonQuery();}
+        tx.Commit();return GetLabelJob(next)!;
     }
     private static void DeleteWorkflowStore(SqliteConnection c, SqliteTransaction tx, long id)
     {

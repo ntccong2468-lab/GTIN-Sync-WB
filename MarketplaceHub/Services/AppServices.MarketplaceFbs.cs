@@ -174,15 +174,15 @@ public sealed partial class AppServices
     private static void CheckMarketplaceGtin(string code,string gtin,string offer)
     {var parsed=ParseKiz(code);if(!parsed.Ok || parsed.Gtin!=gtin)throw new InvalidOperationException(offer+": GTIN trong KIZ khác biến thể sản phẩm.");}
 
-    public async Task<LabelResult> ExportVerifiedMarketplaceLabelAsync(StoreProfile store,string orderId,Func<MarketplaceFbsItem,string> resolveGtin,CancellationToken ct=default,FbsWorkflowContext? workflowContext=null)
+    public async Task<LabelResult> ExportVerifiedMarketplaceLabelAsync(StoreProfile store,string orderId,Func<MarketplaceFbsItem,string> resolveGtin,CancellationToken ct=default,FbsWorkflowContext? workflowContext=null,bool artifactRecovery=false)
     {
         try {
             if(!License.CanRunFbsWorkflow().Allowed)return new(false,"License đã ký còn hiệu lực là bắt buộc để xuất nhãn.");
             if(workflowContext is null){var candidates=Db.TodayMarketplaceFbsBatches(store).Where(b=>Db.MarketplaceFbsBatchOrders(store,b.Id).Any(x=>x.Id==orderId)).ToArray();if(candidates.Length!=1)return new(false,"workflow_context_required: mở đúng batch đã nhận.");workflowContext=await PrepareWorkflowContextAsync(new(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,candidates[0].Id),new Fbs.FbsLabelAdapter(this,store.Marketplace,marketGtin:resolveGtin),ct);}
-            RequireWorkflowAuthorization(workflowContext);
+            RequireWorkflowAuthorization(workflowContext,requireActive:!artifactRecovery);
             if(workflowContext.Snapshot.Target.StoreId!=store.Id||!workflowContext.Snapshot.Units.Any(x=>x.Unit.OrderId==orderId))return new(false,"workflow_scope_mismatch");
             var current=await ReadFreshMarketplaceFbsAsync(store,orderId,ct).ConfigureAwait(false);
-            RequireWorkflowAuthorization(workflowContext);
+            RequireWorkflowAuthorization(workflowContext,requireActive:!artifactRecovery);
             if(!current.IsPacked)return new(false,"Đơn chưa được sàn xác nhận đã đóng hoặc đang yêu cầu hủy.");
             var remote=await Api.ReadMarketplaceKizAsync(store,current,ct).ConfigureAwait(false);
             var expected=new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal);
@@ -192,9 +192,9 @@ public sealed partial class AppServices
                 expected[item.Id]=reserved.OrderBy(x=>x.Unit).Select(x=>x.Code).ToArray();foreach(var code in expected[item.Id])CheckMarketplaceGtin(code,gtin,item.Offer);
             }
             if(!MarketplaceCodesMatch(current,expected,remote))return new(false,"Mã hiện tại trên sàn khác mã đã xác nhận. Chưa xuất nhãn.");
-            var scoped=Db.BoundScopedKiz(workflowContext);var legal=await WorkflowEligibility.VerifyAsync(workflowContext,scoped,ct);RequireWorkflowAuthorization(workflowContext);
+            var scoped=Db.BoundScopedKiz(workflowContext);var legal=await WorkflowEligibility.VerifyAsync(workflowContext,scoped,ct);RequireWorkflowAuthorization(workflowContext,requireActive:!artifactRecovery);
             if(workflowContext.Snapshot.Units.Where(x=>x.Unit.OrderId==orderId).Any(x=>!legal.Any(v=>v.Unit==x.Unit&&v.Stage=="Ready")))return new(false,"KIZ cần legal proof và xác nhận đã dán mã.");
-            if(store.Marketplace==Marketplace.Ozon)return await DownloadDurableOzonLabelAsync(store,orderId,ct).ConfigureAwait(false);
+            if(store.Marketplace==Marketplace.Ozon){if(artifactRecovery&&string.IsNullOrWhiteSpace(Db.GetOrCreateOzonLabelJob(store,orderId).TaskId))return new(false,"label_task_reconciliation_required");return await DownloadDurableOzonLabelAsync(store,orderId,ct).ConfigureAwait(false);}
             return await Api.DownloadLabelAsync(store,orderId,ct).ConfigureAwait(false);
         }catch(Exception ex){return new(false,ex.Message);}
     }

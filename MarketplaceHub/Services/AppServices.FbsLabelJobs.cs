@@ -18,8 +18,8 @@ public sealed partial class AppServices
         WorkflowPurchases=new(Db,client,clock);WorkflowEligibility=new(Db,legal,clock);LabelJobs=new(Db,m=>new FbsLabelAdapter(this,m),WorkflowPurchases,WorkflowEligibility,License,new(),clock);
     }
     public Task<LabelJobResult> ExportFbsLabelsAsync(LabelTarget target,IProgress<LabelJobResult>? progress=null,CancellationToken ct=default)=>LabelJobs.StartOrResumeAsync(target,progress,ct);
-    internal void RequireWorkflowAuthorization(FbsWorkflowContext context)
-    {if(!License.CanRunFbsWorkflow().Allowed||!Db.WorkflowAuthorizationMatches(context))throw new InvalidOperationException("workflow_authorization_required");}
+    internal void RequireWorkflowAuthorization(FbsWorkflowContext context,bool requireActive=true)
+    {if(!License.CanRunFbsWorkflow().Allowed||!Db.WorkflowAuthorizationMatches(context,requireActive))throw new InvalidOperationException("workflow_authorization_required");}
     internal string ResolveWorkflowMarketplaceGtin(StoreProfile store,MarketplaceFbsItem item)
     {
         var product=Db.Products(store.Id).SingleOrDefault(x=>x.Marketplace==store.Marketplace&&x.Sku==item.Offer);if(product is null)return "";

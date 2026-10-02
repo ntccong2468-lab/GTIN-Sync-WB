@@ -6,6 +6,7 @@ public interface IFbsLabelAdapter
 {
     Task<LabelJobSnapshot> ReadSnapshotAsync(LabelTarget target,CancellationToken ct);
     Task<IReadOnlyDictionary<FbsUnitKey,string>> ReadAssignedCodesAsync(FbsWorkflowContext context,CancellationToken ct);
+    Task<IReadOnlyList<FbsUnitKey>> ReadCompletedUnitsAsync(FbsWorkflowContext context,CancellationToken ct);
     Task<IReadOnlyList<UnitWorkflowResult>> EnsureMarkedAndPackedAsync(FbsWorkflowContext context,IReadOnlyDictionary<FbsUnitKey,string> codes,CancellationToken ct);
     Task<IReadOnlyList<VerifiedLabel>> DownloadLabelsAsync(FbsWorkflowContext context,IReadOnlyList<FbsUnitKey> eligibleUnits,CancellationToken ct);
 }
@@ -51,6 +52,8 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
             var verified=await eligibility.VerifyAsync(context,codes,ct);
             if(!Allowed(context))return Result(job,"authorization_changed");
             var old=db.LabelJobUnits(jobId);var uncertain=old.Where(x=>x.Stage is "Attaching" or "WbAttachSending" or "AttachUnknown").Select(x=>x.Unit).ToHashSet();
+            var completed=(await adapter.ReadCompletedUnitsAsync(context,ct)).ToHashSet();
+            if(uncertain.Any(u=>!completed.Contains(u)))return Save(context,FbsLabelJobStage.NeedsReconciliation,old,"packing_readback_required",progress);
             if(uncertain.Any(u=>context.Snapshot.Units.Single(x=>x.Unit==u).RequiresKiz&&(!remote.TryGetValue(u,out var actual)||!codes.TryGetValue(u,out var held)||db.CodeProtector.Identity(actual)!=db.CodeProtector.Identity(held))))
                 return Save(context,FbsLabelJobStage.NeedsReconciliation,old.Select(x=>uncertain.Contains(x.Unit)?x with{Stage="AttachUnknown",ErrorCode="attach_readback_required"}:x).ToArray(),"attach_readback_required",progress);
             // A no-KIZ pack request also has an uncertain checkpoint; the adapter owns its pack journal.
@@ -75,6 +78,7 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
             verified=await eligibility.VerifyAsync(context,codes,ct);
             eligible=context.Snapshot.Units.GroupBy(x=>x.Unit.OrderId).Where(g=>g.All(x=>verified.Any(v=>v.Unit==x.Unit&&v.Stage=="Ready"))).SelectMany(g=>g.Select(x=>x.Unit)).ToArray();
             if(!Allowed(context))return Result(job,"authorization_changed");
+            if(eligible.Length==0)return Save(context,WaitingStage(verified,pendingPurchase),verified,null,progress);
             var manifest=db.LabelJobArtifacts(jobId).ToList();
             foreach(var label in await adapter.DownloadLabelsAsync(context,eligible,ct)){
                 if(!Allowed(context))return Result(job,"authorization_changed");
@@ -93,10 +97,10 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
     public async Task<LabelJobResult> ReprintAsync(string jobId,int revision,CancellationToken ct)
     {
         var job=db.GetLabelJob(jobId);if(job is null||job.Revision!=revision)return Empty(FbsLabelJobStage.NeedsReconciliation,"revision_not_found");
-        var context=new FbsWorkflowContext(job.Id,job.Revision,job.Snapshot,db.LabelJobProfile(job.Id));if(!Allowed(context))return Result(job,"authorization_required");
+        var context=new FbsWorkflowContext(job.Id,job.Revision,job.Snapshot,db.LabelJobProfile(job.Id));if(!Allowed(context,requireActive:false))return Result(job,"authorization_required");
         var manifest=db.LabelJobArtifacts(jobId).ToList();var broken=new List<LabelArtifact>();foreach(var item in manifest)if(!await artifacts.ValidateAsync(item,ct))broken.Add(item);
         if(broken.Count>0){var units=broken.SelectMany(x=>x.Units).Distinct().ToArray();foreach(var label in await adapters(job.Snapshot.Target.Marketplace).DownloadLabelsAsync(context,units,ct)){
-            if(!Allowed(context))return Result(job,"authorization_changed");var original=broken.FirstOrDefault(x=>x.Units.ToHashSet().SetEquals(label.Units));if(original is null)continue;
+            if(!Allowed(context,requireActive:false))return Result(job,"authorization_changed");var original=broken.FirstOrDefault(x=>x.Units.ToHashSet().SetEquals(label.Units));if(original is null)continue;
             var restored=await artifacts.PersistAsync(context,label,ct);manifest.Remove(original);manifest.Add(restored);
         }if(!db.SaveLabelJobArtifacts(context,manifest))return Result(job,"authorization_changed");}
         return Result(job,broken.Any(x=>manifest.Contains(x))?"label_refetch_pending":null);
@@ -108,7 +112,7 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
         var context=new FbsWorkflowContext(job.Id,job.Revision,job.Snapshot,db.LabelJobProfile(job.Id));if(!Allowed(context))return Result(job,"authorization_required");
         var fresh=await adapters(job.Snapshot.Target.Marketplace).ReadSnapshotAsync(job.Snapshot.Target,ct);if(!Allowed(context))return Result(job,"authorization_changed");return Result(db.NewLabelRevision(jobId,fresh));
     }
-    private bool Allowed(FbsWorkflowContext context)=>license.CanRunFbsWorkflow().Allowed&&db.WorkflowAuthorizationMatches(context);
+    private bool Allowed(FbsWorkflowContext context,bool requireActive=true)=>license.CanRunFbsWorkflow().Allowed&&db.WorkflowAuthorizationMatches(context,requireActive);
     private async Task<bool> SnapshotMatches(FbsWorkflowContext context,IFbsLabelAdapter adapter,CancellationToken ct)=>WorkflowIdentity.Snapshot(await adapter.ReadSnapshotAsync(context.Snapshot.Target,ct))==WorkflowIdentity.Snapshot(context.Snapshot);
     private bool SaveCheckpoint(FbsWorkflowContext context,FbsLabelJobStage stage,IReadOnlyList<UnitWorkflowResult> units){var current=db.GetLabelJob(context.JobId);return current is not null&&db.TrySaveLabelJob(current.Id,current.Version,stage,units);}
     private LabelJobResult Save(FbsWorkflowContext context,FbsLabelJobStage stage,IReadOnlyList<UnitWorkflowResult> units,string? error,IProgress<LabelJobResult>? progress){SaveCheckpoint(context,stage,units);var job=db.GetLabelJob(context.JobId);var result=job is null?Empty(FbsLabelJobStage.NeedsReconciliation,"job_deleted"):Result(job,error);progress?.Report(result);return result;}
