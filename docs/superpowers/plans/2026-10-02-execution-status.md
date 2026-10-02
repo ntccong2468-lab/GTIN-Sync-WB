@@ -4,8 +4,9 @@
 
 - Nhiệm vụ 1 đã hoàn tất: chuẩn hóa trạng thái, đếm external order duy nhất, loại membership và hủy khỏi Đơn mới. Windows CI xanh tại `5472ed3`, regression run `36936280076`.
 - Nhiệm vụ 2 đã hoàn tất: kết quả theo từng đơn, selection hỗn hợp không chặn đơn hợp lệ, batch `100/100/5` cho 205 đơn. Windows CI xanh tại `acfe9b5`, regression run `36937180622`.
-- Nhiệm vụ 3 đang triển khai: nhật ký nhận đơn và phục hồi, dialog kết quả.
-- Nhiệm vụ 4–7 chưa hoàn tất: FBO theo biến thể, KIZ Mapping phân trang, Znack/WB GTIN, Trung tâm kiểm tra.
+- Nhiệm vụ 3 đã triển khai: nhật ký nhận đơn, phục hồi và dialog kết quả. RED `36959052332`; Windows xác nhận 24/24 FbsState (kể cả phục hồi không POST/PATCH trùng) và test dialog xanh tại `74a5d46`. Suite UI còn test FBO đỏ của nhiệm vụ 4.
+- Nhiệm vụ 4 đang triển khai: FBO theo biến thể. RED tại `74a5d46`: thiếu bảng chọn/số lượng và BuildFboPreparationLabels. Chờ Windows xác minh triển khai.
+- Nhiệm vụ 5–7 chưa hoàn tất: KIZ Mapping phân trang, Znack/WB GTIN, Trung tâm kiểm tra.
 
 ## Các quyết định thực thi
 
@@ -14,6 +15,7 @@
 - Quyền push lên repository/nhánh nêu trên đã được người dùng xác nhận rõ ràng. Chưa có quyền merge vào nhánh chính.
 - Installer tiếp tục bị khóa cho đến khi mock và kiểm tra API thật hoàn tất. API key được nhập trong ứng dụng, không gửi trong hội thoại.
 - Sau khi workspace tạm được khởi tạo lại, khôi phục từ GitHub `acfe9b5`; các test nhiệm vụ 3 chưa commit được dựng lại từ ngữ cảnh.
+- Nhiệm vụ 4 bổ sung nhật ký FBO trong SQLite để phục hồi đúng biến thể/số lượng và KIZ đã giữ sau lỗi. Nhãn chuẩn bị có manifest `OfficialMarketplaceLabels=false`; không đóng giả sticker của sàn.
 
 ## Quy tắc phục hồi nhận đơn
 

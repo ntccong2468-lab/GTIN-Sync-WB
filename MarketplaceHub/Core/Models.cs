@@ -10,6 +10,21 @@ public sealed record ProductRow(
     long StoreId, Marketplace Marketplace, string ExternalId, string Sku, string Name,
     decimal? Price, string ImageUrl, string RawJson);
 
+public sealed record FboPreparationRow(string VariantId,string Sku,string Name,string Color,string Size,
+    string Brand,string Barcode,int Quantity,bool NeedsKiz,IReadOnlyList<string> KizCodes);
+
+public static class GtinCode
+{
+    public static string Normalize(string? value)
+    {
+        var text=(value??"").Trim();
+        if(text.Length is not (8 or 12 or 13 or 14)||text.Any(c=>c is < '0' or > '9'))return "";
+        var sum=0;var weight=3;
+        for(var i=text.Length-2;i>=0;i--){sum+=(text[i]-'0')*weight;weight=weight==3?1:3;}
+        return (10-sum%10)%10==text[^1]-'0'?text.PadLeft(14,'0'):"";
+    }
+}
+
 public sealed record FbsOrderRow(
     long StoreId, Marketplace Marketplace, string ExternalOrderId, string Sku,
     string Name, int Quantity, string Status, bool NeedsKiz, string RawJson);

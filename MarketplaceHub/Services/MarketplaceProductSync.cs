@@ -23,11 +23,7 @@ public static class ProductCatalog
 
     public static string NormalizeGtin(string? barcode)
     {
-        var text = (barcode ?? "").Trim();
-        if (text.Length is not (8 or 12 or 13 or 14) || text.Any(c => c is < '0' or > '9')) return "";
-        var sum = 0; var weight = 3;
-        for (var i = text.Length - 2; i >= 0; i--) { sum += (text[i] - '0') * weight; weight = weight == 3 ? 1 : 3; }
-        return (10 - sum % 10) % 10 == text[^1] - '0' ? text.PadLeft(14, '0') : "";
+        return GtinCode.Normalize(barcode);
     }
 
     public static ProductRow Merge(ProductRow? existing, ProductRow incoming)

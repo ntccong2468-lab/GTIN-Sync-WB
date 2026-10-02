@@ -22,6 +22,56 @@ public sealed class WbPrintBundleService
     public const float PageWidthPoints = 58 * 72 / 25.4f, PageHeightPoints = 40 * 72 / 25.4f;
     public static string HistoryDirectory => Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "MarketplaceHub", "PrintJobs");
 
+    public WbPrintBundle BuildFboPreparationLabels(string shop,Marketplace marketplace,IReadOnlyList<FboPreparationRow> rows,
+        string? root=null,CancellationToken ct=default)
+    {
+        if(rows.Count==0)throw new InvalidOperationException("Chưa chọn biến thể FBO.");
+        if(rows.Select(x=>(x.Sku,x.VariantId)).Distinct().Count()!=rows.Count)
+            throw new InvalidOperationException("Biến thể FBO bị trùng.");
+        var seen=new HashSet<string>(StringComparer.Ordinal);
+        foreach(var row in rows){
+            if(row.Quantity is < 1 or > 10000||string.IsNullOrWhiteSpace(row.Barcode))
+                throw new InvalidOperationException($"{row.Sku}/{row.Size}: cần barcode chính xác và số lượng từ 1 đến 10000.");
+            if(row.NeedsKiz&&row.KizCodes.Count!=row.Quantity||row.KizCodes.Count>0&&row.KizCodes.Count!=row.Quantity)
+                throw new InvalidOperationException($"{row.Sku}/{row.Size}: chưa có đủ một KIZ cho mỗi sản phẩm.");
+            foreach(var raw in row.KizCodes){
+                var code=raw.TrimStart('\u001d');var gtin=GtinCode.Normalize(row.Barcode);
+                if(gtin.Length==0||!code.StartsWith("01"+gtin+"21",StringComparison.Ordinal)||!seen.Add(code))
+                    throw new InvalidOperationException($"{row.Sku}/{row.Size}: KIZ trùng hoặc GTIN không khớp biến thể.");
+            }
+        }
+        root??=HistoryDirectory;System.IO.Directory.CreateDirectory(root);
+        var id="FBO-"+DateTime.UtcNow.ToString("yyyyMMdd-HHmmss")+"-"+Guid.NewGuid().ToString("N")[..8];
+        var final=Path.Combine(root,id);var staging=Path.Combine(root,".preparing-"+id);
+        System.IO.Directory.CreateDirectory(staging);var pages=new List<WbPrintPage>();
+        var input=rows.Select(x=>new WbPrintOrder(x.VariantId,x.Name,x.Sku,x.Color,x.Size,x.Brand,x.Barcode,
+            x.Quantity,x.NeedsKiz,x.KizCodes,new(false,"Nhãn chuẩn bị sản phẩm FBO"))).ToArray();
+        try{
+            foreach(var row in input)for(var unit=0;unit<row.Quantity;unit++){
+                ct.ThrowIfCancellationRequested();
+                using var bitmap=RenderProduct(row,row.KizCodes.Count>0?row.KizCodes[unit]:"",true,$"{marketplace} · FBO");
+                var filename=$"{pages.Count+1:D5}-preparation.png";
+                using var data=bitmap.Encode(SKEncodedImageFormat.Png,100);
+                using(var file=File.Create(Path.Combine(staging,filename)))data.SaveTo(file);
+                pages.Add(new(row.OrderId,"preparation",Path.Combine(final,filename)));
+            }
+            using(var pdf=SKDocument.CreatePdf(Path.Combine(staging,"FBO-preparation.pdf"))){
+                foreach(var page in pages){
+                    ct.ThrowIfCancellationRequested();using var bitmap=SKBitmap.Decode(Path.Combine(staging,Path.GetFileName(page.Path)));
+                    var canvas=pdf.BeginPage(PageWidthPoints,PageHeightPoints);
+                    using var paint=new SKPaint{FilterQuality=SKFilterQuality.None};
+                    canvas.DrawBitmap(bitmap,new SKRect(0,0,PageWidthPoints,PageHeightPoints),paint);pdf.EndPage();
+                }pdf.Close();
+            }
+            WriteDetails(Path.Combine(staging,"FBO-picking.pdf"),shop,input,new(true,true,false,1),ct,$"{marketplace} · FBO");
+            File.WriteAllText(Path.Combine(staging,"job.json"),JsonSerializer.Serialize(new{
+                Marketplace=marketplace.ToString(),Shop=shop,Kind="FboPreparation",OfficialMarketplaceLabels=false,
+                PreparedAtUtc=DateTimeOffset.UtcNow,Variants=rows,Pages=pages},new JsonSerializerOptions{WriteIndented=true}));
+            ct.ThrowIfCancellationRequested();System.IO.Directory.Move(staging,final);
+            return new(final,Path.Combine(final,"FBO-preparation.pdf"),Path.Combine(final,"FBO-picking.pdf"),Path.Combine(final,"job.json"),pages);
+        }finally{if(System.IO.Directory.Exists(staging))System.IO.Directory.Delete(staging,true);}
+    }
+
     public WbPrintBundle Prepare(string shop, IReadOnlyList<WbPrintOrder> orders, WbPrintOptions options,
         string? root = null, CancellationToken ct = default)
     {
@@ -167,7 +217,7 @@ public sealed class WbPrintBundleService
         return image;
     }
 
-    internal static SKBitmap RenderProduct(WbPrintOrder order, string kiz, bool productLabel)
+    internal static SKBitmap RenderProduct(WbPrintOrder order, string kiz, bool productLabel,string context="WB")
     {
         var image = new SKBitmap(Width,Height,SKColorType.Bgra8888,SKAlphaType.Premul);
         try
@@ -185,7 +235,7 @@ public sealed class WbPrintBundleService
             Text(canvas,"Арт: " + order.Article,260,115,23,true,300);
             Text(canvas,"Цвет: " + order.Color,260,156,22,false,300);
             Text(canvas,"Размер: " + order.Size,260,197,24,true,300);
-            Text(canvas,"WB · " + order.OrderId,260,239,20,false,300);
+            Text(canvas,context + " · " + order.OrderId,260,239,20,false,300);
             if (productLabel)
             {
                 using var barcode = RenderCode(order.Barcode,BarcodeFormat.CODE_128);
@@ -213,7 +263,7 @@ public sealed class WbPrintBundleService
                 group.Sum(x=>x.Quantity),group.Select(x=>x.OrderId).ToArray(),group.Select(x=>x.Thumbnail).FirstOrDefault(x=>x is not null)))
             .OrderBy(x=>x.Article,StringComparer.Ordinal).ThenBy(x=>x.Color,StringComparer.Ordinal).ThenBy(x=>x.Size,StringComparer.Ordinal).ToArray();
 
-    private static void WriteDetails(string path,string shop,IReadOnlyList<WbPrintOrder> orders,WbPrintOptions options,CancellationToken ct)
+    private static void WriteDetails(string path,string shop,IReadOnlyList<WbPrintOrder> orders,WbPrintOptions options,CancellationToken ct,string context="WB")
     {
         using var pdf = SKDocument.CreatePdf(path);
         var variants=GroupVariants(orders);
@@ -222,7 +272,7 @@ public sealed class WbPrintBundleService
         {
             ct.ThrowIfCancellationRequested();
             var canvas = pdf.BeginPage(595,842);
-            Text(canvas,"WB · Phiếu nhặt hàng / Лист подбора",28,34,18,true);
+            Text(canvas,context+" · Phiếu nhặt hàng / Лист подбора",28,34,18,true);
             Text(canvas,shop + " · " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm") + " UTC",28,55,10,false,539);
             Text(canvas,$"Đơn: {orders.Count} · Biến thể: {variants.Count} · Tổng sản phẩm: {orders.Sum(x=>x.Quantity)}",28,73,10);
             var columns=new float[]{28,59,108,310,364,497,567};

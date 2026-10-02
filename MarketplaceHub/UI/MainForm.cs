@@ -1891,51 +1891,6 @@ public sealed partial class MainForm : Form
         card.Controls.Add(grid);
     }
 
-    private void ShowFboPacking()
-    {
-        ClearWork();
-        work.Controls.Add(Title("Đóng hàng FBO"));
-        var hint = new Label
-        {
-            Text = "Danh sách sản phẩm local để chuẩn bị barcode/KIZ cho lô FBO. Dữ liệu lấy từ catalog đã đồng bộ.",
-            Left = 4, Top = 48, AutoSize = true, ForeColor = C.Muted
-        };
-        work.Controls.Add(hint);
-
-        var search = DarkText("Tìm SKU hoặc tên sản phẩm...", 420); search.Left = 4; search.Top = 82; work.Controls.Add(search);
-        var card = CardPanel(); card.Left = 4; card.Top = 140;
-        card.Anchor = AnchorStyles.Top | AnchorStyles.Bottom | AnchorStyles.Left | AnchorStyles.Right;
-        card.Width = work.ClientSize.Width - 55; card.Height = work.ClientSize.Height - 170; work.Controls.Add(card);
-
-        var grid = DarkGrid(); grid.Dock = DockStyle.Fill; grid.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
-        grid.Columns.Add(new DataGridViewImageColumn { HeaderText = "Ảnh", Width = 95, ImageLayout = DataGridViewImageCellLayout.Zoom });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "SKU", Width = 180 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Sản phẩm", AutoSizeMode = DataGridViewAutoSizeColumnMode.Fill });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "Barcode / GTIN", Width = 190 });
-        grid.Columns.Add(new DataGridViewTextBoxColumn { HeaderText = "KIZ sẵn sàng", Width = 130 });
-        card.Controls.Add(grid);
-
-        void Load()
-        {
-            grid.Rows.Clear();
-            var store = CurrentStore(); if (store is null) return;
-            var q = search.Text.Trim();
-            foreach (var p in app.Db.Products(store.Id))
-            {
-                if (!string.IsNullOrWhiteSpace(q) && !p.Sku.Contains(q, StringComparison.OrdinalIgnoreCase) && !p.Name.Contains(q, StringComparison.OrdinalIgnoreCase)) continue;
-                var meta = ProductMeta(p);
-                var kizCount = string.IsNullOrWhiteSpace(meta.Barcode) ? 0 : app.Db.Kiz().Count(x => x.Gtin == meta.Barcode && x.Status == "AVAILABLE");
-                var row = grid.Rows.Add(null, p.Sku, p.Name, meta.Barcode, kizCount);
-                grid.Rows[row].Height = 88;
-                var image = ProductImageUrl(p);
-                if (!string.IsNullOrWhiteSpace(image)) _ = LoadImageAsync(grid, row, 0, image);
-            }
-        }
-        search.TextChanged += (_, _) => Load();
-        SetWorkResize((_, _) => { card.Width = work.ClientSize.Width - 55; card.Height = Math.Max(280, work.ClientSize.Height - 170); });
-        Load();
-    }
-
     private void ShowFboOrders()
     {
         ClearWork();

@@ -77,10 +77,18 @@ internal static class Program
                     Expect(!State("IsNew", state) && State("IsPacking", state) && !State("IsShipping", state), "Packed order is absent from packing or shown in multiple tabs.");
             });
             Check("FBO grid offers selection and quantities per exact variant",()=>{
+                var product=app.Db.Products(store.Id).Single();var scope=ProductCatalog.Scope(store);app.Db.BeginProductCatalog(store,scope);
+                var variants=new[]{new ProductVariantRow(store.Id,store.Marketplace,"A","A","48","48",new[]{"4601234567893"},"04601234567893","","{\"color\":\"Đen\"}"),
+                    new ProductVariantRow(store.Id,store.Marketplace,"A","A","50","50",new[]{"4601234567893"},"04601234567893","","{\"color\":\"Trắng\"}")};
+                app.Db.ApplyProductCatalogPage(store,"",scope,new(new[]{new ProductCatalogEntry(product,variants)},"",true));
                 Page(form,"ShowFboPacking");Application.DoEvents();
                 var grid=All(form).OfType<DataGridView>().SingleOrDefault(x=>x.Name=="fboPreparation");
                 Expect(grid is not null&&grid.Columns.Contains("quantity")&&grid.Columns.Contains("size")&&grid.Columns[0] is DataGridViewCheckBoxColumn,"FBO still uses a product-only cache table.");
                 Expect(All(form).OfType<Button>().Any(x=>x.Name=="exportFboPreparation"),"Selected FBO quantities cannot be exported.");
+                Expect(grid!.Rows.Count==2&&grid.Rows.Cast<DataGridViewRow>().Select(x=>x.Cells["size"].Value?.ToString()).SequenceEqual(new[]{"48","50"}),"Two sizes under the same SKU were merged.");
+                Expect(grid.Rows.Cast<DataGridViewRow>().Select(x=>x.Cells["color"].Value?.ToString()).Distinct().Count()==2,"Variant color identity was lost.");
+                var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);
+                using var image=new Bitmap(form.Width,form.Height);form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"FboPreparation.png"));
             });
             Check("Report and FBS projection count one external order instead of product lines", () =>
             {

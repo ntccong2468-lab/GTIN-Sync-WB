@@ -54,10 +54,10 @@ public sealed class WbPrintPreviewDialog : Form
     private readonly CancellationTokenSource printing=new();
     private int index;
     private bool busy;
-    public WbPrintPreviewDialog(WbPrintBundle prepared,Action<string> record)
+    public WbPrintPreviewDialog(WbPrintBundle prepared,Action<string> record,string title="WB · Bộ nhãn đã chuẩn bị")
     {
         bundle=prepared;audit=record;
-        Text="WB · Bộ nhãn đã chuẩn bị";Width=950;Height=750;MinimumSize=new Size(820,650);
+        Text=title;Width=950;Height=750;MinimumSize=new Size(820,650);
         StartPosition=FormStartPosition.CenterParent;BackColor=C.Main;ForeColor=C.Text;Font=new Font("Segoe UI",10);
         var footer=new FlowLayoutPanel {Dock=DockStyle.Bottom,Height=150,Padding=new Padding(12),WrapContents=true};
         var previous=new Button {Text="←",Width=45,Height=35};var next=new Button {Text="→",Width=45,Height=35};
@@ -120,7 +120,7 @@ public sealed class WbPrintPreviewDialog : Form
     }
     public static PrintDocument CreatePrintDocument(string printer)
     {
-        var document=new PrintDocument {PrintController=new StandardPrintController(),DocumentName="WB · Marketplace Hub"};
+        var document=new PrintDocument {PrintController=new StandardPrintController(),DocumentName="Marketplace Hub · Bộ nhãn"};
         document.PrinterSettings.PrinterName=printer;
         document.PrinterSettings.Copies=1;
         document.DefaultPageSettings.PaperSize=new PaperSize("58x40mm",228,157);

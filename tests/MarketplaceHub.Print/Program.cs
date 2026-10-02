@@ -17,6 +17,25 @@ var service = new WbPrintBundleService();
 Check("FBO preparation exposes variant labels without synthesizing official marketplace stickers",()=>{
     var method=typeof(WbPrintBundleService).GetMethod("BuildFboPreparationLabels");
     Expect(method is not null,"Variant-based FBO label preparation is missing.");
+    var type=typeof(ProductRow).Assembly.GetType("MarketplaceHub.Core.FboPreparationRow");
+    Expect(type is not null,"Exact FBO variant identity is missing.");
+    var rows=Array.CreateInstance(type!,2);
+    rows.SetValue(Activator.CreateInstance(type!,"v-48","SKU-A","Áo","Đen","48","Brand","4601234567893",1,true,new[]{code}),0);
+    rows.SetValue(Activator.CreateInstance(type!,"v-50","SKU-A","Áo","Trắng","50","Brand","4601234567893",2,false,Array.Empty<string>()),1);
+    var bundle=(WbPrintBundle)method!.Invoke(service,new object?[]{"fixture",Marketplace.Ozon,rows,output,CancellationToken.None})!;
+    Expect(bundle.Pages.Select(x=>x.OrderId).SequenceEqual(new[]{"v-48","v-50","v-50"})&&bundle.Pages.All(x=>x.Kind=="preparation"),"Variants, quantity or selected order were changed.");
+    var manifest=System.Text.Json.Nodes.JsonNode.Parse(File.ReadAllText(bundle.ManifestPath))!;
+    Expect(manifest["OfficialMarketplaceLabels"]!.GetValue<bool>()==false&&manifest["Marketplace"]!.ToString()=="Ozon","FBO preparation claimed to contain official stickers.");
+});
+Check("FBO refuses missing, duplicate or wrong-GTIN KIZ before creating any files",()=>{
+    var method=typeof(WbPrintBundleService).GetMethod("BuildFboPreparationLabels");Expect(method is not null,"FBO validation is missing.");
+    var type=typeof(ProductRow).Assembly.GetType("MarketplaceHub.Core.FboPreparationRow")!;
+    foreach(var codes in new[]{Array.Empty<string>(),new[]{code,code},new[]{code.Replace("04601234567893","04601234567894"),code+"2"}}){
+        var before=Directory.GetDirectories(output).Length;var rows=Array.CreateInstance(type,1);
+        rows.SetValue(Activator.CreateInstance(type,"v-48","SKU","Áo","Đen","48","Brand","4601234567893",2,true,codes),0);
+        var rejected=false;try{method!.Invoke(service,new object?[]{"fixture",Marketplace.Ozon,rows,output,CancellationToken.None});}catch(System.Reflection.TargetInvocationException ex){rejected=ex.InnerException is InvalidOperationException;}
+        Expect(rejected&&Directory.GetDirectories(output).Length==before,"Invalid KIZ produced a partial FBO job.");
+    }
 });
 Check("WB bundle preserves per-order page sequence, copy count and PDF dimensions", () =>
 {
