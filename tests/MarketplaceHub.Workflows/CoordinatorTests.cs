@@ -62,5 +62,15 @@ public static class CoordinatorTests
             using var f=CoordinatorFixture.Create();f.Stock();f.Physical();f.Adapter.LoseAttach=true;var result=await f.Run();var revision=await f.Coordinator.CreateRevisionAsync(result.JobId,true,default);Expect(revision.Revision==1,"Confirmed revision ignored unknown mutation");
             var rejected=await f.Coordinator.CreateRevisionAsync(result.JobId,false,default);Expect(rejected.Revision==1,"Unconfirmed revision created");
         });
+        await r.CheckAsync("confirmed_revision_preserves_previous_artifacts_and_shared_binding",async()=>{
+            using var f=CoordinatorFixture.Create();f.Stock();f.Physical();var completed=await f.Run();var oldPaths=completed.Artifacts.Select(x=>x.FilePath).ToArray();
+            f.Adapter.Snapshot=f.Adapter.Snapshot with{RequirementFingerprint="requirements-v2"};var next=await f.Coordinator.CreateRevisionAsync(completed.JobId,true,default);
+            Expect(next.Revision==2&&next.JobId!=completed.JobId&&oldPaths.All(File.Exists),"Revision discarded history");
+            var old=f.Db.BoundScopedKiz(f.Context);var newJob=f.Db.GetLabelJob(next.JobId)!;var c=new FbsWorkflowContext(newJob.Id,2,newJob.Snapshot,f.Data.Profile);var held=f.Db.ReserveScopedKiz(c,c.Snapshot.Units);Expect(held.Count==2&&held.Values.ToHashSet().SetEquals(old.Values),"Revision replaced shared unit bindings");
+        });
+        await r.CheckAsync("legal_proof_loss_after_attach_blocks_label_download",async()=>{
+            using var f=CoordinatorFixture.Create();f.Stock();f.Physical();f.Adapter.BeforeMutation=()=>{f.Legal.Condition="unavailable";return Task.CompletedTask;};var result=await f.Run();
+            Expect(result.Stage==FbsLabelJobStage.AwaitingLegalState&&f.Adapter.Downloads==0&&result.Artifacts.Count==0,"Stale legal proof authorized label download");
+        });
     }
 }
