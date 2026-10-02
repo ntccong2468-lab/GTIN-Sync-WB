@@ -54,6 +54,9 @@ async Task GtinMocks(){
     Expect(!nkDone.Success&&nk.Batches.Count==4&&nk.Batches[0].SequenceEqual(nk.Batches[1])==false&&nk.Batches[1].SequenceEqual(nk.Batches[2]),"National Catalog restart retains earlier size mismatch without re-fetching completed 25 GTINs");
     var proof=typeof(GtinMappingSyncService).GetMethod("IsZnackTargetVerified");Expect(proof is not null,"Live GTIN gate requires exact National Catalog evidence");
     if(proof is not null){
+        var good=new GtinSyncTarget("GTIN-4","40","4","48",NewGtin(4));
+        Expect((bool)proof.Invoke(service,new object[]{store,access,good})!,"Exact verified target can pass the live gate despite another variant mismatch");
+        Expect(!(bool)proof.Invoke(service,new object[]{store,new NationalCatalogAccess("different-credential","",false),good})!,"Changing National Catalog credential invalidates earlier target proof");
         var wrong=new GtinSyncTarget("GTIN-1","10","1","48",NewGtin(1));
         Expect(!(bool)proof.Invoke(service,new object[]{store,access,wrong})!,"Earlier mismatched target cannot pass live write gate after resume");
         var absent=new GtinSyncTarget("GTIN-1","10","1","48",NewGtin(999));

@@ -50,6 +50,21 @@ await Check("WB live probe refuses expansion into a multi-order recovery",async(
     var result=await (Task<WbReceiveResult>)method!.Invoke(app,new object[]{store,rows.Take(1).ToArray(),new WbShipmentChoice(null,"probe"),CancellationToken.None})!;
     Expect(!result.Success&&calls==0&&app.Db.RecoverableWbReceive(store.Id,new[]{"811"}) is not null,"Single-order consent expanded a pending multi-order mutation.");
 });
+await Check("WB live probe receives exactly one verified order",async()=>{
+    var method=typeof(AppServices).GetMethod("ReceiveWbProbeOrderAsync");Expect(method is not null,"Exact-target receive boundary is missing.");
+    var store=Store(Marketplace.Wildberries);var row=new FbsOrderRow(store.Id,store.Marketplace,"815","A","A",1,"new",false,"{}");app.Db.UpsertOrders(store.Id,store.Marketplace,new[]{row});
+    var members=new HashSet<long>();var patched=new List<long>();var created=0;
+    Http(r=>{
+        var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/status"))return Json(System.Text.Json.JsonSerializer.Serialize(new{orders=new[]{new{id=815,supplierStatus=members.Contains(815)?"confirm":"new",wbStatus="waiting"}}}));
+        if(r.Method.Method=="PATCH"){foreach(var id in JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x=>x!.GetValue<long>())){patched.Add(id);members.Add(id);}return Json("{}");}
+        if(r.Method==HttpMethod.Post){created++;return Json("{\"id\":\"SINGLE-SUPPLY\"}");}
+        if(path.EndsWith("/order-ids"))return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+        return Json("{\"id\":\"SINGLE-SUPPLY\",\"name\":\"probe\",\"done\":false,\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}");
+    });
+    var result=await (Task<WbReceiveResult>)method!.Invoke(app,new object[]{store,new[]{row},new WbShipmentChoice(null,"probe"),CancellationToken.None})!;
+    Expect(result.Success&&created==1&&patched.SequenceEqual(new long[]{815})&&app.Db.WbReceivedOrderIds(store.Id).SetEquals(new[]{"815"}),"Verified one-order probe is blocked or mutates extra orders.");
+});
 await Check("WB receive Retry-After survives restart and prevents recovery calls",async()=>{
     var store=Store(Marketplace.Wildberries);var rows=new[]{new FbsOrderRow(store.Id,store.Marketplace,"821","A","A",1,"new",false,"{}")};app.Db.UpsertOrders(store.Id,store.Marketplace,rows);
     app.Db.BeginWbReceiveOperation(store.Id,"receive-quota",new[]{"821"},"QUOTA-SUPPLY","quota");
