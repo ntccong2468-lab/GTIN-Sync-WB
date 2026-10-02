@@ -17,7 +17,7 @@ public sealed class WorkflowFixture : IDisposable
     {
         Db = new(Path.Combine(Path.GetTempPath(), "MarketplaceHub-workflow-" + Guid.NewGuid().ToString("N"), "test.db"));
         Store = Db.SaveStore(new(0, Marketplace.Wildberries, "workflow fixture", "", "", "", "", "", true));
-        Profile = new("fixture-profile", Store.Id, 1, "7701234567", "Production", "lp", "PRODUCTION", "UNIT", 10, "credential-1", false, false,
+        Profile = new("fixture-profile", Store.Id, 1, "7701234567", "Production", "lp", "PRODUCTION", "UNIT", 10, Db.ZnakCredentialVersion(), false, false,
             new Uri("https://suzgrid.crpt.ru"), new Uri("https://markirovka.crpt.ru"));
         Db.SaveSuzProfile(Profile);
         Snapshot = new(new(Store.Id, Store.Marketplace, LabelTargetKind.WbSupply, "SUPPLY-1"), Db.StoreGeneration(Store.Id),

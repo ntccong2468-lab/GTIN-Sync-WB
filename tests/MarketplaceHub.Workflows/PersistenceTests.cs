@@ -99,5 +99,30 @@ public static class PersistenceTests
             Expect(f.Reopen().GetPurchaseIntent(intent.Id)!.Stage == PurchaseStage.CreateUnknown, "Crash recovery allowed resending");
             return Task.CompletedTask;
         });
+        await r.CheckAsync("credential_changes_fence_purchase_but_keep_remote_evidence", () => {
+            using var f = WorkflowFixture.Create(); var intent = f.Db.GetOrCreatePurchaseIntent(f.Request());
+            Expect(f.Db.TryBeginPurchase(intent.Id), "Current authorization failed");
+            var before = f.Db.ZnakCredentialVersion();
+            var config = f.Db.GetZnakConfig() with { Inn = "7701234567", OmsConnection = "fixture-local-secret", AutoCirculation = true };
+            f.Db.SaveZnakConfig(config);
+            var changed = f.Db.ZnakCredentialVersion();
+            f.Db.SaveZnakConfig(config);
+            Expect(before != changed && f.Db.ZnakCredentialVersion() == changed, "Credential version did not change exactly once");
+            f.Db.SavePurchaseOutcome(intent.Id, PurchaseStage.Polling, "SUZ-LATE", null, null);
+            var late = f.Db.GetPurchaseIntent(intent.Id)!;
+            Expect(late.RemoteOrderId == "SUZ-LATE" && late.Stage == PurchaseStage.NeedsReconciliation && !f.Db.PurchaseAuthorizationMatches(intent.Id), "Late response opened gate with stale credentials");
+            return Task.CompletedTask;
+        });
+        await r.CheckAsync("legacy_available_is_unknown_and_new_block_cannot_leak_after_delete", () => {
+            using var f = WorkflowFixture.Create(); f.Db.UpsertKiz(WorkflowFixture.Raw, WorkflowFixture.Gtin, "AVAILABLE");
+            f.Reopen();
+            Expect(Convert.ToInt64(f.Sql("SELECT COUNT(*) FROM kiz_codes_scoped WHERE allocation='NeedsVerification' AND legal_json IS NULL AND owner_inn=''")) == 1, "Legacy AVAILABLE gained legal/owner proof");
+            Expect(Convert.ToInt64(f.Sql("SELECT COUNT(*) FROM kiz_pool")) == 1, "Legacy raw row was modified");
+            var i = f.Db.GetOrCreatePurchaseIntent(f.Request()); f.Db.SavePurchaseOutcome(i.Id, PurchaseStage.Downloading, "SUZ-1", null, null);
+            f.Db.DeleteStore(f.Store.Id); f.Db.SavePurchaseOutcome(i.Id, PurchaseStage.Polling, "SUZ-1", null, null);
+            f.Db.SavePurchaseBlock(i.Id, new("B", "SUZ-1", WorkflowFixture.Gtin, new[] { WorkflowFixture.Raw }));
+            Expect(f.Db.GetPurchaseIntent(i.Id) is null && Convert.ToInt64(f.Sql("SELECT COUNT(*) FROM kiz_purchase_blocks")) == 0, "Late worker recreated deleted evidence");
+            return Task.CompletedTask;
+        });
     }
 }
