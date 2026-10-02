@@ -29,12 +29,13 @@ public sealed partial class MainForm
         void Load(){
             var keep=grid.Rows.Cast<DataGridViewRow>().Where(x=>x.Tag is FboPreparationRow).ToDictionary(x=>((FboPreparationRow)x.Tag).Sku+"\n"+((FboPreparationRow)x.Tag).VariantId,
                 x=>(Selected:x.Cells["selected"].Value is true,Quantity:x.Cells["quantity"].Value,Marked:x.Cells["marked"].Value));
-            grid.Rows.Clear();if(store is null)return;
+            DisposeImages(card);grid.Rows.Clear();if(store is null)return;
             var products=app.Db.Products(store.Id).ToDictionary(x=>x.Sku,StringComparer.Ordinal);var pool=app.Db.Kiz();var pending=app.Db.PendingFboPreparation(store);var q=search.Text.Trim();
+            var mappings=app.Db.ConfirmedGtinMappings(store);
             var source=app.Db.ProductVariants(store).Select(v=>{
                 products.TryGetValue(v.Sku,out var product);var meta=product is null?null:ProductMeta(product);
                 var raw=JsonNode.Parse(product?.RawJson??"{}");var marked=raw?["needsKiz"]?.ToString()=="true"||raw?["isKizRequired"]?.ToString()=="true"||raw?["isNeedMark"]?.ToString()=="true";
-                var barcode=v.Gtin.Length>0?v.Gtin:v.Barcodes.Count==1?v.Barcodes[0]:"";
+                var barcode=mappings.TryGetValue((v.Sku,v.VariantId),out var mapped)?mapped:v.Gtin.Length>0?v.Gtin:v.Barcodes.Count==1?v.Barcodes[0]:"";
                 var variant=JsonNode.Parse(v.RawJson);var color=variant?["color"]?.ToString()??meta?.Color??"";
                 return (Row:new FboPreparationRow(v.VariantId,v.Sku,product?.Name??v.Sku,color,v.Size,meta?.Brand??"",barcode,1,marked,Array.Empty<string>()),v.ImageUrl);
             }).ToArray();
