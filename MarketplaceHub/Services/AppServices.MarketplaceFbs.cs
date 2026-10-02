@@ -33,7 +33,7 @@ public sealed partial class AppServices
 
     public async Task<PriceUpdateResult> PackMarketplaceFbsAsync(StoreProfile store,IEnumerable<string> orderIds,
         Func<MarketplaceFbsItem,string> resolveGtin,bool useKiz=true,CancellationToken ct=default,IProgress<string>? progress=null,
-        string? batchId=null,IReadOnlyDictionary<string,JsonArray>? layouts=null)
+        string? batchId=null,IReadOnlyDictionary<string,JsonArray>? layouts=null,FbsWorkflowContext? workflowContext=null)
     {
         if(!await marketplaceFbsOperations.WaitAsync(0,ct).ConfigureAwait(false))return new(false,"Đang có một lượt đóng hàng Ozon/Yandex. Hãy chờ hoàn tất.");
         string? activeBatch=batchId;string? activeOrder=null;var done=0;
@@ -161,7 +161,7 @@ public sealed partial class AppServices
     private static void CheckMarketplaceGtin(string code,string gtin,string offer)
     {var parsed=ParseKiz(code);if(!parsed.Ok || parsed.Gtin!=gtin)throw new InvalidOperationException(offer+": GTIN trong KIZ khác biến thể sản phẩm.");}
 
-    public async Task<LabelResult> ExportVerifiedMarketplaceLabelAsync(StoreProfile store,string orderId,Func<MarketplaceFbsItem,string> resolveGtin,CancellationToken ct=default)
+    public async Task<LabelResult> ExportVerifiedMarketplaceLabelAsync(StoreProfile store,string orderId,Func<MarketplaceFbsItem,string> resolveGtin,CancellationToken ct=default,FbsWorkflowContext? workflowContext=null)
     {
         try {
             var current=await ReadFreshMarketplaceFbsAsync(store,orderId,ct).ConfigureAwait(false);

@@ -105,7 +105,7 @@ public sealed partial class AppServices
     }
 
     public async Task<PriceUpdateResult> EnsureWbSupplyKizAsync(StoreProfile store,IReadOnlyList<FbsOrderRow> orders,
-        IReadOnlyDictionary<string,string> gtinByOrder,bool useKiz,CancellationToken ct=default,IProgress<string>? progress=null)
+        IReadOnlyDictionary<string,string> gtinByOrder,bool useKiz,CancellationToken ct=default,IProgress<string>? progress=null,FbsWorkflowContext? workflowContext=null)
     {
         await wbKizOperations.WaitAsync(ct).ConfigureAwait(false);
         try
