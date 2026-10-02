@@ -49,6 +49,15 @@ public sealed partial class AppServices
     public void PauseStoreFbsLabelJobs(long storeId)
     {lock(labelWorkers){foreach(var worker in labelWorkers.Values.Where(x=>x.Target.StoreId==storeId))worker.Stop.Cancel();}foreach(var job in Db.ActiveLabelJobs(storeId))PauseFbsLabelJob(job.Id);}
     public void StopFbsLabelWorkers()=>labelShutdown.Cancel();
+    public Task<UnitWorkflowResult> ScanJobKizAsync(string jobId,FbsUnitKey unit,string raw,CancellationToken ct=default)
+    {
+        ct.ThrowIfCancellationRequested();var job=Db.GetLabelJob(jobId)??throw new InvalidOperationException("job_deleted");var context=new FbsWorkflowContext(job.Id,job.Revision,job.Snapshot,Db.LabelJobProfile(jobId));RequireWorkflowAuthorization(context);
+        var demand=job.Snapshot.Units.SingleOrDefault(x=>x.Unit==unit&&x.RequiresKiz)??throw new InvalidOperationException("scan_unit_outside_job");var profile=context.Profile??throw new InvalidOperationException("explicit_profile_required");
+        raw=KizCodeIdentity.Canonical(raw);if(KizCodeIdentity.Gtin(raw)!=demand.Gtin)throw new InvalidOperationException("scan_gtin_mismatch");var held=Db.BoundScopedKiz(context);var hash=Db.CodeProtector.Identity(raw);
+        if(held.TryGetValue(unit,out var existing)&&Db.CodeProtector.Identity(existing)!=hash)throw new InvalidOperationException("scan_binding_mismatch");
+        Db.ImportScopedKiz(new(profile.StoreId,profile.OwnerInn,profile.Environment),raw,"Scan");RequireWorkflowAuthorization(context);Db.BindAssignedKiz(context,new Dictionary<FbsUnitKey,string>{{unit,raw}});
+        var result=new UnitWorkflowResult(unit,"AwaitingLegalState",hash,"legal_check_required");var current=Db.GetLabelJob(jobId)!;Db.TrySaveLabelJob(jobId,current.Version,current.Stage,Db.LabelJobUnits(jobId).Select(x=>x.Unit==unit?result:x).ToArray());NotifyLabelJob(ProjectLabelJob(jobId));return Task.FromResult(result);
+    }
     public async Task<IReadOnlyList<LabelJobResult>> ResumePendingFbsJobsAsync(CancellationToken ct)
     {
         var results=new List<LabelJobResult>();foreach(var job in Db.ActiveLabelJobs().Where(x=>x.Stage is not(FbsLabelJobStage.LabelsReady or FbsLabelJobStage.SnapshotChanged or FbsLabelJobStage.Cancelled))){
