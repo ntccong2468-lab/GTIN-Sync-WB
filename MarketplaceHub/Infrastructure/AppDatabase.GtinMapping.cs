@@ -8,6 +8,7 @@ public sealed record GtinMappingRow(long StoreId,Marketplace Marketplace,string 
     int TotalKiz,int AvailableKiz,int ReservedKiz,int AssignedKiz);
 public sealed record GtinMappingPage(IReadOnlyList<GtinMappingRow> Rows,int Total,int MappingRuleCount,int Offset,int Limit,
     int TotalKiz,int AvailableKiz,int ReservedKiz,int AssignedKiz);
+public sealed record GtinSyncJob(string Scope,string SnapshotJson,int Cursor,string State,DateTimeOffset? RetryAt,string LastError);
 
 public sealed partial class AppDatabase
 {
@@ -115,5 +116,48 @@ INSERT INTO gtin_mapping(store_id,marketplace,sku,variant_id,gtin,source,archive
 SELECT store_id,marketplace,sku,variant_id,gtin,'marketplace',1,$at FROM product_variants WHERE store_id=$s AND marketplace=$m AND sku=$sku AND variant_id=$v
 ON CONFLICT(store_id,marketplace,sku,variant_id) DO UPDATE SET archived=1,updated_at=$at";
         MappingParameters(cmd,store,sku,variantId,"");cmd.ExecuteNonQuery();tx.Commit();
+    }
+
+    public GtinSyncJob? GetGtinSyncJob(StoreProfile store,string endpoint)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText="SELECT scope,snapshot_json,cursor,state,retry_at,last_error FROM gtin_sync_jobs WHERE store_id=$s AND marketplace=$m AND endpoint=$e";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());cmd.Parameters.AddWithValue("$e",endpoint);
+        using var r=cmd.ExecuteReader();return r.Read()?new(r.GetString(0),r.GetString(1),r.GetInt32(2),r.GetString(3),r.IsDBNull(4)?null:DateTimeOffset.Parse(r.GetString(4)),r.GetString(5)):null;
+    }
+
+    public void SaveGtinSyncJob(StoreProfile store,string endpoint,GtinSyncJob job)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText=@"INSERT INTO gtin_sync_jobs(store_id,marketplace,endpoint,scope,snapshot_json,cursor,state,retry_at,last_error,updated_at)
+VALUES($s,$m,$e,$scope,$json,$cursor,$state,$retry,$error,$at)
+ON CONFLICT(store_id,marketplace,endpoint) DO UPDATE SET scope=$scope,snapshot_json=$json,cursor=$cursor,state=$state,retry_at=$retry,last_error=$error,updated_at=$at";
+        cmd.Parameters.AddWithValue("$s",store.Id);cmd.Parameters.AddWithValue("$m",store.Marketplace.ToString());cmd.Parameters.AddWithValue("$e",endpoint);
+        cmd.Parameters.AddWithValue("$scope",job.Scope);cmd.Parameters.AddWithValue("$json",job.SnapshotJson);cmd.Parameters.AddWithValue("$cursor",job.Cursor);cmd.Parameters.AddWithValue("$state",job.State);
+        cmd.Parameters.AddWithValue("$retry",(object?)job.RetryAt?.ToString("O")??DBNull.Value);cmd.Parameters.AddWithValue("$error",job.LastError);cmd.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));cmd.ExecuteNonQuery();
+    }
+
+    public void ObserveZnackGtin(StoreProfile store,GtinSyncTarget target,string goodId,string stage,bool confirmed,string metadata,string error="")
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();GuardMappingVariant(c,tx,store,target.Sku,target.VariantId);
+        using var cmd=c.CreateCommand();cmd.Transaction=tx;cmd.CommandText=@"
+INSERT INTO gtin_mapping(store_id,marketplace,sku,variant_id,gtin,source,confirmed,znack_good_id,znack_stage,metadata_json,last_error,updated_at)
+VALUES($s,$m,$sku,$v,$g,'znack',$confirmed,$good,$stage,$json,$error,$at)
+ON CONFLICT(store_id,marketplace,sku,variant_id) DO UPDATE SET
+ gtin=CASE WHEN gtin_mapping.confirmed=1 OR gtin_mapping.source='seller' THEN gtin_mapping.gtin ELSE $g END,
+ source=CASE WHEN gtin_mapping.confirmed=1 OR gtin_mapping.source='seller' THEN gtin_mapping.source ELSE 'znack' END,
+ confirmed=CASE WHEN gtin_mapping.gtin=$g THEN MAX(gtin_mapping.confirmed,$confirmed) ELSE gtin_mapping.confirmed END,
+ znack_good_id=CASE WHEN gtin_mapping.gtin=$g THEN $good ELSE gtin_mapping.znack_good_id END,
+ znack_stage=CASE WHEN gtin_mapping.gtin=$g THEN $stage ELSE gtin_mapping.znack_stage END,
+ metadata_json=CASE WHEN gtin_mapping.gtin=$g THEN $json ELSE gtin_mapping.metadata_json END,
+ last_error=CASE WHEN gtin_mapping.gtin=$g THEN $error ELSE 'Mapping thay đổi trong lúc đồng bộ; cần kiểm tra lại.' END,updated_at=$at";
+        MappingParameters(cmd,store,target.Sku,target.VariantId,target.Gtin);cmd.Parameters.AddWithValue("$confirmed",confirmed?1:0);cmd.Parameters.AddWithValue("$good",goodId);cmd.Parameters.AddWithValue("$stage",stage);cmd.Parameters.AddWithValue("$json",metadata);cmd.Parameters.AddWithValue("$error",error);cmd.ExecuteNonQuery();tx.Commit();
+    }
+
+    public void MarkWbGtinState(StoreProfile store,GtinSyncTarget target,string state,string error="")
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();cmd.CommandText="UPDATE gtin_mapping SET wb_stage=$state,last_error=$error,updated_at=$at WHERE store_id=$s AND marketplace=$m AND sku=$sku AND variant_id=$v AND gtin=$g AND confirmed=1 AND archived=0";
+        MappingParameters(cmd,store,target.Sku,target.VariantId,target.Gtin);cmd.Parameters.AddWithValue("$state",state);cmd.Parameters.AddWithValue("$error",error);
+        if(cmd.ExecuteNonQuery()!=1)throw new InvalidOperationException("Mapping GTIN đã thay đổi hoặc được lưu trữ. Dừng để giữ dữ liệu đã xác nhận.");
     }
 }

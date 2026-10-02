@@ -13,7 +13,8 @@ public sealed partial class MainForm
         if(product is null)return "";
         var variants=ProductCatalog.Entry(product).Variants;
         var explicitCodes=ProductCatalog.Strings(item.Raw["barcodes"]).Concat(item.Raw["barcode"] is JsonValue b?new[]{b.ToString()}:Array.Empty<string>()).ToHashSet(StringComparer.Ordinal);
-        var matched=explicitCodes.Count>0?variants.Where(v=>v.Barcodes.Any(explicitCodes.Contains)):variants;
+        var matched=(explicitCodes.Count>0?variants.Where(v=>v.Barcodes.Any(explicitCodes.Contains)):variants).ToArray();
+        if(matched.Length==1&&app.Db.ConfirmedGtinMappings(store).TryGetValue((product.Sku,matched[0].VariantId),out var confirmed))return confirmed;
         var gtins=matched.SelectMany(v=>v.Barcodes).Where(b=>explicitCodes.Count==0 || explicitCodes.Contains(b)).Select(ProductCatalog.NormalizeGtin).Where(g=>g.Length>0).Distinct(StringComparer.Ordinal).ToArray();
         return gtins.Length==1?gtins[0]:"";
     }

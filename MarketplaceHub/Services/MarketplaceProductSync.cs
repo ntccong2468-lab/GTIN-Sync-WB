@@ -15,6 +15,44 @@ public sealed record ProductCatalogPage(IReadOnlyList<ProductCatalogEntry> Entri
 public sealed record ProductCatalogCheckpoint(string Cursor, string Scope, int Pages, int Products, int Variants, bool Complete);
 public sealed record ProductCatalogStatus(int Products, int Variants, int MissingGtin, int Pages, bool Pending, string Error);
 
+public sealed class GtinQuotaException(string endpoint,TimeSpan delay):Exception("Máy chủ giới hạn nhịp gọi. Tiến độ đã được giữ để tiếp tục sau thời gian retry.")
+{public string Endpoint{get;}=endpoint;public TimeSpan Delay{get;}=delay;}
+
+public static class WbGtinPayloads
+{
+    public static JsonObject BuildWbGtinCard(string rawJson,IReadOnlyDictionary<string,string> gtinByVariant)
+    {
+        var raw=JsonNode.Parse(rawJson) as JsonObject??throw new InvalidOperationException("Card WB không hợp lệ.");
+        if(!long.TryParse(raw["nmID"]?.ToString(),out var nm)||nm<=0||raw["sizes"] is not JsonArray sizes||sizes.Count==0)
+            throw new InvalidOperationException("Card WB thiếu nmID hoặc toàn bộ sizes.");
+        var result=new JsonObject();foreach(var key in new[]{"nmID","vendorCode","brand","title","description","dimensions","characteristics"})
+            if(raw[key] is { } value)result[key]=value.DeepClone();
+        if(result["dimensions"] is JsonObject dimensions)dimensions.Remove("isValid");
+        var seen=new HashSet<string>(StringComparer.Ordinal);var output=new JsonArray();
+        foreach(var source in sizes){
+            if(source is not JsonObject size||!long.TryParse(size["chrtID"]?.ToString(),out var chrt)||chrt<=0||!seen.Add(chrt.ToString()))
+                throw new InvalidOperationException("Size WB thiếu/trùng chrtID. Không cập nhật card.");
+            var row=new JsonObject();foreach(var key in new[]{"chrtID","techSize","wbSize"})if(size[key] is { } value)row[key]=value.DeepClone();
+            if(size["skus"] is not JsonArray codes)throw new InvalidOperationException("Size WB thiếu mảng skus; không thay bằng danh sách rỗng.");
+            var barcodes=codes.Select(x=>x?.ToString()??"").ToList();if(barcodes.Any(string.IsNullOrWhiteSpace))throw new InvalidOperationException("Size WB chứa barcode rỗng.");
+            if(gtinByVariant.TryGetValue(chrt.ToString(),out var supplied)){
+                var gtin=GtinCode.Normalize(supplied);if(gtin.Length==0)throw new InvalidOperationException("GTIN checksum không hợp lệ.");
+                if(!barcodes.Any(x=>GtinCode.Normalize(x)==gtin))barcodes.Add(gtin);
+            }
+            row["skus"]=new JsonArray(barcodes.Select(x=>(JsonNode?)JsonValue.Create(x)).ToArray());output.Add(row);
+        }
+        if(gtinByVariant.Keys.Any(x=>!seen.Contains(x)))throw new InvalidOperationException("Mapping không thuộc một size hiện tại của nmID.");
+        result["sizes"]=output;return result;
+    }
+
+    public static bool Matches(JsonObject card,GtinSyncTarget target)
+    {
+        if(card["nmID"]?.ToString()!=target.ExternalId||card["vendorCode"]?.ToString()!=target.Sku)return false;
+        var sizes=(card["sizes"] as JsonArray)?.Where(x=>x?["chrtID"]?.ToString()==target.VariantId).ToArray()??Array.Empty<JsonNode?>();
+        return sizes.Length==1&&(sizes[0]?["skus"] as JsonArray)?.Any(x=>GtinCode.Normalize(x?.ToString())==target.Gtin)==true;
+    }
+}
+
 public static class ProductCatalog
 {
     // The checkpoint belongs to the account as well as the local store. Never reuse it after credentials/scope change.
@@ -165,6 +203,35 @@ public static class ProductCatalog
 
 public sealed partial class MarketplaceGateway
 {
+    public async Task<JsonObject> ReadWbGtinCardAsync(StoreProfile store,string nmId,CancellationToken ct=default)
+    {
+        var body=new JsonObject{["settings"]=new JsonObject{["cursor"]=new JsonObject{["limit"]=100},
+            ["filter"]=new JsonObject{["textSearch"]=nmId,["withPhoto"]=-1}}};
+        var root=await SendWbGtinAsync(store,"/content/v2/get/cards/list",body.ToJsonString(),ct).ConfigureAwait(false);
+        var cards=(root["cards"] as JsonArray)?.Where(x=>x?["nmID"]?.ToString()==nmId).ToArray()??Array.Empty<JsonNode?>();
+        if(cards.Length!=1||cards[0] is not JsonObject card)throw new InvalidDataException("WB chưa trả đúng một card theo nmID; giữ checkpoint.");
+        return card;
+    }
+
+    public async Task WriteWbGtinCardsAsync(StoreProfile store,IReadOnlyList<JsonObject> cards,CancellationToken ct=default)
+    {
+        if(cards.Count is < 1 or > 50)throw new InvalidOperationException("Mỗi request GTIN WB cần 1 đến 50 card.");
+        var body=new JsonArray(cards.Select(x=>(JsonNode?)x.DeepClone()).ToArray()).ToJsonString();
+        await SendWbGtinAsync(store,"/content/v2/cards/update",body,ct).ConfigureAwait(false);
+    }
+
+    private async Task<JsonObject> SendWbGtinAsync(StoreProfile store,string endpoint,string body,CancellationToken ct)
+    {
+        if(store.Marketplace!=Marketplace.Wildberries)throw new InvalidOperationException("Writeback card chỉ dành cho WB.");
+        await wbLabelDelay(TimeSpan.FromMilliseconds(650),ct).ConfigureAwait(false);
+        using var response=await http.SendAsync(Request(HttpMethod.Post,"https://content-api.wildberries.ru"+endpoint,store,body),ct).ConfigureAwait(false);
+        if(response.StatusCode==HttpStatusCode.TooManyRequests)throw new GtinQuotaException(endpoint,
+            response.Headers.RetryAfter?.Delta??(response.Headers.RetryAfter?.Date is { } date?date-DateTimeOffset.UtcNow:TimeSpan.FromMinutes(5)));
+        if(!response.IsSuccessStatusCode)throw new InvalidDataException($"WB HTTP {(int)response.StatusCode}. Tiến độ được giữ; kiểm tra quyền token và thử lại.");
+        var root=JsonNode.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false)) as JsonObject??throw new InvalidDataException("WB trả JSON không hợp lệ.");
+        if(root["error"]?.ToString().Equals("true",StringComparison.OrdinalIgnoreCase)==true)throw new InvalidDataException("WB chưa chấp nhận cập nhật card; kiểm tra thông tin biến thể.");
+        return root;
+    }
     public async Task<IReadOnlyList<ProductRow>> ReadAllCatalogProductsAsync(StoreProfile store, CancellationToken ct = default)
     {
         var result = new Dictionary<string, ProductRow>(StringComparer.Ordinal);

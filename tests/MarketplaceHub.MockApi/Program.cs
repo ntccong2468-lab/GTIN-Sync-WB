@@ -15,6 +15,46 @@ const string gtin="04601234567893";
 string Kiz(string serial)=>"01"+gtin+"21"+serial+"\u001d91ABCD\u001d92MOCKPROOF";
 var failures=new List<string>();var checks=0;
 void Expect(bool ok,string message){checks++;if(!ok){failures.Add(message);Console.WriteLine("FAIL "+message);}else Console.WriteLine("PASS "+message);}
+async Task GtinMocks(){
+    var queue=typeof(AppServices).GetMethod("QueueWbGtinWriteback");var resume=typeof(AppServices).GetMethod("ResumeWbGtinWritebackAsync");
+    if(queue is null||resume is null)return;
+    var path=Path.Combine(Path.GetTempPath(),"MarketplaceHub-gtin-"+Guid.NewGuid().ToString("N"),"test.db");
+    var db=new MarketplaceHub.Infrastructure.AppDatabase(path);var handler=new GtinMockApi();var api=new MarketplaceGateway((_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;});
+    typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(api,new HttpClient(handler));
+    var target=new AppServices(db,api,LicenseAccessService.CreateDefault());
+    var store=db.SaveStore(new(0,Marketplace.Wildberries,"GTIN-MOCK","","","","","fake-wb-token",true));
+    string NewGtin(int i){var prefix="460"+i.ToString("D9");var sum=prefix.Reverse().Select((c,n)=>(c-'0')*(n%2==0?3:1)).Sum();return "0"+prefix+((10-sum%10)%10);}
+    var entries=Enumerable.Range(1,51).Select(i=>{
+        var card=JsonNode.Parse(System.Text.Json.JsonSerializer.Serialize(new{nmID=i,vendorCode="GTIN-"+i,title="Áo",sizes=new[]{new{chrtID=i*10,techSize="48",skus=new[]{"4601234567893"}},new{chrtID=i*10+1,techSize="50",skus=new[]{"4601234567893"}}}}))!.AsObject();handler.Cards[i]=card;return ProductCatalog.Entry(new(store.Id,store.Marketplace,i.ToString(),"GTIN-"+i,"Áo",null,"",card.ToJsonString()));
+    }).ToArray();var scope=ProductCatalog.Scope(store);db.BeginProductCatalog(store,scope);db.ApplyProductCatalogPage(store,"",scope,new(entries,"",true));
+    foreach(var entry in entries)db.UpsertSellerGtinMapping(store,entry.Product.Sku,entry.Variants[0].VariantId,NewGtin(int.Parse(entry.Product.ExternalId)));
+    queue.Invoke(target,new object[]{store});
+    var first=await (Task<PriceUpdateResult>)resume.Invoke(target,new object[]{store,CancellationToken.None})!;
+    Expect(!first.Success&&handler.Writes.Select(x=>x.Length).SequenceEqual(new[]{50,1}),"WB sends at most 50 cards and stops second batch on 429");
+    var states=db.GetGtinMappingPage(store,0,50,"","all").Rows.Concat(db.GetGtinMappingPage(store,50,50,"","all").Rows).ToArray();
+    Expect(states.Count(x=>x.WbStage=="VERIFIED")==50&&states.Where(x=>x.Confirmed).All(x=>x.Source=="seller"),"Failed second WB batch retains first 50 confirmed seller GTIN mappings");
+    var paused=await (Task<PriceUpdateResult>)resume.Invoke(target,new object[]{store,CancellationToken.None})!;
+    Expect(!paused.Success&&handler.Writes.Count==2,"WB retry before Retry-After performs no further write");
+    using(var c=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+db.DbPath)){c.Open();using var cmd=c.CreateCommand();cmd.CommandText="UPDATE gtin_sync_jobs SET retry_at='2000-01-01T00:00:00+00:00' WHERE endpoint='WB_WRITEBACK'";cmd.ExecuteNonQuery();}
+    var restarted=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(path),api,LicenseAccessService.CreateDefault());
+    var final=await (Task<PriceUpdateResult>)resume.Invoke(restarted,new object[]{store,CancellationToken.None})!;
+    Expect(final.Success&&handler.Writes.Count==3&&handler.Writes[2].SequenceEqual(new[]{51})&&handler.PreservedSizes,"WB restart resumes only failed card and preserves every existing size/barcode");
+    handler.HideLastReadback=true;var current=handler.Cards[51]["sizes"]![0]!["skus"]!.AsArray();current.RemoveAt(current.Count-1);
+    db.UpsertSellerGtinMapping(store,"GTIN-51","510",NewGtin(501));queue.Invoke(target,new object[]{store});
+    var mismatch=await (Task<PriceUpdateResult>)resume.Invoke(target,new object[]{store,CancellationToken.None})!;
+    Expect(!mismatch.Success&&db.GetGtinMappingPage(store,0,50,"GTIN-51","all").Rows.Single(x=>x.VariantId=="510").WbStage!="VERIFIED","Wrong WB readback keeps changed variant pending");
+    var nk=new NationalCatalogMockApi();var service=new GtinMappingSyncService(db,api,new HttpClient(nk),(_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;});
+    var access=new NationalCatalogAccess("fake-national-secret","",false);var wbCheckpoint=db.GetGtinSyncJob(store,"WB_WRITEBACK");
+    var limited=await service.SyncZnackGtinAsync(store,access);
+    Expect(!limited.Success&&db.GetGtinSyncJob(store,"ZNACK_PRODUCT") is {Cursor:25,RetryAt:not null},"National Catalog persists first 25-GTIN batch and stops on endpoint quota");
+    Expect(db.GetGtinSyncJob(store,"WB_WRITEBACK")==wbCheckpoint,"National Catalog quota does not reset independent WB checkpoint");
+    using(var c=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+db.DbPath)){c.Open();using var cmd=c.CreateCommand();cmd.CommandText="UPDATE gtin_sync_jobs SET retry_at='2000-01-01T00:00:00+00:00' WHERE endpoint='ZNACK_PRODUCT'";cmd.ExecuteNonQuery();}
+    var nkDone=await new GtinMappingSyncService(new MarketplaceHub.Infrastructure.AppDatabase(path),api,new HttpClient(nk),(_,_)=>Task.CompletedTask).SyncZnackGtinAsync(store,access);
+    Expect(nkDone.Success&&nk.Batches.Count==4&&nk.Batches[0].SequenceEqual(nk.Batches[1])==false&&nk.Batches[1].SequenceEqual(nk.Batches[2]),"National Catalog restart resumes failed batch without re-fetching completed 25 GTINs");
+    using(var c=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+db.DbPath)){c.Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT COUNT(*) FROM gtin_mapping WHERE metadata_json LIKE '%fake-national-secret%'";Expect(Convert.ToInt32(cmd.ExecuteScalar())==0,"National Catalog metadata redacts credentials before persistence");}
+    Expect(db.GetGtinMappingPage(store,0,50,"GTIN-51","all").Rows.Single(x=>x.VariantId=="510").Source=="seller","Znack suggestions never replace confirmed seller source");
+    db.DeleteStore(store.Id);
+}
 try
 {
     Expect(typeof(AppServices).GetMethod("SyncZnackGtinAsync") is not null&&typeof(AppServices).GetMethod("QueueWbGtinWriteback") is not null&&typeof(AppServices).GetMethod("ResumeWbGtinWritebackAsync") is not null,"Znack/WB durable GTIN pipeline is available for end-to-end mock validation");
@@ -40,6 +80,7 @@ try
     Expect(mock.OzonLabelCreates==1,"Ozon creates one label task and never uses the obsolete direct PDF endpoint");
     Expect(mock.OzonShips==1&&mock.YandexReadyMutations==1,"Both mock platforms receive exactly one final packing mutation");
     Expect(mock.UnexpectedMutations.Count==0,"Mock API observed no duplicate or out-of-order mutation");
+    await GtinMocks();
 }
 finally
 {
@@ -47,6 +88,40 @@ finally
 }
 Console.WriteLine($"{checks-failures.Count}/{checks} Ozon/Yandex mock API end-to-end checks passed");
 return failures.Count==0?0:1;
+
+sealed class GtinMockApi:HttpMessageHandler
+{
+    public Dictionary<int,JsonObject> Cards{get;}=new();public List<int[]> Writes{get;}=new();
+    public bool PreservedSizes{get;private set;}=true;public bool HideLastReadback{get;set;}
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r,CancellationToken ct){
+        ct.ThrowIfCancellationRequested();var body=JsonNode.Parse(r.Content!.ReadAsStringAsync(ct).GetAwaiter().GetResult())!;
+        if(r.RequestUri!.AbsolutePath.EndsWith("/update")){
+            var array=body.AsArray();var ids=array.Select(x=>x!["nmID"]!.GetValue<int>()).ToArray();Writes.Add(ids);
+            if(Writes.Count==2){var limited=Json("{}",HttpStatusCode.TooManyRequests);limited.Headers.TryAddWithoutValidation("Retry-After","3600");return Task.FromResult(limited);}
+            foreach(var card in array){var id=card!["nmID"]!.GetValue<int>();var sizes=card["sizes"]!.AsArray();PreservedSizes&=sizes.Count==2&&sizes[0]!["skus"]!.AsArray().Any(x=>x!.ToString()=="4601234567893")&&sizes[1]!["skus"]![0]!.ToString()=="4601234567893";
+                if(!(HideLastReadback&&id==51))Cards[id]=card.DeepClone().AsObject();}
+            return Task.FromResult(Json("{\"error\":false}"));
+        }
+        var search=body["settings"]!["filter"]!["textSearch"]!.ToString();var nm=int.Parse(search);
+        return Task.FromResult(Json(new JsonObject{["cards"]=new JsonArray(Cards[nm].DeepClone()),["cursor"]=new JsonObject{["total"]=1}}.ToJsonString()));
+    }
+    static HttpResponseMessage Json(string text,HttpStatusCode status=HttpStatusCode.OK)=>new(status){Content=new StringContent(text,Encoding.UTF8,"application/json")};
+}
+
+sealed class NationalCatalogMockApi:HttpMessageHandler
+{
+    public List<string[]> Batches{get;}=new();
+    protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct){
+        ct.ThrowIfCancellationRequested();var query=request.RequestUri!.Query.TrimStart('?').Split('&');
+        var gtins=Uri.UnescapeDataString(query.Single(x=>x.StartsWith("gtins="))[6..]).Split(';');Batches.Add(gtins);
+        if(Batches.Count==2){var result=Json("{}",HttpStatusCode.TooManyRequests);result.Headers.TryAddWithoutValidation("Retry-After","3600");return Task.FromResult(result);}
+        var cards=new JsonArray(gtins.Select(g=>(JsonNode?)new JsonObject{["good_id"]=100,["good_status"]="published",["good_name"]="Áo fake-national-secret",
+            ["identified_by"]=new JsonArray(new JsonObject{["type"]="gtin",["value"]=g}),
+            ["good_attrs"]=new JsonArray(new JsonObject{["attr_id"]=35,["attr_value"]=g=="04601234567893"?"50":"48"})}).ToArray());
+        return Task.FromResult(Json(new JsonObject{["result"]=cards}.ToJsonString()));
+    }
+    static HttpResponseMessage Json(string text,HttpStatusCode status=HttpStatusCode.OK)=>new(status){Content=new StringContent(text,Encoding.UTF8,"application/json")};
+}
 
 sealed class OzonYandexMockApi:HttpMessageHandler
 {

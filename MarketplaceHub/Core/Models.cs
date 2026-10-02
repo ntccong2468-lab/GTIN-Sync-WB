@@ -12,6 +12,8 @@ public sealed record ProductRow(
 
 public sealed record FboPreparationRow(string VariantId,string Sku,string Name,string Color,string Size,
     string Brand,string Barcode,int Quantity,bool NeedsKiz,IReadOnlyList<string> KizCodes);
+public sealed record NationalCatalogAccess(string ApiKey,string Token,bool Sandbox);
+public sealed record GtinSyncTarget(string Sku,string VariantId,string ExternalId,string Size,string Gtin);
 
 public static class GtinCode
 {

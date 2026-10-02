@@ -6,8 +6,9 @@
 - Nhiệm vụ 2 đã hoàn tất: kết quả theo từng đơn, selection hỗn hợp không chặn đơn hợp lệ, batch `100/100/5` cho 205 đơn. Windows CI xanh tại `acfe9b5`, regression run `36937180622`.
 - Nhiệm vụ 3 đã triển khai: nhật ký nhận đơn, phục hồi và dialog kết quả. RED `36959052332`; Windows xác nhận 24/24 FbsState (kể cả phục hồi không POST/PATCH trùng) và test dialog xanh tại `74a5d46`. Suite UI còn test FBO đỏ của nhiệm vụ 4.
 - Nhiệm vụ 4 hoàn tất: RED `74a5d46`, GREEN `ece45c9` trên Windows run `36960714781`: 13/13 Print, 31/31 UI, 24/24 FbsState. Nhãn chuẩn bị theo biến thể, số lượng, màu và KIZ; nhật ký FBO giữ mã khi lỗi.
-- Nhiệm vụ 5 đang xác minh: RED run `36960836857` xác nhận thiếu repository và UI mapping, 24/26 FbsState và 31/32 UI; triển khai repository, paging và lưu trữ an toàn.
-- Nhiệm vụ 6–7 chưa hoàn tất: Znack/WB GTIN, Trung tâm kiểm tra.
+- Nhiệm vụ 5 hoàn tất: RED `36960836857`; GREEN nhiệm vụ 5 tại `275a1f7`, 26/26 FbsState, 32/32 UI. Test mapping được cách ly khỏi mã KIZ của scenario quyền sở hữu phía sau.
+- Nhiệm vụ 6 đang xác minh: RED `36961760258` (thiếu builder full-size) và `36961842055` (thiếu pipeline). Có mock 51 card, batch 50/1, 429, restart, readback sai; National Catalog 25 GTIN/request với checkpoint riêng.
+- Nhiệm vụ 7 chưa hoàn tất: Trung tâm kiểm tra.
 
 ## Các quyết định thực thi
 
@@ -19,6 +20,8 @@
 - Nhiệm vụ 4 bổ sung nhật ký FBO trong SQLite để phục hồi đúng biến thể/số lượng và KIZ đã giữ sau lỗi. Nhãn chuẩn bị có manifest `OfficialMarketplaceLabels=false`; không đóng giả sticker của sàn.
 - Nhiệm vụ 5: kiểm thử SQLite dùng suite FbsState (tham chiếu app thật) thay vì ProductSync portable chỉ link gateway; giữ ProductSync cho contract/checksum API. Quyết định tránh đưa WinForms/DPAPI vào suite portable.
 - Ảnh tham chiếu 041438/062902/062912 chưa khôi phục được từ ngữ cảnh/file; không tuyên bố độ giống hình ảnh 100%. Tiếp tục theo cấu trúc và hành vi WCode đã xác minh bằng nguồn công khai.
+- WCode công khai: `rupphi/relatest-wcode` phát hành 1.1.66; `test-wcode` chỉ có nguồn 1.1.32, `source-wcode` trả 404. Không gán nguồn cũ là nguồn 1.1.66. Pipeline dùng contract trong spec cùng tài liệu WB/National Catalog hiện tại.
+- WB chỉ thêm GTIN vào skus, giữ barcode hiện có và đầy đủ sizes; đọc card mới trước mọi retry rồi đọc lại từng size sau ghi. Metadata National Catalog chỉ lưu các trường cần thiết đã che secret, không lưu response thô.
 
 ## Quy tắc phục hồi nhận đơn
 
