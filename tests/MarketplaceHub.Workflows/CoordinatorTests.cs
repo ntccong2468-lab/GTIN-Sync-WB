@@ -67,6 +67,12 @@ public static class CoordinatorTests
             f.Adapter.Snapshot=f.Adapter.Snapshot with{RequirementFingerprint="requirements-v2"};var next=await f.Coordinator.CreateRevisionAsync(completed.JobId,true,default);
             Expect(next.Revision==2&&next.JobId!=completed.JobId&&oldPaths.All(File.Exists),"Revision discarded history");
             var old=f.Db.BoundScopedKiz(f.Context);var newJob=f.Db.GetLabelJob(next.JobId)!;var c=new FbsWorkflowContext(newJob.Id,2,newJob.Snapshot,f.Data.Profile);var held=f.Db.ReserveScopedKiz(c,c.Snapshot.Units);Expect(held.Count==2&&held.Values.ToHashSet().SetEquals(old.Values),"Revision replaced shared unit bindings");
+            var reprint=await f.Coordinator.ReprintAsync(completed.JobId,1,default);Expect(reprint.Artifacts.Count==2&&reprint.ErrorCode is null,"Previous revision cannot be reprinted");
+        });
+        await r.CheckAsync("revision_insert_failure_keeps_previous_active_job",()=>{
+            using var f=CoordinatorFixture.Create();f.Data.Sql("CREATE TRIGGER fixture_fail_revision BEFORE INSERT ON fbs_label_jobs BEGIN SELECT RAISE(ABORT,'fixture insert failure'); END");
+            try{f.Db.NewLabelRevision(f.Context.JobId,f.Context.Snapshot with{RequirementFingerprint="v2"});throw new Exception("Fault was not exercised");}catch(Microsoft.Data.Sqlite.SqliteException){ }
+            Expect(f.Db.GetLabelJob(f.Context.JobId)!.Active,"Failed revision left no active job");return Task.CompletedTask;
         });
         await r.CheckAsync("legal_proof_loss_after_attach_blocks_label_download",async()=>{
             using var f=CoordinatorFixture.Create();f.Stock();f.Physical();f.Adapter.BeforeMutation=()=>{f.Legal.Condition="unavailable";return Task.CompletedTask;};var result=await f.Run();
