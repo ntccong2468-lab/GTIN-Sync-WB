@@ -24,7 +24,7 @@ public static class WorkerTests
             var rejected=false;try{await app.ConfirmJobPhysicalMarksAsync(f.Context.JobId,new[]{new PhysicalMarkEvidence(other.Key,"wrong-code",f.Clock.UtcNow)},default);}catch(InvalidOperationException){rejected=true;}Expect(rejected,"Wrong scan matched selected unit");
         });
         await r.CheckAsync("data_matrix_is_not_an_official_shipping_label",async()=>{
-            using var f=CoordinatorFixture.Create();f.Stock();var app=App(f);var matrix=await app.ExportJobDataMatrixAsync(f.Context.JobId,default);
+            using var f=CoordinatorFixture.Create();f.Stock();f.Db.ReserveScopedKiz(f.Context,f.Context.Snapshot.Units);var app=App(f);var matrix=await app.ExportJobDataMatrixAsync(f.Context.JobId,default);
             Expect(matrix.Count>0&&matrix.All(x=>x.Kind=="DataMatrix"&&!x.OfficialMarketplaceLabel&&File.Exists(x.FilePath)),"Preparation codes were presented as official labels");
             f.Physical();f.Adapter.BarcodeOnly=true;var result=await app.ExportFbsLabelsAsync(f.Context.Snapshot.Target);Expect(result.Stage!=FbsLabelJobStage.LabelsReady&&result.VerifiedUnits==0,"Data Matrix manifest falsely covered shipping labels");Expect(f.Suz.TotalCalls==0,"Printing held KIZ acquired new codes");
         });

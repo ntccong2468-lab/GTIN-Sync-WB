@@ -319,6 +319,7 @@ public sealed partial class MainForm : Form
         var s = CurrentStore();
         if (s is null) return;
         if (MessageBox.Show($"Xóa cửa hàng '{s.Name}' và toàn bộ dữ liệu đã đồng bộ?", "Xác nhận xóa", MessageBoxButtons.YesNo, MessageBoxIcon.Warning) != DialogResult.Yes) return;
+        app.PauseStoreFbsLabelJobs(s.Id);
         app.Db.DeleteStore(s.Id);
         RefreshStores();
         ShowDashboard();
@@ -1016,7 +1017,7 @@ public sealed partial class MainForm : Form
                 return;
             }
 
-            var delivered = await app.Api.DeliverSupplyAsync(store, supplyId, lifetimeCts.Token);
+            var delivered = await app.DeliverVerifiedWbSupplyAsync(store, supplyId, ResolveWbGtins(store,await app.ReadWbSupplyOrdersAsync(store,supplyId,lifetimeCts.Token)), lifetimeCts.Token);
             app.Db.Audit("FBS", delivered.Success ? "Giao lô" : "Lỗi giao lô", $"{supplyId}:{delivered.Message}");
             if (pageToken.IsCancellationRequested || move.IsDisposed) return;
             ShowInfo(delivered.Message);
@@ -2306,6 +2307,7 @@ public sealed partial class MainForm : Form
             resourcesDisposed = true;
             autoSync.Stop();
             autoSync.Dispose();
+            app.StopFbsLabelWorkers();
             lifetimeCts.Cancel();
             pageCts.Cancel();
             DisposeImages(work);

@@ -68,30 +68,8 @@ public sealed partial class MainForm
             var rows=app.Db.Orders(store.Id).Where(x=>x.ExternalOrderId==member.Id).ToArray();var marks=app.Db.MarketplaceKizReservations(store,member.Id);var assigned=marks.Count(x=>x.Status=="ASSIGNED");
             var row=grid.Rows.Add(member.Id,string.Join("\n",rows.Select(x=>x.Sku+" · "+x.Name+" × "+x.Quantity)),member.Status is "PACKED" or "LABELS_READY"?$"Sàn đã xác nhận đóng · {assigned} KIZ":member.Status=="AMBIGUOUS"?"Đang đối soát lệnh đóng hàng":"Chưa xác nhận đóng · "+marks.Count+" KIZ đã giữ",member.Error);grid.Rows[row].Height=110;
         }
-        retry.Click+=async(_,_)=> {
-            if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token))return;
-            retry.Enabled=false;export.Enabled=false;
-            try {
-                var layouts=await ReadMarketplaceLayoutsAsync(store,batchId,token);if(layouts is null)return;
-                using var stop=CancellationTokenSource.CreateLinkedTokenSource(lifetimeCts.Token);using var dialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text=store.Marketplace+" · tiếp tục đóng gói"};dialog.Show(this);
-                var progress=new Progress<string>(text=>{if(!dialog.IsDisposed)dialog.Report(text);});PriceUpdateResult result;
-                try {result=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),item=>ResolveMarketplaceGtin(store,item),true,stop.Token,progress,batchId,layouts);}finally{dialog.Close();}
-                if(!token.IsCancellationRequested && !IsDisposed && CurrentStore()?.Id==store.Id){ShowMarketplaceFbsBatch(store,batchId,result.Message);if(result.Success)await ExportMarketplaceBatchCoreAsync(store,batchId,pageCts.Token);}
-            }catch(Exception ex){if(!token.IsCancellationRequested)state.Text=ex.Message;}
-            finally{fbsOperations.Release();if(!retry.IsDisposed){retry.Enabled=true;export.Enabled=true;}}
-        };
-        export.Click+=async(_,_)=> {
-            if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token))return;retry.Enabled=false;export.Enabled=false;
-            try {
-                if(app.Db.MarketplaceFbsBatchOrders(store,batchId).Any(x=>x.Status is not ("PACKED" or "LABELS_READY"))) {
-                    var layouts=await ReadMarketplaceLayoutsAsync(store,batchId,token);if(layouts is null)return;
-                    using var stop=CancellationTokenSource.CreateLinkedTokenSource(lifetimeCts.Token);using var dialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text=store.Marketplace+" · KIZ, đóng gói và xuất nhãn"};dialog.Show(this);
-                    PriceUpdateResult packed;try{packed=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),item=>ResolveMarketplaceGtin(store,item),true,stop.Token,new Progress<string>(text=>{if(!dialog.IsDisposed)dialog.Report(text);}),batchId,layouts);}finally{dialog.Close();}
-                    if(!packed.Success){ShowMarketplaceFbsBatch(store,batchId,packed.Message);return;}
-                }
-                await ExportMarketplaceBatchCoreAsync(store,batchId,token,true);
-            }catch(Exception ex){if(!token.IsCancellationRequested)ShowInfo(ex.Message);}finally{fbsOperations.Release();if(!retry.IsDisposed){retry.Enabled=true;export.Enabled=true;}}
-        };
+        retry.Click+=async(_,_)=>await ShowFbsLabelJobAsync(new(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,batchId),token);
+        export.Click+=async(_,_)=>await ExportMarketplaceBatchCoreAsync(store,batchId,token,true);
         SetWorkResize((_,_)=>{
             var available=work.ClientSize.Width-25;var open=work.Controls.OfType<Button>().FirstOrDefault(b=>b.Name=="openMarketplaceLabels");
             if(open is not null){open.Left=available<810?0:510;open.Top=available<810?105:55;}
@@ -105,34 +83,9 @@ public sealed partial class MainForm
         if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token))return;
         try{await ExportMarketplaceBatchCoreAsync(store,batchId,token,reprint);}finally{fbsOperations.Release();}
     }
-    private async Task ExportMarketplaceBatchCoreAsync(StoreProfile store,string batchId,CancellationToken token,bool reprint=false)
-    {
-        try {
-            var members=app.Db.MarketplaceFbsBatchOrders(store,batchId);if(members.Count==0 || members.Any(x=>x.Status is not ("PACKED" or "LABELS_READY")))throw new InvalidOperationException("Lượt này còn đơn chưa xác nhận đóng. Bấm Nhận/tiếp tục trước khi xuất nhãn.");
-            members=members.Where(x=>reprint || x.Status!="LABELS_READY").ToArray();
-            if(members.Count==0){ShowMarketplaceFbsBatch(store,batchId,"Mọi nhãn của lượt này đã xuất. Bấm Xuất nhãn để xuất/in lại khi cần.");return;}
-            var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),"MarketplaceHub","Labels",store.Marketplace+"-"+batchId);Directory.CreateDirectory(folder);
-            var files=new List<string>();var kizInput=new List<WbPrintOrder>();
-            foreach(var member in members) {
-                var label=await app.ExportVerifiedMarketplaceLabelAsync(store,member.Id,item=>ResolveMarketplaceGtin(store,item),token);
-                if(!label.Success || string.IsNullOrWhiteSpace(label.FilePath))throw new InvalidOperationException(member.Id+": "+label.Message);
-                var target=Path.Combine(folder,store.Marketplace+"-"+string.Concat(member.Id.Select(c=>Path.GetInvalidFileNameChars().Contains(c)?'_':c))+".pdf");File.Copy(label.FilePath,target,true);files.Add(target);
-                var snapshot=await app.ReadFreshMarketplaceFbsAsync(store,member.Id,token);
-                foreach(var item in snapshot.Items.Where(x=>x.RequiresKiz)) {
-                    var marks=app.Db.MarketplaceKizReservations(store,member.Id).Where(x=>x.ItemId==item.Id).OrderBy(x=>x.Unit).ToArray();
-                    var product=app.Db.Products(store.Id).SingleOrDefault(x=>x.Sku==item.Offer);var meta=product is null?new ProductMetaValue("","","","","","",item.Offer,""):ProductMeta(product);
-                    kizInput.Add(new(member.Id+"/"+item.Id,item.Name,item.Offer,meta.Color,meta.Size,meta.Brand,ResolveMarketplaceGtin(store,item),item.Quantity,true,marks.Select(x=>x.Code).ToArray(),new(true,"KIZ xác nhận")));
-                }
-            }
-            if(kizInput.Count>0)files.Add(await Task.Run(()=>MarketplaceKizPdfService.Write(store.Marketplace.ToString(),kizInput,folder,token),token));
-            await File.WriteAllTextAsync(Path.Combine(folder,"labels.json"),System.Text.Json.JsonSerializer.Serialize(new{marketplace=store.Marketplace.ToString(),shop=store.Name,batchId,orders=members.Select(x=>x.Id),files}),token);
-            foreach(var member in members)app.Db.SaveMarketplaceFbsOrder(store,batchId,member.Id,"LABELS_READY");
-            app.Db.Audit("In nhãn "+store.Marketplace,"Đã xuất PDF xác nhận",$"{members.Count} đơn · {folder}");
-            if(token.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
-            ShowMarketplaceFbsBatch(store,batchId,$"Đã xuất {members.Count} nhãn sàn và bộ KIZ. Mở PDF để xem/chọn máy in: {folder}");
-            var open=ActionButton("Mở thư mục nhãn / in PDF",280);open.Name="openMarketplaceLabels";open.Left=510;open.Top=55;open.Click+=(_,_)=>System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(folder){UseShellExecute=true});work.Controls.Add(open);activeWorkResize?.Invoke(work,EventArgs.Empty);
-        }catch(OperationCanceledException){}catch(Exception ex){if(!token.IsCancellationRequested && !IsDisposed){app.Db.Audit("In nhãn "+store.Marketplace,"Chưa xuất đủ",ex.Message);ShowInfo(ex.Message);}}
-    }
+    private Task ExportMarketplaceBatchCoreAsync(StoreProfile store,string batchId,CancellationToken token,bool reprint=false)
+        =>ShowFbsLabelJobAsync(new(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,batchId),token);
+
 }
 
 internal sealed class MarketplaceBatchDialog:Form

@@ -55,24 +55,8 @@ public sealed partial class MainForm
         else ShowInfo(result.Message);
     }
 
-    private async Task ExportWbSupplyAsync(StoreProfile store,string supplyId,CancellationToken originToken)
-    {
-        if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token)){ShowInfo("Đang xử lý shipment/KIZ.");return;}
-        PriceUpdateResult? result=null;
-        try {
-            using var stop=CancellationTokenSource.CreateLinkedTokenSource(lifetimeCts.Token);
-            using var dialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text="WB · gắn KIZ trước khi xuất nhãn"};dialog.Show(this);
-            var progress=new Progress<string>(text=>{if(!dialog.IsDisposed)dialog.Report(text);});
-            try {
-                var orders=await app.ReadWbSupplyOrdersAsync(store,supplyId,stop.Token);
-                result=await app.EnsureWbSupplyKizAsync(store,orders,ResolveWbGtins(store,orders),true,stop.Token,progress);
-            } finally {dialog.Close();}
-        }
-        catch(Exception ex){result=new(false,ex.Message);}
-        finally{fbsOperations.Release();}
-        if(originToken.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
-        await OpenWbSupplyAsync(store,supplyId,originToken,result?.Success==true,result?.Success==true?null:result?.Message);
-    }
+    private Task ExportWbSupplyAsync(StoreProfile store,string supplyId,CancellationToken originToken)
+        => ShowFbsLabelJobAsync(new(store.Id,store.Marketplace,LabelTargetKind.WbSupply,supplyId),originToken);
 
     private async Task OpenTodayWbSupplyAsync(StoreProfile store,CancellationToken pageToken)
     {
@@ -99,7 +83,7 @@ public sealed partial class MainForm
             catch(Exception ex){warning=string.IsNullOrWhiteSpace(warning)?ex.Message:warning+"\n"+ex.Message;export=false;}
             if(originToken.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
             ShowWbSupplyDetail(store,supply,rows,marking,warning);
-            if(export && rows.Count>0)await PrepareWbPrintAsync(store,rows,useKiz,pageCts.Token);
+            if(export && rows.Count>0)await ShowFbsLabelJobAsync(new(store.Id,store.Marketplace,LabelTargetKind.WbSupply,supply.Id),pageCts.Token);
         }
         catch(OperationCanceledException){}
         catch(Exception ex){if(!originToken.IsCancellationRequested && !IsDisposed)ShowInfo($"Shipment {supplyId} được giữ lại. {ex.Message}");}
@@ -153,25 +137,7 @@ public sealed partial class MainForm
             }
         }
         foreach(var check in fields.Values)check.CheckedChanged+=(_,_)=>RenderRows();RenderRows();
-        export.Click+=async(_,_)=>
-        {
-            if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token)){ShowInfo("Đang xử lý shipment/KIZ.");return;}
-            export.Enabled=false;deliver.Enabled=false;PriceUpdateResult? result=null;
-            try {
-                using var stop=CancellationTokenSource.CreateLinkedTokenSource(lifetimeCts.Token);
-                using var progressDialog=new WbPrintProgressDialog(()=>stop.Cancel()){Text="WB · tự gắn KIZ trước khi xuất nhãn"};progressDialog.Show(this);
-                var progress=new Progress<string>(text=>{if(!progressDialog.IsDisposed)progressDialog.Report(text);});
-                try {
-                    var current=await app.ReadWbSupplyOrdersAsync(store,supply.Id,stop.Token);
-                    result=await app.EnsureWbSupplyKizAsync(store,current,ResolveWbGtins(store,current),true,stop.Token,progress);
-                } finally {progressDialog.Close();}
-            }
-            catch(Exception ex){result=new(false,ex.Message);}
-            finally {fbsOperations.Release();}
-            if(token.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
-            try {await OpenWbSupplyAsync(store,supply.Id,token,result?.Success==true,result?.Success==true?null:result?.Message);}
-            finally {if(!token.IsCancellationRequested && !export.IsDisposed){export.Enabled=orders.Count>0;deliver.Enabled=!supply.Done && orders.Count>0;}}
-        };
+        export.Click+=async(_,_)=>await ExportWbSupplyAsync(store,supply.Id,token);
         deliver.Click+=async(_,_)=>
         {
             if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token)){ShowInfo("Đang xử lý shipment/KIZ.");return;}
