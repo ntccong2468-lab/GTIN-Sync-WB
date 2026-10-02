@@ -23,6 +23,9 @@ jobs:
         run: dotnet run --project tests/MarketplaceHub.FbsState -c Release
       - name: License add-store gates
         run: dotnet run --project tests/MarketplaceHub.License -c Release
+      - name: Durable FBS KIZ workflows
+        if: always()
+        run: dotnet run --project tests/MarketplaceHub.Workflows -c Release
       - name: Stateful Ozon and Yandex mock API
         if: always()
         run: dotnet run --project tests/MarketplaceHub.MockApi -c Release
