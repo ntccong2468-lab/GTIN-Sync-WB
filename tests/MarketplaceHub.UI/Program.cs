@@ -242,11 +242,12 @@ internal static class Program
             Check("Partial sync and full sync never overlap for one store", () =>
             {
                 var response = new TaskCompletionSource<HttpResponseMessage>(TaskCreationOptions.RunContinuationsAsynchronously);
-                var requests = 0;
+                var requests = 0;var paths=new System.Collections.Concurrent.ConcurrentQueue<string>();
                 typeof(MarketplaceGateway).GetField("http", instance)!.SetValue(app.Api,
-                    new HttpClient(new AsyncFixtureHttp((_, _) =>
+                    new HttpClient(new AsyncFixtureHttp((request, _) =>
                     {
-                        Interlocked.Increment(ref requests);
+                        Interlocked.Increment(ref requests);paths.Enqueue(request.RequestUri!.AbsolutePath);
+                        if(request.RequestUri.AbsolutePath.EndsWith("/1"))return Task.FromResult(Json("{\"order\":{\"id\":1,\"status\":\"PROCESSING\",\"substatus\":\"STARTED\",\"items\":[{\"id\":2,\"offerId\":\"A\",\"count\":2},{\"id\":3,\"offerId\":\"B\",\"count\":1}]}}"));
                         return response.Task;
                     })));
                 var partial = app.SyncOrdersAsync(store);
@@ -254,7 +255,7 @@ internal static class Program
                 var blocked = full.IsCompletedSuccessfully && !full.Result.Ok;
                 response.SetResult(Json("{\"status\":\"OK\",\"orders\":[],\"result\":{\"offerMappings\":[]}}"));
                 Pump(partial); Pump(full);
-                Expect(blocked && requests == 1, "Manual order sync bypassed the store lock used by background sync.");
+                Expect(blocked && partial.Result.Ok && requests == 2 && paths.All(x=>x.Contains("/orders")), "Full sync bypassed the store lock or cached-order reconciliation did not run exactly once.");
             });
             Check("KIZ barcode is GS1 DataMatrix with exact separator payload", () =>
             {

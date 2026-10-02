@@ -52,3 +52,7 @@ Minor về thời điểm dữ liệu: hiển thị timestamp quan sát đã xá
 - Deadline nhận WB lưu additive `retry_at`/`retry_endpoint`; khi quota xảy ra không thực hiện các readback tiếp theo. Test quota reset nhịp memory sau scenario để tránh ảnh hưởng scenario kế tiếp.
 - Proof National Catalog revision 2 giữ cấp trade-unit, multiplier 1 và nontechnical explicit. Kết quả resumed job được tính trên proof đã lưu cho toàn snapshot, không dựa counter trong memory.
 - Test Center kiểm tra proof đúng store/scope/SKU/variant/GTIN/size ở cả mở gate và trước mutation; journal nhiều đơn bị chặn bên trong semaphore dù seller chỉ chọn một đơn.
+
+- GREEN phần logic tại remote `83decc0` regression `36966242058`: 31/31 FbsState, 33/33 MockApi, 13/13 Print; 33/34 UI. UI còn assertion cũ `requests==1` không còn đúng khi cần đọc chi tiết đơn biến mất.
+Ruling: Cập nhật test khóa sync để trả chi tiết thật và yêu cầu đúng hai request orders (queue + reconcile), đồng thời full sync vẫn bị chặn — đây là điều chỉnh fixture theo hành vi mới đã duyệt, không bỏ kiểm tra khóa.
+- Bổ sung positive control: probe WB hợp lệ phải nhận đúng một đơn; proof NK đúng target vẫn mở gate dù target khác mismatch, credential khác phải làm proof mất hiệu lực.
