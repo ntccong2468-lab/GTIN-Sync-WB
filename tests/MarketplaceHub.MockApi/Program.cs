@@ -17,6 +17,7 @@ var failures=new List<string>();var checks=0;
 void Expect(bool ok,string message){checks++;if(!ok){failures.Add(message);Console.WriteLine("FAIL "+message);}else Console.WriteLine("PASS "+message);}
 try
 {
+    Expect(typeof(AppServices).GetMethod("SyncZnackGtinAsync") is not null&&typeof(AppServices).GetMethod("QueueWbGtinWriteback") is not null&&typeof(AppServices).GetMethod("ResumeWbGtinWritebackAsync") is not null,"Znack/WB durable GTIN pipeline is available for end-to-end mock validation");
     foreach(var store in new[]{ozon,yandex})
     {
         var sku=store.Marketplace==Marketplace.Ozon?"OZ-SKU":"YA-SKU";

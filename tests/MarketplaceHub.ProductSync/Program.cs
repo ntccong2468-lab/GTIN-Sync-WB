@@ -25,6 +25,15 @@ MarketplaceGateway Api(Func<HttpRequestMessage, HttpResponseMessage> respond)
 HttpResponseMessage Json(string json, HttpStatusCode status = HttpStatusCode.OK) =>
     new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
+await Check("WB GTIN writeback retains every size and existing barcode",()=>{
+    var type=typeof(ProductCatalog).Assembly.GetType("MarketplaceHub.Services.WbGtinPayloads");
+    var method=type?.GetMethod("BuildWbGtinCard");Expect(method is not null,"Full-size WB GTIN writeback builder is missing.");
+    var raw="{\"nmID\":900,\"vendorCode\":\"A\",\"title\":\"Áo\",\"sizes\":[{\"chrtID\":1,\"techSize\":\"48\",\"skus\":[\"old-barcode\"]},{\"chrtID\":2,\"techSize\":\"50\",\"skus\":[\"other-size\"]}]}";
+    var payload=(JsonObject)method!.Invoke(null,new object[]{raw,new Dictionary<string,string>{{"1","04601234567893"}}})!;
+    var sizes=payload["sizes"]!.AsArray();Expect(sizes.Count==2&&sizes[0]!["skus"]!.AsArray().Select(x=>x!.ToString()).SequenceEqual(new[]{"old-barcode","04601234567893"})&&sizes[1]!["skus"]![0]!.ToString()=="other-size","Writeback dropped another size or replaced an existing WB barcode.");
+    var invalid=false;try{method.Invoke(null,new object[]{raw,new Dictionary<string,string>{{"1","04601234567894"}}});}catch(TargetInvocationException ex){invalid=ex.InnerException is InvalidOperationException;}Expect(invalid,"Writeback accepted invalid GTIN checksum.");return Task.CompletedTask;
+});
+
 await Check("Catalog retries 429 at the same cursor", async () =>
 {
     var requests = new List<string>();
