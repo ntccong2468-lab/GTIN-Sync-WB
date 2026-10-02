@@ -14,6 +14,10 @@ const string code = "010460123456789321serialABCDEFG\u001d91ABCD\u001d92proof";
 var sticker = new LabelResult(true, "fixture", null, "!official-WB-101", "231648", "9753");
 var order = new WbPrintOrder("101", "Áo khoác / Куртка", "SKU-A", "Đen", "48", "Brand", "4601234567893", 1, true, new[] {code}, sticker);
 var service = new WbPrintBundleService();
+Check("FBO preparation exposes variant labels without synthesizing official marketplace stickers",()=>{
+    var method=typeof(WbPrintBundleService).GetMethod("BuildFboPreparationLabels");
+    Expect(method is not null,"Variant-based FBO label preparation is missing.");
+});
 Check("WB bundle preserves per-order page sequence, copy count and PDF dimensions", () =>
 {
     var bundle = service.Prepare("Shop fixture", new[] {order, order with {OrderId="102", NeedsKiz=false, KizCodes=Array.Empty<string>()}},

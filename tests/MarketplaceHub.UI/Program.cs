@@ -76,6 +76,12 @@ internal static class Program
                 foreach (var state in new[] { "awaiting_deliver", "PROCESSING/READY_TO_SHIP" })
                     Expect(!State("IsNew", state) && State("IsPacking", state) && !State("IsShipping", state), "Packed order is absent from packing or shown in multiple tabs.");
             });
+            Check("FBO grid offers selection and quantities per exact variant",()=>{
+                Page(form,"ShowFboPacking");Application.DoEvents();
+                var grid=All(form).OfType<DataGridView>().SingleOrDefault(x=>x.Name=="fboPreparation");
+                Expect(grid is not null&&grid.Columns.Contains("quantity")&&grid.Columns.Contains("size")&&grid.Columns[0] is DataGridViewCheckBoxColumn,"FBO still uses a product-only cache table.");
+                Expect(All(form).OfType<Button>().Any(x=>x.Name=="exportFboPreparation"),"Selected FBO quantities cannot be exported.");
+            });
             Check("Report and FBS projection count one external order instead of product lines", () =>
             {
                 var truth=(OrderTruthSnapshot)typeof(MainForm).GetMethod("BuildOrderTruth",instance)!.Invoke(form,new object[]{store})!;
