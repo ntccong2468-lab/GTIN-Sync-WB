@@ -23,6 +23,8 @@ CREATE TABLE IF NOT EXISTS fbs_job_units(job_id TEXT NOT NULL,unit_key TEXT NOT 
 CREATE TABLE IF NOT EXISTS fbs_job_authorizations(job_id TEXT PRIMARY KEY,profile_json TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS kiz_purchase_intents(id TEXT PRIMARY KEY,store_id INTEGER NOT NULL,job_id TEXT NOT NULL,revision INTEGER NOT NULL,profile_id TEXT NOT NULL,owner_inn TEXT NOT NULL,environment TEXT NOT NULL,gtin TEXT NOT NULL,request_json TEXT NOT NULL,request_key TEXT NOT NULL,stage TEXT NOT NULL,remote_order_id TEXT NULL,retry_at TEXT NULL,error_code TEXT NULL,generation INTEGER NOT NULL,authorization_version TEXT NOT NULL,created_at TEXT NOT NULL,UNIQUE(job_id,revision,profile_id,environment,gtin));
 CREATE TABLE IF NOT EXISTS kiz_purchase_blocks(intent_id TEXT NOT NULL,block_id TEXT NOT NULL,order_id TEXT NOT NULL,gtin TEXT NOT NULL,codes_enc TEXT NOT NULL,evidence_hash TEXT NOT NULL,PRIMARY KEY(intent_id,block_id));
+CREATE TABLE IF NOT EXISTS kiz_receive_checkpoints(intent_id TEXT PRIMARY KEY,store_id INTEGER NOT NULL);
+INSERT OR IGNORE INTO kiz_receive_checkpoints SELECT id,store_id FROM kiz_purchase_intents WHERE stage IN('Downloading','DownloadUnknown','Recovering','CodesRecovered') OR EXISTS(SELECT 1 FROM kiz_purchase_blocks b WHERE b.intent_id=kiz_purchase_intents.id);
 CREATE TABLE IF NOT EXISTS kiz_codes_scoped(code_hash TEXT PRIMARY KEY,cis_hash TEXT NOT NULL UNIQUE,store_id INTEGER NOT NULL,owner_inn TEXT NOT NULL,environment TEXT NOT NULL,gtin TEXT NOT NULL,raw_enc TEXT NOT NULL,allocation TEXT NOT NULL,legal_json TEXT NULL,intent_id TEXT NULL,source TEXT NOT NULL,conflict INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE IF NOT EXISTS kiz_unit_bindings(unit_key TEXT PRIMARY KEY,store_id INTEGER NOT NULL,code_hash TEXT NOT NULL UNIQUE,cis_hash TEXT NOT NULL UNIQUE,job_id TEXT NOT NULL,physical_at TEXT NULL,status TEXT NOT NULL DEFAULT 'Reserved');
 CREATE TABLE IF NOT EXISTS kiz_profiles(profile_id TEXT NOT NULL,version INTEGER NOT NULL,store_id INTEGER NOT NULL,profile_json TEXT NOT NULL,current INTEGER NOT NULL DEFAULT 1,PRIMARY KEY(profile_id,version));
@@ -143,6 +145,7 @@ UPDATE workflow_store_generations SET generation=generation+1,credential_version
 DELETE FROM fbs_job_units WHERE job_id IN(SELECT id FROM fbs_label_jobs WHERE store_id=$s);
 DELETE FROM fbs_job_authorizations WHERE job_id IN(SELECT id FROM fbs_label_jobs WHERE store_id=$s);
 DELETE FROM kiz_purchase_blocks WHERE intent_id IN(SELECT id FROM kiz_purchase_intents WHERE store_id=$s);
+DELETE FROM kiz_receive_checkpoints WHERE store_id=$s;
 DELETE FROM kiz_purchase_intents WHERE store_id=$s;
 DELETE FROM fbs_label_jobs WHERE store_id=$s;
 DELETE FROM kiz_unit_bindings WHERE store_id=$s;

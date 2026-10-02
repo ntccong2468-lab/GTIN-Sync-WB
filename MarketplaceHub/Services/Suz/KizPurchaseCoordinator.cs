@@ -61,15 +61,15 @@ public sealed class KizPurchaseCoordinator(AppDatabase db, ISuzClient suz, IWork
                 if (intent.Stage is PurchaseStage.CreateSending) db.SavePurchaseOutcome(id, PurchaseStage.CreateUnknown, null, null, "crash_after_send");
                 return await ReconcileCore(id, null, false, ct);
             }
-            if (intent.Stage is PurchaseStage.DownloadUnknown or PurchaseStage.Downloading or PurchaseStage.Recovering || db.PurchaseBlocks(id).Count > 0)
-                return await RecoverCore(intent, ct);
+            if (intent.Stage is PurchaseStage.DownloadUnknown or PurchaseStage.Downloading or PurchaseStage.Recovering || db.PurchaseReceiveStarted(id) || db.PurchaseBlocks(id).Count > 0)
+                return await RecoverCore(intent, ct, mode);
             if (!db.PurchaseAuthorizationMatches(id)) return Save(id, PurchaseStage.NeedsReconciliation, null, null, "authorization_changed");
             var status = await suz.ReadOrderAsync(intent, ct);
             if (status.Kind != SuzOutcomeKind.Confirmed || status.Value is null)
                 return Save(id, PurchaseStage.Polling, null, status.RetryAt ?? clock.UtcNow.AddSeconds(2), status.ErrorCode ?? "poll_pending");
             if (status.Value.OrderId != intent.RemoteOrderId) return Save(id, PurchaseStage.NeedsReconciliation, null, null, "order_identity_mismatch");
             if (status.Value.State is "REJECTED" or "DECLINED") return Save(id, PurchaseStage.Rejected, null, null, "remote_rejected");
-            if (status.Value.State is "CLOSED") return await RecoverCore(intent, ct);
+            if (status.Value.State is "CLOSED") return await RecoverCore(intent, ct, mode);
             if (status.Value.State is not ("ACTIVE" or "READY") || status.Value.AvailableCodes <= 0) return Save(id, PurchaseStage.Polling, null, clock.UtcNow.AddSeconds(2), "codes_pending");
             if (mode == WorkflowRunMode.RecoveryOnly) return Save(id, PurchaseStage.Polling, null, null, "user_requested_receive_required");
             db.SavePurchaseOutcome(id, PurchaseStage.Downloading, null, null, null);
@@ -89,9 +89,10 @@ public sealed class KizPurchaseCoordinator(AppDatabase db, ISuzClient suz, IWork
         }
         catch (InvalidOperationException) { return Save(id, PurchaseStage.NeedsReconciliation, null, null, "evidence_conflict"); }
     }
-    private async Task<PurchaseResult> RecoverCore(PurchaseIntent intent, CancellationToken ct)
+    private async Task<PurchaseResult> RecoverCore(PurchaseIntent intent, CancellationToken ct,WorkflowRunMode mode)
     {
         if (!db.PurchaseAuthorizationMatches(intent.Id)) return Save(intent.Id, PurchaseStage.NeedsReconciliation, null, null, "authorization_changed");
+        db.SavePurchaseOutcome(intent.Id,PurchaseStage.Recovering,null,null,null);
         var stored = db.PurchaseBlocks(intent.Id);
         if (Count(stored) >= intent.Request.Quantity && !db.PurchaseHasConflicts(intent.Id)) return FinishCodes(intent.Id);
         var listed = await suz.ListBlocksAsync(intent, ct);
@@ -105,6 +106,7 @@ public sealed class KizPurchaseCoordinator(AppDatabase db, ISuzClient suz, IWork
             // Persist identity before the reconciliation request can be interrupted.
             db.SavePurchaseBlock(intent.Id, block with { Codes = Array.Empty<string>() });
             db.SavePurchaseOutcome(intent.Id, PurchaseStage.Recovering, null, null, null);
+            if(mode==WorkflowRunMode.RecoveryOnly)continue;
             if (!db.PurchaseAuthorizationMatches(intent.Id)) return Result(db.GetPurchaseIntent(intent.Id) ?? intent);
             var recovered = await suz.RecoverBlockAsync(intent, block.BlockId, ct);
             if (recovered.Kind != SuzOutcomeKind.Confirmed || recovered.Value is null)

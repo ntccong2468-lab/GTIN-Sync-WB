@@ -99,10 +99,13 @@ public sealed partial class AppDatabase
     {
         using var c = WorkflowConnection(); using var tx = c.BeginTransaction(deferred: false);
         var old = ReadPurchase(c, tx, intentId); if (old is null) return; // Deleted stores are never recreated by workers.
+        if(stage is PurchaseStage.Downloading or PurchaseStage.DownloadUnknown or PurchaseStage.Recovering or PurchaseStage.CodesRecovered){using var checkpoint=WfSql(c,tx,"INSERT OR IGNORE INTO kiz_receive_checkpoints SELECT id,store_id FROM kiz_purchase_intents WHERE id=$id",("$id",intentId));checkpoint.ExecuteNonQuery();}
         if (!string.IsNullOrWhiteSpace(remoteOrderId) && old.RemoteOrderId is not null && remoteOrderId != old.RemoteOrderId) throw new InvalidOperationException("remote_order_id_is_immutable");
         if (!PurchaseAuthorizationMatches(c, tx, intentId)) { stage = PurchaseStage.NeedsReconciliation; errorCode = "authorization_changed"; }
         using var cmd = WfSql(c, tx, "UPDATE kiz_purchase_intents SET stage=$st,remote_order_id=COALESCE(NULLIF($remote,''),remote_order_id),retry_at=$retry,error_code=$err WHERE id=$id", ("$st", stage.ToString()), ("$remote", remoteOrderId), ("$retry", retryAt?.ToString("O")), ("$err", errorCode), ("$id", intentId)); cmd.ExecuteNonQuery(); tx.Commit();
     }
+    public bool PurchaseReceiveStarted(string intentId)
+    {using var c=WorkflowConnection();using var q=WfSql(c,null,"SELECT COUNT(*) FROM kiz_receive_checkpoints WHERE intent_id=$id",("$id",intentId));return Convert.ToInt64(q.ExecuteScalar())>0;}
     public void SavePurchaseBlock(string intentId, SuzBlock block)
     {
         var protector = CodeProtector;
