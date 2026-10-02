@@ -104,5 +104,12 @@ public static class PurchaseTests
             var result = await f.Coordinator.EnsureAsync(f.Request, default);
             Expect(result.Stage == PurchaseStage.NeedsReconciliation && result.RemoteOrderId == "SUZ-1" && f.Suz.CreateCalls == 1 && f.Suz.ReceiveCalls == 0, "Closed order was replaced or reported ready");
         });
+        await r.CheckAsync("duplicate_block_listing_recovers_once_without_erasing_evidence", async () => {
+            using var f = PurchaseFixture.Create(); f.Suz.OnReceive = (_, _, _) => Task.FromResult(new SuzOutcome<SuzBlock>(SuzOutcomeKind.Unknown, null, "transport_unknown"));
+            var first = await f.Coordinator.EnsureAsync(f.Request, default);
+            var block = new SuzBlock("BLOCK-1", "SUZ-1", WorkflowFixture.Gtin, Array.Empty<string>()); f.Suz.Blocks = new[] { block, block };
+            var result = await f.Reopen().ResumeAsync(first.IntentId, default);
+            Expect(result.Stage == PurchaseStage.CodesRecovered && result.RecoveredCount == 2 && f.Suz.RecoverCalls == 1 && f.Db.PurchaseBlocks(first.IntentId).Single().Codes.Count == 2, "Duplicate listing repeated recovery or damaged evidence");
+        });
     }
 }
