@@ -68,6 +68,22 @@ public sealed partial class AppDatabase
     }
     public bool PhysicalMarkMatches(FbsUnitKey unit,string hash)
     {using var c=WorkflowConnection();using var q=WfSql(c,null,"SELECT COUNT(*) FROM kiz_unit_bindings WHERE unit_key=$u AND code_hash=$h AND physical_at IS NOT NULL",("$u",WorkflowIdentity.Unit(unit)),("$h",hash));return Convert.ToInt64(q.ExecuteScalar())==1;}
+    public IReadOnlyDictionary<FbsUnitKey,string> BoundScopedKiz(FbsWorkflowContext context)
+    {
+        var protector=CodeProtector;using var c=WorkflowConnection();ValidateWorkflowContext(c,null,context);var result=new Dictionary<FbsUnitKey,string>();
+        foreach(var demand in context.Snapshot.Units.Where(x=>x.RequiresKiz)){using var q=WfSql(c,null,"SELECT k.raw_enc,k.gtin,k.store_id,k.owner_inn,k.environment,k.conflict FROM kiz_unit_bindings b JOIN kiz_codes_scoped k ON k.code_hash=b.code_hash WHERE b.unit_key=$u",("$u",WorkflowIdentity.Unit(demand.Unit)));using var row=q.ExecuteReader();if(!row.Read())continue;if(context.Profile is null||row.GetString(1)!=demand.Gtin||row.GetInt64(2)!=context.Profile.StoreId||row.GetString(3)!=context.Profile.OwnerInn||row.GetString(4)!=context.Profile.Environment||row.GetInt32(5)!=0)throw new InvalidOperationException("binding_scope_conflict");result[demand.Unit]=protector.Unprotect(row.GetString(0));}return result;
+    }
+    public long WorkflowMappingVersion(StoreProfile store,string sku)
+    {
+        using var c=WorkflowConnection();using var q=WfSql(c,null,"SELECT variant_id,gtin,confirmed,archived FROM gtin_mapping WHERE store_id=$s AND marketplace=$m AND sku=$sku ORDER BY variant_id",("$s",store.Id),("$m",store.Marketplace.ToString()),("$sku",sku));using var row=q.ExecuteReader();var values=new List<string>();while(row.Read())values.Add(row.GetString(0)+":"+row.GetString(1)+":"+row.GetInt32(2)+":"+row.GetInt32(3));var hash=System.Security.Cryptography.SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(string.Join("|",values)));return BitConverter.ToInt64(hash,0)&long.MaxValue;
+    }
+    public void BridgeScopedWbReservation(FbsWorkflowContext context,FbsUnitKey unit,string raw)
+    {
+        var demand=context.Snapshot.Units.Single(x=>x.Unit==unit);using var c=WorkflowConnection();using var tx=c.BeginTransaction(deferred:false);ValidateWorkflowContext(c,tx,context);ValidateWbKizOwnership(c,tx,unit.StoreId,unit.OrderId,demand.Gtin,raw);
+        using var bound=WfSql(c,tx,"SELECT COUNT(*) FROM kiz_unit_bindings WHERE unit_key=$u AND code_hash=$h",("$u",WorkflowIdentity.Unit(unit)),("$h",CodeProtector.Identity(raw)));if(Convert.ToInt64(bound.ExecuteScalar())!=1)throw new InvalidOperationException("scoped_binding_required");
+        using var q=WfSql(c,tx,"INSERT INTO wb_kiz_reservations(code,store_id,order_id,gtin,status,updated_at) VALUES($c,$s,$o,$g,'RESERVED',$at) ON CONFLICT(code) DO NOTHING",("$c",raw),("$s",unit.StoreId),("$o",unit.OrderId),("$g",demand.Gtin),("$at",DateTimeOffset.UtcNow.ToString("O")));q.ExecuteNonQuery();
+        using var pool=WfSql(c,tx,"UPDATE kiz_pool SET status='RESERVED',assigned_order=$o WHERE code=$c AND status='AVAILABLE' AND assigned_order=''",("$c",raw),("$o","WB:"+unit.StoreId+":"+unit.OrderId));pool.ExecuteNonQuery();tx.Commit();
+    }
     private void ValidateWorkflowContext(SqliteConnection c,SqliteTransaction? tx,FbsWorkflowContext context)
     {
         if(!GenerationMatches(c,tx,context.Snapshot.Target.StoreId,context.Snapshot.StoreGeneration))throw new InvalidOperationException("store_generation_changed");

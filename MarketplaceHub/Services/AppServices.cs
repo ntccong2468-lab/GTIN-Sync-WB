@@ -20,11 +20,12 @@ public sealed partial class AppServices
 
     public AppServices() : this(new AppDatabase(), new MarketplaceGateway(), LicenseAccessService.CreateDefault()) { }
 
-    public AppServices(AppDatabase db, MarketplaceGateway api, LicenseAccessService license)
+    public AppServices(AppDatabase db, MarketplaceGateway api, LicenseAccessService license,FbsWorkflowDependencies? workflowDependencies=null)
     {
         Db = db;
         Api = api;
         License = license;
+        InitializeLabelWorkflows(workflowDependencies);
     }
 
     public Task<(bool Ok, string Message)> SyncProductsAsync(StoreProfile store, CancellationToken ct = default) =>

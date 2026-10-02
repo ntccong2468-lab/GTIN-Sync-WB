@@ -5,6 +5,7 @@ namespace MarketplaceHub.Infrastructure;
 public sealed partial class AppDatabase
 {
     private IKizCodeProtector? kizProtector;
+    internal void ConfigureWorkflowCodeProtector(IKizCodeProtector protector)=>kizProtector=protector;
     public IKizCodeProtector CodeProtector => kizProtector ??= new KizCodeProtector(DbPath);
     private SqliteConnection WorkflowConnection() { var c = new SqliteConnection(ConnectionString); c.Open(); return c; }
     private static SqliteCommand WfSql(SqliteConnection c, SqliteTransaction? tx, string sql, params (string Key, object? Value)[] values)

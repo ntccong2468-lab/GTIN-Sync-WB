@@ -13,7 +13,7 @@ public static class ServiceGateTests
             Expect(!result.Ok&&result.Message.Contains("workflow_context_required",StringComparison.Ordinal),"Unscoped legacy AVAILABLE was treated as verified stock");
         });
         await r.CheckAsync("pack_service_requires_signed_license_before_mutation",async()=>{
-            using var f=WorkflowFixture.Create();var store=f.Db.SaveStore(new(0,Marketplace.Ozon,"gate fixture","","","","","",true));
+            using var f=WorkflowFixture.Create();var store=f.Db.SaveStore(new(0,Marketplace.Ozon,"gate fixture","123","fixture-api","456","789","fixture-token",true));
             var api=new MarketplaceGateway();var handler=new GateHttp();typeof(MarketplaceGateway).GetField("http",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(api,new HttpClient(handler));
             var app=new AppServices(f.Db,api,WorkflowTestSupport.SignedLicense(()=>DateTimeOffset.UtcNow,expired:true));var result=await app.PackMarketplaceFbsAsync(store,new[]{"P"},_=>"",true);
             Expect(!result.Success&&handler.Calls==0,"Invalid license reached remote packing boundary");
