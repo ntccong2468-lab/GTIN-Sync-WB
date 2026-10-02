@@ -15,6 +15,7 @@ public sealed partial class AppServices
     public AppDatabase Db { get; }
     public MarketplaceGateway Api { get; }
     public LicenseAccessService License { get; }
+    private readonly HttpClient znakHttp = new() { Timeout = TimeSpan.FromSeconds(45) };
     private readonly ConcurrentDictionary<long, SemaphoreSlim> syncLocks = new();
 
     public AppServices() : this(new AppDatabase(), new MarketplaceGateway(), LicenseAccessService.CreateDefault()) { }
