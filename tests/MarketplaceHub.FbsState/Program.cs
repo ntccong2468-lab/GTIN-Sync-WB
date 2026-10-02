@@ -25,6 +25,25 @@ await Check("WB receive journal survives restart and retains its resolved supply
     Expect(pending is not null&&pending.GetType().GetProperty("SupplyId")!.GetValue(pending)?.ToString()=="SUPPLY-RECOVERY","Restart lost the resolved shipment.");
     return Task.CompletedTask;
 });
+await Check("WB restart resumes retained shipment without creating or readding verified orders",async()=>{
+    var begin=app.Db.GetType().GetMethod("BeginWbReceiveOperation");Expect(begin is not null,"Receive journal is missing.");
+    var store=Store(Marketplace.Wildberries);var operation=Guid.NewGuid().ToString("N");
+    var rows=new[]{new FbsOrderRow(store.Id,store.Marketplace,"401","A","A",1,"new",false,"{}"),new FbsOrderRow(store.Id,store.Marketplace,"402","B","B",1,"new",false,"{}")};
+    app.Db.UpsertOrders(store.Id,store.Marketplace,rows);
+    begin!.Invoke(app.Db,new object?[]{store.Id,operation,new[]{"401","402"},"RESTART-SUPPLY","recovery"});
+    var members=new HashSet<long>{401};var created=0;var patched=new List<long>();
+    Http(r=>{
+        var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/status")){var ids=JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x=>x!.GetValue<long>());return Json(System.Text.Json.JsonSerializer.Serialize(new{orders=ids.Select(id=>new{id,supplierStatus=members.Contains(id)?"confirm":"new",wbStatus="waiting"})}));}
+        if(r.Method.Method=="PATCH"){foreach(var id in JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!["orders"]!.AsArray().Select(x=>x!.GetValue<long>())){patched.Add(id);members.Add(id);}return Json("{}");}
+        if(r.Method==HttpMethod.Post){created++;throw new Exception("Recovery must not create another supply");}
+        if(path.EndsWith("/order-ids"))return Json(System.Text.Json.JsonSerializer.Serialize(new{orderIds=members}));
+        if(path.EndsWith("/supplies"))return Json("{\"next\":0,\"supplies\":[{\"id\":\"RESTART-SUPPLY\",\"name\":\"recovery\",\"done\":false,\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}]}");
+        return Json("{\"id\":\"RESTART-SUPPLY\",\"name\":\"recovery\",\"done\":false,\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}");
+    });
+    var result=await app.ReceiveWbOrdersAsync(store,rows,new(null,"new requested"));
+    Expect(result.Success&&result.SupplyId=="RESTART-SUPPLY"&&created==0&&patched.SequenceEqual(new long[]{402})&&app.Db.WbReceivedOrderIds(store.Id).SetEquals(new[]{"401","402"}),"Restart recreated a supply or repeated an already verified order.");
+});
 await Check("Canonical truth counts one posting with several lines once",()=>{
     var store=new StoreProfile(9001,Marketplace.Wildberries,"WB","","","","","",true);
     var rows=new[]{

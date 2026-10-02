@@ -4,6 +4,7 @@ using MarketplaceHub.Core;
 namespace MarketplaceHub.Infrastructure;
 
 public sealed record WbSupplySummary(string Id,string Name,DateTimeOffset CreatedAt,bool Done,int? OrderCount);
+public sealed record WbReceiveOperation(string OperationId,string? SupplyId,string Name,string State,IReadOnlySet<string> OrderIds);
 
 public sealed partial class AppDatabase
 {
@@ -15,8 +16,82 @@ CREATE TABLE IF NOT EXISTS wb_supply_orders(store_id INTEGER NOT NULL,order_id T
 CREATE INDEX IF NOT EXISTS ix_wb_supply_orders_supply ON wb_supply_orders(store_id,supply_id);
 CREATE TABLE IF NOT EXISTS wb_supplies(store_id INTEGER NOT NULL,supply_id TEXT NOT NULL,name TEXT NOT NULL,created_at TEXT NOT NULL,done INTEGER NOT NULL,order_count INTEGER NULL,updated_at TEXT NOT NULL,PRIMARY KEY(store_id,supply_id));
 CREATE INDEX IF NOT EXISTS ix_wb_supplies_open ON wb_supplies(store_id,done,created_at DESC);
+CREATE TABLE IF NOT EXISTS wb_receive_journal(
+ store_id INTEGER NOT NULL,operation_id TEXT NOT NULL,order_id TEXT NOT NULL,
+ supply_id TEXT NULL,name TEXT NOT NULL,state TEXT NOT NULL,verified INTEGER NOT NULL DEFAULT 0,
+ disposition TEXT NOT NULL DEFAULT '',detail TEXT NOT NULL DEFAULT '',updated_at TEXT NOT NULL,
+ PRIMARY KEY(store_id,operation_id,order_id));
+CREATE INDEX IF NOT EXISTS ix_wb_receive_journal_pending ON wb_receive_journal(store_id,state,order_id);
 CREATE TABLE IF NOT EXISTS wb_kiz_reservations(code TEXT PRIMARY KEY,store_id INTEGER NOT NULL,order_id TEXT NOT NULL,gtin TEXT NOT NULL,status TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(store_id,order_id));";
         cmd.ExecuteNonQuery();
+    }
+
+    public void BeginWbReceiveOperation(long storeId,string operationId,IEnumerable<string> orderIds,string? supplyId,string name)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();
+        foreach(var id in orderIds.Distinct(StringComparer.Ordinal)) {
+            using var cmd=c.CreateCommand();cmd.Transaction=tx;
+            cmd.CommandText=@"INSERT INTO wb_receive_journal(store_id,operation_id,order_id,supply_id,name,state,updated_at)
+VALUES($s,$op,$id,$supply,$name,'INTENT',$at) ON CONFLICT(store_id,operation_id,order_id) DO NOTHING";
+            cmd.Parameters.AddWithValue("$s",storeId);cmd.Parameters.AddWithValue("$op",operationId);cmd.Parameters.AddWithValue("$id",id);
+            cmd.Parameters.AddWithValue("$supply",(object?)supplyId??DBNull.Value);cmd.Parameters.AddWithValue("$name",name);cmd.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
+    }
+
+    public WbReceiveOperation? RecoverableWbReceive(long storeId,IEnumerable<string> orderIds)
+    {
+        var selected=orderIds.ToHashSet(StringComparer.Ordinal);
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText="SELECT operation_id,order_id,supply_id,name,state FROM wb_receive_journal WHERE store_id=$s AND state!='DONE' ORDER BY updated_at DESC";
+        cmd.Parameters.AddWithValue("$s",storeId);
+        var operations=new Dictionary<string,(string? Supply,string Name,string State,HashSet<string> Ids)>(StringComparer.Ordinal);
+        using var row=cmd.ExecuteReader();while(row.Read()) {
+            var op=row.GetString(0);
+            if(!operations.TryGetValue(op,out var data))data=(row.IsDBNull(2)?null:row.GetString(2),row.GetString(3),row.GetString(4),new(StringComparer.Ordinal));
+            data.Ids.Add(row.GetString(1));operations[op]=data;
+        }
+        var matches=operations.Where(x=>x.Value.Ids.Overlaps(selected)).ToArray();
+        if(matches.Length>1)throw new InvalidOperationException("Các đơn thuộc nhiều thao tác nhận chưa hoàn tất. Mở từng shipment để đối soát riêng.");
+        if(matches.Length==0)return null;
+        var match=matches[0];return new(match.Key,match.Value.Supply,match.Value.Name,match.Value.State,match.Value.Ids);
+    }
+
+    public void SaveWbReceiveOperation(long storeId,string operationId,string? supplyId,string state,IEnumerable<string> verifiedIds)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();
+        using(var conflict=c.CreateCommand()) {
+            conflict.Transaction=tx;conflict.CommandText="SELECT COUNT(*) FROM wb_receive_journal WHERE store_id=$s AND operation_id=$op AND supply_id IS NOT NULL AND supply_id!=$supply";
+            conflict.Parameters.AddWithValue("$s",storeId);conflict.Parameters.AddWithValue("$op",operationId);conflict.Parameters.AddWithValue("$supply",(object?)supplyId??DBNull.Value);
+            if(Convert.ToInt64(conflict.ExecuteScalar())>0)throw new InvalidOperationException("Không đổi shipment của thao tác nhận đang phục hồi.");
+        }
+        using(var update=c.CreateCommand()) {
+            update.Transaction=tx;update.CommandText="UPDATE wb_receive_journal SET supply_id=COALESCE($supply,supply_id),state=$state,updated_at=$at WHERE store_id=$s AND operation_id=$op";
+            update.Parameters.AddWithValue("$s",storeId);update.Parameters.AddWithValue("$op",operationId);update.Parameters.AddWithValue("$supply",(object?)supplyId??DBNull.Value);update.Parameters.AddWithValue("$state",state);update.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));update.ExecuteNonQuery();
+        }
+        foreach(var id in verifiedIds.Distinct(StringComparer.Ordinal)) {
+            using var cmd=c.CreateCommand();cmd.Transaction=tx;cmd.CommandText="UPDATE wb_receive_journal SET verified=1 WHERE store_id=$s AND operation_id=$op AND order_id=$id";
+            cmd.Parameters.AddWithValue("$s",storeId);cmd.Parameters.AddWithValue("$op",operationId);cmd.Parameters.AddWithValue("$id",id);cmd.ExecuteNonQuery();
+            if(supplyId is not null) {
+                using var member=c.CreateCommand();member.Transaction=tx;
+                member.CommandText=@"INSERT INTO wb_supply_orders(store_id,order_id,supply_id,updated_at) VALUES($s,$id,$supply,$at)
+ON CONFLICT(store_id,order_id) DO UPDATE SET updated_at=$at WHERE supply_id=$supply";
+                member.Parameters.AddWithValue("$s",storeId);member.Parameters.AddWithValue("$id",id);member.Parameters.AddWithValue("$supply",supplyId);member.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));member.ExecuteNonQuery();
+            }
+        }
+        tx.Commit();
+    }
+
+    public void FinishWbReceiveOperation(long storeId,string operationId,WbReceiveResult result)
+    {
+        var terminal=result.Success||result.SupplyId is null&&result.Orders.All(x=>x.Disposition is WbReceiveDisposition.Cancelled or WbReceiveDisposition.Rejected);
+        SaveWbReceiveOperation(storeId,operationId,result.SupplyId,terminal?"DONE":"RECONCILE_REQUIRED",result.Orders.Where(x=>x.Verified).Select(x=>x.OrderId));
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();
+        foreach(var order in result.Orders) {
+            using var cmd=c.CreateCommand();cmd.Transaction=tx;cmd.CommandText="UPDATE wb_receive_journal SET disposition=$d,detail=$detail WHERE store_id=$s AND operation_id=$op AND order_id=$id";
+            cmd.Parameters.AddWithValue("$s",storeId);cmd.Parameters.AddWithValue("$op",operationId);cmd.Parameters.AddWithValue("$id",order.OrderId);cmd.Parameters.AddWithValue("$d",order.Disposition.ToString());cmd.Parameters.AddWithValue("$detail",order.Message);cmd.ExecuteNonQuery();
+        }
+        tx.Commit();
     }
 
     public IReadOnlySet<string> WbReceivedOrderIds(long storeId)

@@ -95,7 +95,8 @@ public sealed partial class MarketplaceGateway
         string? existingSupplyId = null,
         string? name = null,
         CancellationToken ct = default,
-        IProgress<string>? progress = null)
+        IProgress<string>? progress = null,
+        Action<WbReceiveCheckpoint>? checkpoint = null)
     {
         var selected = orders.GroupBy(x => x.ExternalOrderId, StringComparer.Ordinal).Select(x => x.First()).ToArray();
         var outcomes = selected.ToDictionary(x => x.ExternalOrderId,
@@ -134,9 +135,9 @@ public sealed partial class MarketplaceGateway
             {
                 ValidateWbSupplyId(existingSupplyId);
                 var supply = await ReadWbSupplyCoreAsync(store, existingSupplyId, ct).ConfigureAwait(false);
-                if (supply.Done || WbBusinessDay(supply.CreatedAt) != WbBusinessDay(DateTimeOffset.UtcNow))
-                    return new(false, null, false, 0, OrderedOutcomes(selected, outcomes), "Chỉ thêm vào shipment đang mở, được tạo hôm nay theo giờ Moscow.");
                 supplyId = supply.Id;
+                if (supply.Done || WbBusinessDay(supply.CreatedAt) != WbBusinessDay(DateTimeOffset.UtcNow))
+                    return new(false, supplyId, false, 0, OrderedOutcomes(selected, outcomes), "Chỉ thêm vào shipment đang mở, được tạo hôm nay theo giờ Moscow.");
                 members = await ReadWbSupplyIdsCoreAsync(store, supplyId, ct).ConfigureAwait(false);
             }
 
@@ -148,21 +149,22 @@ public sealed partial class MarketplaceGateway
                     outcomes[id] = outcomes[id] with { Message = "WB không trả trạng thái duy nhất cho đơn này." };
                     continue;
                 }
+                outcomes[id] = outcomes[id] with { RemoteStatus = status };
                 if (status.WbStatus.Contains("cancel", StringComparison.OrdinalIgnoreCase)
                     || status.SupplierStatus.Contains("cancel", StringComparison.OrdinalIgnoreCase))
                 {
-                    outcomes[id] = new(id, WbReceiveDisposition.Cancelled, false, $"Khách đã hủy · {status.SupplierStatus}/{status.WbStatus}");
+                    outcomes[id] = new(id, WbReceiveDisposition.Cancelled, false, $"Khách đã hủy · {status.SupplierStatus}/{status.WbStatus}", status);
                     continue;
                 }
                 if (status.SupplierStatus.Equals("new", StringComparison.OrdinalIgnoreCase))
                 {
-                    outcomes[id] = new(id, WbReceiveDisposition.EligibleNew, false, "Đủ điều kiện thêm vào shipment.");
+                    outcomes[id] = new(id, WbReceiveDisposition.EligibleNew, false, "Đủ điều kiện thêm vào shipment.", status);
                     continue;
                 }
                 if (status.SupplierStatus.Equals("confirm", StringComparison.OrdinalIgnoreCase)
                     && supplyId is not null && members.Contains(id))
                 {
-                    outcomes[id] = new(id, WbReceiveDisposition.AlreadyMember, true, "Đã có trong shipment này.");
+                    outcomes[id] = new(id, WbReceiveDisposition.AlreadyMember, true, "Đã có trong shipment này.", status);
                     continue;
                 }
                 outcomes[id] = outcomes[id] with { Message = status.SupplierStatus.Equals("confirm", StringComparison.OrdinalIgnoreCase)
@@ -181,12 +183,14 @@ public sealed partial class MarketplaceGateway
                 if (name.Length > 128)
                     return new(false, null, false, 0, OrderedOutcomes(selected, outcomes), "Tên shipment tối đa 128 ký tự.");
                 progress?.Report($"Tạo shipment cho {eligible.Length} đơn hợp lệ…");
+                checkpoint?.Invoke(new(null,"CREATE_PENDING",Array.Empty<string>()));
                 creating = true;
                 var body = await WbMarketplaceRequestAsync(store, HttpMethod.Post, "/api/v3/supplies", JsonSerializer.Serialize(new { name }), ct, progress).ConfigureAwait(false);
                 supplyId = JsonNode.Parse(body)?["id"]?.ToString();
                 if (string.IsNullOrWhiteSpace(supplyId)) throw new InvalidDataException("WB đã nhận tạo shipment nhưng thiếu supplyId. Kiểm tra shipment hôm nay trước khi tạo lại.");
                 ValidateWbSupplyId(supplyId);
                 creating = false; created = true;
+                checkpoint?.Invoke(new(supplyId,"SUPPLY_CREATED",Array.Empty<string>()));
             }
 
             var verified = outcomes.Values.Count(x => x.Verified);
@@ -194,11 +198,13 @@ public sealed partial class MarketplaceGateway
             {
                 ct.ThrowIfCancellationRequested();
                 progress?.Report($"Thêm vào {supplyId}: {verified}/{usable} đơn hợp lệ…");
+                checkpoint?.Invoke(new(supplyId,"PATCH_PENDING",outcomes.Values.Where(x=>x.Verified).Select(x=>x.OrderId).ToArray()));
                 await WbMarketplaceRequestAsync(store, new HttpMethod("PATCH"), $"/api/marketplace/v3/supplies/{Uri.EscapeDataString(supplyId)}/orders",
                     JsonSerializer.Serialize(new { orders = batch.Select(long.Parse).ToArray() }), ct, progress).ConfigureAwait(false);
                 for (var read = 0; ; read++)
                 {
                     members = await ReadWbSupplyIdsCoreAsync(store, supplyId, ct).ConfigureAwait(false);
+                    checkpoint?.Invoke(new(supplyId,"MEMBERSHIP_READ",members));
                     if (batch.All(members.Contains)) break;
                     if (read >= 2) throw new InvalidDataException("WB chưa xác nhận đủ đơn trong shipment. Dừng trước khi gắn KIZ hoặc lấy sticker.");
                     await wbLabelDelay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
@@ -212,11 +218,18 @@ public sealed partial class MarketplaceGateway
             for (var read = 0; ; read++)
             {
                 statuses = await ReadWbReceiveStatusesCoreAsync(store, usableIds, ct).ConfigureAwait(false);
+                foreach(var id in usableIds) {
+                    if(!statuses.TryGetValue(id,out var current)) {outcomes[id]=outcomes[id] with{RemoteStatus=null,Message="WB chưa trả đủ trạng thái hiện tại."};continue;}
+                    outcomes[id]=outcomes[id] with{RemoteStatus=current};
+                    if(current.SupplierStatus.Contains("cancel",StringComparison.OrdinalIgnoreCase)||current.WbStatus.Contains("cancel",StringComparison.OrdinalIgnoreCase))
+                        outcomes[id]=outcomes[id] with{Disposition=WbReceiveDisposition.Cancelled,Verified=false,Message="Đơn bị hủy trong lúc nhận."};
+                }
                 if (usableIds.All(id => statuses.TryGetValue(id, out var state) && state.SupplierStatus == "confirm" && !state.WbStatus.Contains("cancel", StringComparison.OrdinalIgnoreCase))) break;
                 if (read >= 2) throw new InvalidDataException("WB chưa xác nhận mọi đơn ở trạng thái confirm. Chưa bắt đầu KIZ/in nhãn.");
                 await wbLabelDelay(TimeSpan.FromMilliseconds(500), ct).ConfigureAwait(false);
             }
             members = await ReadWbSupplyIdsCoreAsync(store, supplyId, ct).ConfigureAwait(false);
+            checkpoint?.Invoke(new(supplyId,"MEMBERSHIP_READ",members));
             foreach (var id in usableIds)
                 outcomes[id] = outcomes[id] with { Verified = members.Contains(id), Message = members.Contains(id)
                     ? outcomes[id].Disposition == WbReceiveDisposition.AlreadyMember ? "Đã có trong shipment này." : "Đã thêm và xác minh trong shipment."

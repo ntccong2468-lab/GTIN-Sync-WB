@@ -109,7 +109,8 @@ public sealed record WbReceiveOrderResult(
     string OrderId,
     WbReceiveDisposition Disposition,
     bool Verified,
-    string Message);
+    string Message,
+    WbOrderStatus? RemoteStatus = null);
 public sealed record WbReceiveResult(
     bool Success,
     string? SupplyId,
@@ -117,3 +118,4 @@ public sealed record WbReceiveResult(
     int VerifiedMemberCount,
     IReadOnlyList<WbReceiveOrderResult> Orders,
     string Message);
+public sealed record WbReceiveCheckpoint(string? SupplyId, string State, IReadOnlyList<string> MemberIds);

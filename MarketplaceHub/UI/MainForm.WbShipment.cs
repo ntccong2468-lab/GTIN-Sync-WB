@@ -49,6 +49,7 @@ public sealed partial class MainForm
         if(result is null)return;
         app.Db.Audit("FBS WB",result.Success?"Đã nhận đơn vào shipment":"Shipment cần tiếp tục",result.Message);
         if(pageToken.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
+        using(var outcomes=new WbReceiveResultDialog(result))outcomes.ShowDialog(this);
         if(!string.IsNullOrWhiteSpace(result.SupplyId))
             ShowFbsWorkspace("new",result.Message);
         else ShowInfo(result.Message);

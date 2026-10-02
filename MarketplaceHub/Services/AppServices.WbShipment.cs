@@ -6,6 +6,7 @@ namespace MarketplaceHub.Services;
 public sealed partial class AppServices
 {
     private readonly SemaphoreSlim wbKizOperations=new(1,1);
+    private readonly SemaphoreSlim wbReceiveOperations=new(1,1);
 
     public async Task<WbReceiveResult> ReceiveWbOrdersAsync(StoreProfile store,IReadOnlyList<FbsOrderRow> orders,
         WbShipmentChoice choice,CancellationToken ct=default,IProgress<string>? progress=null)
@@ -13,21 +14,49 @@ public sealed partial class AppServices
         if(store.Marketplace!=Marketplace.Wildberries)return new(false,null,false,0,Array.Empty<WbReceiveOrderResult>(),"Chỉ nhận shipment WB cho cửa hàng Wildberries.");
         var unique=orders.GroupBy(x=>x.ExternalOrderId,StringComparer.Ordinal).Select(x=>x.First()).ToArray();
         if(unique.Length==0)return new(false,null,false,0,Array.Empty<WbReceiveOrderResult>(),"Chưa chọn đơn mới.");
-        var result=await Api.ReceiveWbShipmentAsync(store,unique,choice.SupplyId,choice.Name,ct,progress).ConfigureAwait(false);
+        await wbReceiveOperations.WaitAsync(ct).ConfigureAwait(false);
+        try {
+        var pending=Db.RecoverableWbReceive(store.Id,unique.Select(x=>x.ExternalOrderId));
+        var supplies=await Api.GetWbSuppliesAsync(store,ct).ConfigureAwait(false);
+        var operationId=pending?.OperationId??Guid.NewGuid().ToString("N");
+        var supplyId=pending?.SupplyId??choice.SupplyId;
+        var name=pending?.Name??(choice.SupplyId is null?$"{choice.Name.Trim()[..Math.Min(choice.Name.Trim().Length,80)]} · {operationId}":choice.Name);
+        if(pending is not null) {
+            if(unique.Any(x=>!pending.OrderIds.Contains(x.ExternalOrderId)))
+                return new(false,pending.SupplyId,false,0,Array.Empty<WbReceiveOrderResult>(),"Hãy hoàn tất các đơn của thao tác đang phục hồi trước khi nhận thêm đơn khác.");
+            unique=Db.Orders(store.Id).Where(x=>pending.OrderIds.Contains(x.ExternalOrderId)).GroupBy(x=>x.ExternalOrderId,StringComparer.Ordinal).Select(x=>x.First()).ToArray();
+            if(unique.Length!=pending.OrderIds.Count)
+                return new(false,pending.SupplyId,false,0,Array.Empty<WbReceiveOrderResult>(),"Thiếu chi tiết đơn của thao tác đang phục hồi. Đồng bộ lại trước khi tiếp tục.");
+            if(pending.SupplyId is null&&pending.State!="INTENT") {
+                var found=supplies.Where(x=>x.Name==pending.Name).ToArray();
+                if(found.Length!=1)
+                    return new(false,null,false,0,Array.Empty<WbReceiveOrderResult>(),"Kết quả tạo shipment trước chưa rõ. Chưa thể xác định duy nhất shipment để tiếp tục; hệ thống giữ nhật ký và chặn tạo trùng.");
+                supplyId=found[0].Id;
+                Db.SaveWbReceiveOperation(store.Id,operationId,supplyId,"SUPPLY_RECOVERED",Array.Empty<string>());
+            }
+            progress?.Report("Đang đối soát và tiếp tục shipment của thao tác trước…");
+        }
+        Db.BeginWbReceiveOperation(store.Id,operationId,unique.Select(x=>x.ExternalOrderId),supplyId,name);
+        var blocked=unique.Where(x=>Db.FindWbSupplyForOrder(store.Id,x.ExternalOrderId) is { } owner&&owner!=supplyId).Select(x=>new WbReceiveOrderResult(x.ExternalOrderId,WbReceiveDisposition.Rejected,false,"Đơn đã thuộc shipment khác; không di chuyển.")).ToArray();
+        var blockedIds=blocked.Select(x=>x.OrderId).ToHashSet(StringComparer.Ordinal);
+        var result=await Api.ReceiveWbShipmentAsync(store,unique.Where(x=>!blockedIds.Contains(x.ExternalOrderId)).ToArray(),supplyId,name,ct,progress,
+            point=>Db.SaveWbReceiveOperation(store.Id,operationId,point.SupplyId,point.State,point.MemberIds)).ConfigureAwait(false);
+        if(blocked.Length>0)result=result with{Orders=result.Orders.Concat(blocked).ToArray(),Message=result.Message+$" {blocked.Length} đơn đã thuộc shipment khác."};
         var observed=DateTimeOffset.UtcNow;
         foreach(var order in result.Orders) {
-            if(order.Disposition==WbReceiveDisposition.Cancelled)Db.MarkOrderRemoteState(store.Id,store.Marketplace,order.OrderId,"new","cancelled",true,observed);
-            else if(order.Verified)Db.MarkOrderRemoteState(store.Id,store.Marketplace,order.OrderId,"confirm","waiting",true,observed);
-            else if(order.Disposition==WbReceiveDisposition.Rejected)Db.MarkOrderRemoteState(store.Id,store.Marketplace,order.OrderId,"","",false,observed);
+            if(order.RemoteStatus is { } state)Db.MarkOrderRemoteState(store.Id,store.Marketplace,order.OrderId,state.SupplierStatus,state.WbStatus,true,observed);
+            else Db.MarkOrderRemoteState(store.Id,store.Marketplace,order.OrderId,"","",false,observed);
         }
         if(!string.IsNullOrWhiteSpace(result.SupplyId)) {
             try {
                 var supply=await Api.GetWbSupplyAsync(store,result.SupplyId,ct).ConfigureAwait(false);
                 var members=await Api.GetWbSupplyOrderIdsAsync(store,supply.Id,ct).ConfigureAwait(false);
                 Db.UpsertWbSupply(store.Id,supply,members.Count);Db.StoreWbSupplyMembership(store.Id,supply.Id,members);
-            } catch(Exception ex) {return result with{Success=false,Message=result.Message+" Đã tạo/giữ shipment nhưng chưa đọc đủ membership: "+ex.Message};}
+            } catch(Exception ex) {result=result with{Success=false,Message=result.Message+" Đã tạo/giữ shipment nhưng chưa đọc đủ membership: "+ex.Message};}
         }
+        Db.FinishWbReceiveOperation(store.Id,operationId,result);
         return result;
+        } finally {wbReceiveOperations.Release();}
     }
 
     public async Task RefreshWbSuppliesAsync(StoreProfile store,CancellationToken ct=default,IProgress<string>? progress=null)
