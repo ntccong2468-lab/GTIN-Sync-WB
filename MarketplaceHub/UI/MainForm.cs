@@ -1114,7 +1114,10 @@ public sealed partial class MainForm : Form
             return new(marked.Success,shipment.Message+"\n"+marked.Message,shipment.ExternalTaskId);
         }
 
-        return await app.PackMarketplaceFbsAsync(store,orders.Select(x=>x.ExternalOrderId),item=>ResolveMarketplaceGtin(store,item),useKiz,operationToken,progress);
+        var selected=orders.Select(x=>x.ExternalOrderId).ToHashSet(StringComparer.Ordinal);
+        var batches=app.Db.TodayMarketplaceFbsBatches(store).Where(b=>app.Db.MarketplaceFbsBatchOrders(store,b.Id).Select(x=>x.Id).ToHashSet(StringComparer.Ordinal).SetEquals(selected)).ToArray();
+        if(batches.Length!=1)return new(false,"workflow_context_required: nhận đơn vào đúng một batch trước khi đóng hàng.");
+        return await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),item=>ResolveMarketplaceGtin(store,item),useKiz,operationToken,progress,batchId:batches[0].Id);
     }
 
     private void ShowZnakRegistration()
