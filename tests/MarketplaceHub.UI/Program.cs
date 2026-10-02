@@ -243,7 +243,7 @@ internal static class Program
                 var packed = (Task<PriceUpdateResult>)typeof(MainForm).GetMethod("CreateShipmentWithKizAsync", instance)!
                     .Invoke(form, new object[] { store, new[] { a }, true })!;
                 Pump(packed);
-                Expect(!packed.Result.Success && count > 0 && packed.Result.Message.Contains("GTIN"), "Unselected mandatory-KIZ line was skipped before shipping.");
+                Expect(!packed.Result.Success && count > 0 && packed.Result.Message.Contains("GTIN"), "Unselected mandatory-KIZ line was skipped before shipping. Reads="+count+"; result="+packed.Result.Message);
             });
             Check("Partial sync and full sync never overlap for one store", () =>
             {
