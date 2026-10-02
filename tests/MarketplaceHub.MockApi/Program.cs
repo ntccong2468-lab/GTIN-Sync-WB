@@ -1,3 +1,4 @@
+using MarketplaceHub.TestSupport;
 using MarketplaceHub.Core;
 using MarketplaceHub.Services;
 using System.Net;
@@ -5,7 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 
-var app=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-mock-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());
+var app=WorkflowTestSupport.App(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-mock-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway());
 var mock=new OzonYandexMockApi();
 typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,new HttpClient(mock));
 var suffix=Guid.NewGuid().ToString("N");
@@ -21,7 +22,7 @@ async Task GtinMocks(){
     var path=Path.Combine(Path.GetTempPath(),"MarketplaceHub-gtin-"+Guid.NewGuid().ToString("N"),"test.db");
     var db=new MarketplaceHub.Infrastructure.AppDatabase(path);var handler=new GtinMockApi();var api=new MarketplaceGateway((_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;});
     typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(api,new HttpClient(handler));
-    var target=new AppServices(db,api,LicenseAccessService.CreateDefault());
+    var target=WorkflowTestSupport.App(db,api);
     var store=db.SaveStore(new(0,Marketplace.Wildberries,"GTIN-MOCK","","","","","fake-wb-token",true));
     string NewGtin(int i){var prefix="460"+i.ToString("D9");var sum=prefix.Reverse().Select((c,n)=>(c-'0')*(n%2==0?3:1)).Sum();return "0"+prefix+((10-sum%10)%10);}
     var entries=Enumerable.Range(1,51).Select(i=>{
@@ -36,7 +37,7 @@ async Task GtinMocks(){
     var paused=await (Task<PriceUpdateResult>)resume.Invoke(target,new object[]{store,CancellationToken.None})!;
     Expect(!paused.Success&&handler.Writes.Count==2,"WB retry before Retry-After performs no further write");
     using(var c=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+db.DbPath)){c.Open();using var cmd=c.CreateCommand();cmd.CommandText="UPDATE gtin_sync_jobs SET retry_at='2000-01-01T00:00:00+00:00' WHERE endpoint='WB_WRITEBACK'";cmd.ExecuteNonQuery();}
-    var restarted=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(path),api,LicenseAccessService.CreateDefault());
+    var restarted=WorkflowTestSupport.App(new MarketplaceHub.Infrastructure.AppDatabase(path),api);
     var final=await (Task<PriceUpdateResult>)resume.Invoke(restarted,new object[]{store,CancellationToken.None})!;
     Expect(final.Success&&handler.Writes.Count==3&&handler.Writes[2].SequenceEqual(new[]{51})&&handler.PreservedSizes,"WB restart resumes only failed card and preserves every existing size/barcode");
     handler.HideLastReadback=true;var current=handler.Cards[51]["sizes"]![0]!["skus"]!.AsArray();current.RemoveAt(current.Count-1);
@@ -96,11 +97,12 @@ try
         var received=await app.ReceiveMarketplaceFbsAsync(store,new[]{orderId});
         Expect(received.Success&&received.ExternalTaskId is not null,store.Marketplace+" receives posting into a durable shipment");
         Expect(app.Db.MarketplaceReceivedOrderIds(store).Contains(orderId),store.Marketplace+" received posting leaves New queue");
-        var packed=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>gtin,true,batchId:received.ExternalTaskId);
+        var context=await WorkflowTestSupport.PreparedContext(app,new(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,received.ExternalTaskId!),new[]{Kiz(store.Marketplace==Marketplace.Ozon?"OZON0001":"YANDEX01")},marketGtin:_=>gtin);
+        var packed=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>gtin,true,batchId:received.ExternalTaskId,workflowContext:context);
         Expect(packed.Success,store.Marketplace+" automatically reserves, submits and verifies KIZ before packing: "+packed.Message);
         var reservations=app.Db.MarketplaceKizReservations(store,orderId);
         Expect(reservations.Count==1&&reservations[0].Status=="ASSIGNED",store.Marketplace+" owns exactly one accepted KIZ for one physical unit");
-        var label=await app.ExportVerifiedMarketplaceLabelAsync(store,orderId,_=>gtin);
+        var label=await app.ExportVerifiedMarketplaceLabelAsync(store,orderId,_=>gtin,workflowContext:context);
         Expect(label.Success&&label.FilePath is not null&&File.Exists(label.FilePath),store.Marketplace+" returns a verified official PDF label: "+label.Message);
         if(label.FilePath is not null&&File.Exists(label.FilePath))File.Delete(label.FilePath);
     }

@@ -1,3 +1,4 @@
+using MarketplaceHub.TestSupport;
 using MarketplaceHub.Core;
 using MarketplaceHub.Services;
 using MarketplaceHub.UI;
@@ -32,7 +33,7 @@ internal static class Program
         }
         HttpResponseMessage Json(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         IEnumerable<Control> All(Control parent) => parent.Controls.Cast<Control>().SelectMany(x => new[] { x }.Concat(All(x)));
-        var app = new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-ui-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());
+        var app = WorkflowTestSupport.App(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-ui-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway());
         var marker = "UI-FIXTURE-" + Guid.NewGuid().ToString("N");
         var store = app.Db.SaveStore(new StoreProfile(0, Marketplace.Yandex, marker, "123", "fixture", "456", "789", "fixture", true));
         app.Db.ReplaceProducts(store.Id, Marketplace.Yandex,
@@ -361,22 +362,25 @@ internal static class Program
             Check("WB uncertain KIZ PUT resumes by reading metadata without assigning a new code", () =>
             {
                 var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-retry","","","","","fixture",true));
-                const string gtin="04608888888888";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");
+                const string gtin="04601234567893";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N")[..13]+"\u001d91ABCD\u001d92proof";
                 var row=new FbsOrderRow(wb.Id,Marketplace.Wildberries,"777","SKU","fixture",1,"confirm",true,"{}");
                 var httpField=typeof(MarketplaceGateway).GetField("http",instance)!;var old=httpField.GetValue(app.Api);
                 var applied=false;var puts=0;
                 var client=new HttpClient(new AsyncFixtureHttp((r,ct)=>{
                     var path=r.RequestUri!.AbsolutePath;
                     if(path.EndsWith("/status"))return Task.FromResult(Json("{\"orders\":[{\"id\":777,\"supplierStatus\":\"confirm\",\"wbStatus\":\"waiting\"}]}"));
+                    if(path.EndsWith("/order-ids"))return Task.FromResult(Json("{\"orderIds\":[777]}"));
+                    if(path.EndsWith("/supplies/RETRY"))return Task.FromResult(Json("{\"id\":\"RETRY\",\"name\":\"fixture\",\"done\":false,\"createdAt\":\"2026-10-02T00:00:00Z\"}"));
                     if(r.Method==HttpMethod.Put){puts++;applied=true;throw new HttpRequestException("connection lost after WB accepted request");}
                     return Task.FromResult(Json(System.Text.Json.JsonSerializer.Serialize(new{orders=new[]{new{id=777,metaDetails=new[]{new{key="sgtin",value=applied?code:null,decision=applied?"filled":"required"}}}}})));
                 }));
                 try {
                     app.Db.UpsertKiz(code,gtin,"AVAILABLE");app.Db.StoreWbSupplyMembership(wb.Id,"RETRY",new[]{"777"});httpField.SetValue(app.Api,client);
                     var ids=new Dictionary<string,string>{{"777",gtin}};
-                    var first=app.EnsureWbSupplyKizAsync(wb,new[]{row},ids,true);Pump(first);
+                    app.Db.UpsertOrders(wb.Id,wb.Marketplace,new[]{row});var preparation=WorkflowTestSupport.PreparedContext(app,new(wb.Id,wb.Marketplace,LabelTargetKind.WbSupply,"RETRY"),new[]{code},wbGtin:_=>gtin);Pump(preparation);var context=preparation.Result;
+                    var first=app.EnsureWbSupplyKizAsync(wb,new[]{row},ids,true,workflowContext:context);Pump(first);
                     Expect(!first.Result.Success && app.Db.Kiz().Single(x=>x.Code==code).Status=="RESERVED","Uncertain code was released or marked confirmed.");
-                    var retry=app.EnsureWbSupplyKizAsync(wb,new[]{row},ids,true);Pump(retry);
+                    var retry=app.EnsureWbSupplyKizAsync(wb,new[]{row},ids,true,workflowContext:context);Pump(retry);
                     Expect(retry.Result.Success && puts==1 && app.Db.Kiz().Single(x=>x.Code==code).Status=="ASSIGNED","Retry sent another KIZ or did not confirm remote code.");
                 } finally {httpField.SetValue(app.Api,old);client.Dispose();app.Db.DeleteStore(wb.Id);}
             });

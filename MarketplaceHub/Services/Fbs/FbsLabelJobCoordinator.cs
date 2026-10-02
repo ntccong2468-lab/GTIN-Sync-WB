@@ -50,7 +50,7 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
             codes=db.ReserveScopedKiz(context,context.Snapshot.Units);
             var verified=await eligibility.VerifyAsync(context,codes,ct);
             if(!Allowed(context))return Result(job,"authorization_changed");
-            var old=db.LabelJobUnits(jobId);var uncertain=old.Where(x=>x.Stage is "Attaching" or "AttachUnknown").Select(x=>x.Unit).ToHashSet();
+            var old=db.LabelJobUnits(jobId);var uncertain=old.Where(x=>x.Stage is "Attaching" or "WbAttachSending" or "AttachUnknown").Select(x=>x.Unit).ToHashSet();
             if(uncertain.Any(u=>context.Snapshot.Units.Single(x=>x.Unit==u).RequiresKiz&&(!remote.TryGetValue(u,out var actual)||!codes.TryGetValue(u,out var held)||db.CodeProtector.Identity(actual)!=db.CodeProtector.Identity(held))))
                 return Save(context,FbsLabelJobStage.NeedsReconciliation,old.Select(x=>uncertain.Contains(x.Unit)?x with{Stage="AttachUnknown",ErrorCode="attach_readback_required"}:x).ToArray(),"attach_readback_required",progress);
             // A no-KIZ pack request also has an uncertain checkpoint; the adapter owns its pack journal.
@@ -104,7 +104,7 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
     public async Task<LabelJobResult> CreateRevisionAsync(string jobId,bool sellerConfirmed,CancellationToken ct)
     {
         var job=db.GetLabelJob(jobId);if(job is null)return Empty(FbsLabelJobStage.NeedsReconciliation,"job_deleted");
-        if(!sellerConfirmed||db.LabelJobUnits(jobId).Any(x=>x.Stage is "Attaching" or "AttachUnknown")||db.LabelJobPurchases(jobId).Any(x=>x.Stage is not (PurchaseStage.CodesRecovered or PurchaseStage.Rejected)))return Result(job,"reconcile_before_revision");
+        if(!sellerConfirmed||db.LabelJobUnits(jobId).Any(x=>x.Stage is "Attaching" or "WbAttachSending" or "AttachUnknown")||db.LabelJobPurchases(jobId).Any(x=>x.Stage is not (PurchaseStage.CodesRecovered or PurchaseStage.Rejected)))return Result(job,"reconcile_before_revision");
         var context=new FbsWorkflowContext(job.Id,job.Revision,job.Snapshot,db.LabelJobProfile(job.Id));if(!Allowed(context))return Result(job,"authorization_required");
         var fresh=await adapters(job.Snapshot.Target.Marketplace).ReadSnapshotAsync(job.Snapshot.Target,ct);if(!Allowed(context))return Result(job,"authorization_changed");return Result(db.NewLabelRevision(jobId,fresh));
     }

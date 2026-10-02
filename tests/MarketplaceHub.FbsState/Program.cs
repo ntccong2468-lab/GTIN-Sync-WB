@@ -1,3 +1,4 @@
+using MarketplaceHub.TestSupport;
 using MarketplaceHub.Core;
 using MarketplaceHub.Services;
 using Microsoft.Data.Sqlite;
@@ -6,7 +7,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 
-var app=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-state-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());var failures=new List<string>();var checks=0;var stores=new List<StoreProfile>();
+var app=WorkflowTestSupport.App(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-state-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway());var failures=new List<string>();var checks=0;var stores=new List<StoreProfile>();
 async Task Check(string name,Func<Task> run){checks++;try{await run();Console.WriteLine("PASS "+name);}catch(Exception ex){failures.Add(name);Console.WriteLine("FAIL "+name+": "+ex.GetBaseException().Message);}}
 void Expect(bool ok,string message){if(!ok)throw new Exception(message);}
 StoreProfile Store(Marketplace m){var store=app.Db.SaveStore(new(0,m,"STATE-FIXTURE-"+Guid.NewGuid().ToString("N"),"123","fixture","456","789","fixture-wb-token",true));stores.Add(store);return store;}
@@ -80,7 +81,7 @@ await Check("WB receive Retry-After survives restart and prevents recovery calls
     var db=new MarketplaceHub.Infrastructure.AppDatabase(app.Db.DbPath);var pending=db.RecoverableWbReceive(store.Id,new[]{"821"});
     Expect(!first.Success&&pending is not null&&pending.GetType().GetProperty("RetryAt")?.GetValue(pending) is DateTimeOffset at&&at>DateTimeOffset.UtcNow,"WB quota deadline was not durable.");
     var calls=0;var api=new MarketplaceGateway((_,_)=>Task.CompletedTask);typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(api,new HttpClient(new FixtureHttp(_=>{calls++;throw new Exception("Retry deadline bypassed");})));
-    var restarted=new AppServices(db,api,LicenseAccessService.CreateDefault());var retry=await restarted.ReceiveWbOrdersAsync(store,rows,new(null,"new"));Expect(!retry.Success&&calls==0,"Restart retried WB receive before server Retry-After.");
+    var restarted=WorkflowTestSupport.App(db,api);var retry=await restarted.ReceiveWbOrdersAsync(store,rows,new(null,"new"));Expect(!retry.Success&&calls==0,"Restart retried WB receive before server Retry-After.");
 });
 await Check("WB verified membership survives incomplete refresh and cannot switch shipment",()=>{
     var store=Store(Marketplace.Wildberries);app.Db.StoreWbSupplyMembership(store.Id,"ORIGINAL",new[]{"911"});app.Db.StoreWbSupplyMembership(store.Id,"ORIGINAL",Array.Empty<string>());
@@ -233,18 +234,20 @@ await Check("Yandex mapping evolution keeps stable offer identity and seller dat
 await Check("Ozon receives the whole current posting before shipping",async()=>{
     var store=Store(Marketplace.Ozon);var shipped=false;var ships=0;
     Http(r=>{if(r.RequestUri!.AbsolutePath.EndsWith("/ship")){ships++;var payload=JsonNode.Parse(r.Content!.ReadAsStringAsync().Result)!;var products=payload["packages"]![0]!["products"]!.AsArray();Expect(products.Count==2 && products.Sum(x=>x!["quantity"]!.GetValue<int>())==3,"Partial posting mutation.");shipped=true;return Json("{}");}return Json(Posting(shipped?"awaiting_deliver":"awaiting_packaging"));});
-    var result=await app.PackMarketplaceFbsAsync(store,new[]{"P"},_=>"",true);Expect(result.Success && ships==1 && app.Db.Orders(store.Id).Count==2,"Whole posting was not confirmed: "+result.Message);
+    var batch=app.Db.CreateMarketplaceFbsBatch(store,new[]{"P"});
+    var result=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>"",true,batchId:batch.Id);Expect(result.Success && ships==1 && app.Db.Orders(store.Id).Count==2,"Whole posting was not confirmed: "+result.Message);
 });
 await Check("An ambiguous ship cannot be resent through a new batch",async()=>{
     var store=Store(Marketplace.Ozon);var ships=0;
     Http(r=>{if(r.RequestUri!.AbsolutePath.EndsWith("/ship")){ships++;throw new HttpRequestException("lost mutation response");}return Json(Posting());});
-    var first=await app.PackMarketplaceFbsAsync(store,new[]{"P"},_=>"",true);var second=await app.PackMarketplaceFbsAsync(store,new[]{"P"},_=>"",true);
+    var batch=app.Db.CreateMarketplaceFbsBatch(store,new[]{"P"});var other=app.Db.CreateMarketplaceFbsBatch(store,new[]{"P"});
+    var first=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>"",true,batchId:batch.Id);var second=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>"",true,batchId:other.Id);
     Expect(!first.Success && !second.Success && ships==1,"New batch resent ambiguous ship.");
 });
 await Check("Freshly added mandatory KIZ blocks ship before mutation",async()=>{
     var store=Store(Marketplace.Ozon);var reads=0;var ships=0;
     Http(r=>{if(r.RequestUri!.AbsolutePath.EndsWith("/ship")){ships++;return Json("{}");}if(r.RequestUri.AbsolutePath.EndsWith("/get")){reads++;return Json(Posting(required:reads>1));}return Json("{\"products\":[]}");});
-    var result=await app.PackMarketplaceFbsAsync(store,new[]{"P"},_=>"",true);Expect(!result.Success && ships==0,"Fresh requirement was ignored.");
+    var batch=app.Db.CreateMarketplaceFbsBatch(store,new[]{"P"});var result=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>"",true,batchId:batch.Id);Expect(!result.Success && ships==0,"Fresh requirement was ignored.");
 });
 await Check("Historical unfinished batches resume without adding tomorrow's orders",()=>{
     var store=Store(Marketplace.Ozon);var batch=app.Db.CreateMarketplaceFbsBatch(store,new[]{"P"});
@@ -255,12 +258,12 @@ await Check("Historical unfinished batches resume without adding tomorrow's orde
 await Check("Cancelled Yandex order never sends layout or status",async()=>{
     var store=Store(Marketplace.Yandex);var puts=0;
     Http(r=>{if(r.Method==HttpMethod.Put)puts++;return Json("{\"order\":{\"id\":7,\"status\":\"PROCESSING\",\"substatus\":\"STARTED\",\"cancelRequested\":true,\"items\":[{\"id\":11,\"offerId\":\"A\",\"count\":1}]}}");});
-    var result=await app.PackMarketplaceFbsAsync(store,new[]{"7"},_=>"",true);Expect(!result.Success && puts==0,"Cancelled order was changed.");
+    var batch=app.Db.CreateMarketplaceFbsBatch(store,new[]{"7"});var result=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>"",true,batchId:batch.Id);Expect(!result.Success && puts==0,"Cancelled order was changed.");
 });
 
 await Check("Yandex layout retry retains every unit code after a lost response",async()=>{
     var store=Store(Marketplace.Yandex);const string gtin="04601234567893";
-    var originals=Enumerable.Range(0,2).Select(_=>"01"+gtin+"21"+Guid.NewGuid().ToString("N")+"\u001d91ABCD\u001d92proof").ToArray();foreach(var c in originals)app.Db.UpsertKiz(c,gtin,"AVAILABLE");
+    var originals=Enumerable.Range(0,2).Select(_=>"01"+gtin+"21"+Guid.NewGuid().ToString("N")[..13]+"\u001d91ABCD\u001d92proof").ToArray();foreach(var c in originals)app.Db.UpsertKiz(c,gtin,"AVAILABLE");
     var received=Array.Empty<string>();var boxPuts=0;var statusPuts=0;var ready=false;
     Http(r=>{
         var path=r.RequestUri!.AbsolutePath;
@@ -272,15 +275,16 @@ await Check("Yandex layout retry retains every unit code after a lost response",
         if(r.Method==HttpMethod.Put){statusPuts++;ready=true;return Json("{\"status\":\"OK\"}");}
         return Json("{\"order\":{\"id\":7,\"status\":\"PROCESSING\",\"substatus\":\""+(ready?"READY_TO_SHIP":"STARTED")+"\",\"items\":[{\"id\":11,\"offerId\":\"A\",\"count\":2,\"requiredInstanceTypes\":[\"CIS\"]},{\"id\":12,\"offerId\":\"B\",\"count\":1}]}}");
     });
-    var first=await app.PackMarketplaceFbsAsync(store,new[]{"7"},_=>gtin,true);var reserved=app.Db.MarketplaceKizReservations(store,"7").Select(x=>x.Code).ToHashSet(StringComparer.Ordinal);
+    var batch=app.Db.CreateMarketplaceFbsBatch(store,new[]{"7"});var context=await WorkflowTestSupport.PreparedContext(app,new(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,batch.Id),originals,marketGtin:_=>gtin);
+    var first=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>gtin,true,batchId:batch.Id,workflowContext:context);var reserved=app.Db.MarketplaceKizReservations(store,"7").Select(x=>x.Code).ToHashSet(StringComparer.Ordinal);
     Expect(!first.Success && statusPuts==0 && reserved.SetEquals(originals),"Lost layout response changed marks or prematurely closed order.");
-    var second=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>gtin,true,batchId:first.ExternalTaskId);
+    var second=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>gtin,true,batchId:first.ExternalTaskId,workflowContext:context);
     Expect(second.Success && statusPuts==1 && boxPuts==2 && app.Db.MarketplaceKizReservations(store,"7").All(x=>x.Status=="ASSIGNED") && received.ToHashSet(StringComparer.Ordinal).SetEquals(reserved),"Retry allocated replacement codes or did not confirm the complete order: "+second.Message);
 });
 await Check("A remote KIZ for another GTIN prevents Yandex layout and ship",async()=>{
     var store=Store(Marketplace.Yandex);var mutations=0;
     Http(r=>{if(r.Method==HttpMethod.Put)mutations++;if(r.RequestUri!.AbsolutePath.EndsWith("/identifiers/status"))return Json("{\"status\":\"OK\",\"result\":{\"items\":[{\"id\":11,\"cis\":[{\"value\":\"010460123456788621serial\",\"status\":\"OK\"}]}]}}");return Json("{\"order\":{\"id\":7,\"status\":\"PROCESSING\",\"substatus\":\"STARTED\",\"items\":[{\"id\":11,\"offerId\":\"A\",\"count\":1,\"hasCis\":true}]}}");});
-    var result=await app.PackMarketplaceFbsAsync(store,new[]{"7"},_=>"04601234567893",true);Expect(!result.Success && mutations==0 && app.Db.MarketplaceKizReservations(store,"7").Count==0,"Wrong variant KIZ was adopted or shipped.");
+    var batch=app.Db.CreateMarketplaceFbsBatch(store,new[]{"7"});WorkflowTestSupport.Profile(app.Db,store);var result=await app.PackMarketplaceFbsAsync(store,Array.Empty<string>(),_=>"04601234567893",true,batchId:batch.Id);Expect(!result.Success && mutations==0 && app.Db.MarketplaceKizReservations(store,"7").Count==0,"Wrong variant KIZ was adopted or shipped.");
 });
 
 await Check("Received orders stay hidden and historical open shipments remain visible",()=>{

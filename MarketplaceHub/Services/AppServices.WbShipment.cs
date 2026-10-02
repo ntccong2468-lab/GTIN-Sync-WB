@@ -110,15 +110,25 @@ public sealed partial class AppServices
         await wbKizOperations.WaitAsync(ct).ConfigureAwait(false);
         try
         {
+            if(!License.CanRunFbsWorkflow().Allowed)return new(false,"License đã ký còn hiệu lực là bắt buộc để xử lý KIZ.");
             if(store.Marketplace!=Marketplace.Wildberries || orders.Any(x=>x.StoreId!=store.Id || x.Marketplace!=Marketplace.Wildberries))
                 return new(false,"Các đơn KIZ phải thuộc cùng cửa hàng WB.");
             if(orders.Any(x=>string.IsNullOrWhiteSpace(Db.FindWbSupplyForOrder(store.Id,x.ExternalOrderId))))
                 return new(false,"Hãy thêm mọi đơn vào shipment trước khi gắn KIZ.");
+            if(workflowContext is null){
+                var supplies=orders.Select(x=>Db.FindWbSupplyForOrder(store.Id,x.ExternalOrderId)).Distinct().ToArray();if(supplies.Length!=1||supplies[0] is null)return new(false,"workflow_context_required: chọn đúng một shipment đã nhận.");
+                workflowContext=await PrepareWorkflowContextAsync(new(store.Id,store.Marketplace,LabelTargetKind.WbSupply,supplies[0]!),new Fbs.FbsLabelAdapter(this,store.Marketplace,row=>gtinByOrder.TryGetValue(row.ExternalOrderId,out var gtin)?gtin:""),ct);
+            }
+            RequireWorkflowAuthorization(workflowContext);
+            if(workflowContext.Snapshot.Target.StoreId!=store.Id||workflowContext.Snapshot.Target.Marketplace!=store.Marketplace||orders.Any(x=>!workflowContext.Snapshot.Units.Any(u=>u.Unit.OrderId==x.ExternalOrderId)))return new(false,"workflow_scope_mismatch");
             var ids=orders.Select(x=>x.ExternalOrderId).Distinct().ToArray();
             var statuses=await Api.GetWbOrderStatusesAsync(store,ids,ct).ConfigureAwait(false);
             if(ids.Any(id=>statuses[id].SupplierStatus is not ("confirm" or "complete") || statuses[id].WbStatus.Contains("cancel",StringComparison.OrdinalIgnoreCase)))
                 return new(false,"WB chưa xác nhận mọi đơn đang đóng gói. Chưa gắn KIZ.");
             var metadata=await Api.GetWbPrintKizAsync(store,ids,ct,progress).ConfigureAwait(false);
+            RequireWorkflowAuthorization(workflowContext);
+            var scoped=Db.BoundScopedKiz(workflowContext);var legal=await WorkflowEligibility.VerifyAsync(workflowContext,scoped,ct);RequireWorkflowAuthorization(workflowContext);
+            if(workflowContext.Snapshot.Units.Where(x=>ids.Contains(x.Unit.OrderId)).Any(x=>!legal.Any(p=>p.Unit==x.Unit&&p.Stage=="Ready")))return new(false,"KIZ cần xác minh pháp lý và xác nhận đã dán đúng sản phẩm.");
             var fresh=orders.Select(x=>x with{Status=statuses[x.ExternalOrderId].SupplierStatus}).ToArray();
             var validation=ValidateWbSupplyKiz(store,fresh,gtinByOrder,metadata,true);
             if(!validation.Success)return validation;
@@ -142,27 +152,30 @@ public sealed partial class AppServices
                 if(statuses[order.ExternalOrderId].SupplierStatus=="complete")return new(false,$"{order.ExternalOrderId}: đơn đã giao nhưng thiếu KIZ xác nhận. Không thay mã của shipment đã đóng.");
                 pending.Add((order,gtin,Db.WbReservedKizForOrder(store.Id,order.ExternalOrderId,gtin)));
             }
-            foreach(var group in pending.Where(x=>x.Reserved is null).GroupBy(x=>x.Gtin))
-            {
-                progress?.Report($"Chuẩn bị {group.Count()} KIZ cho GTIN {group.Key}…");
-                var ensured=await EnsureKizQuantityAsync(store.Id,group.First().Order.Sku,group.Key,group.Count(),ct).ConfigureAwait(false);
-                if(!ensured.Ok)return new(false,ensured.Message);
-            }
+            foreach(var item in pending){var unit=workflowContext.Snapshot.Units.Single(x=>x.Unit.OrderId==item.Order.ExternalOrderId&&x.RequiresKiz);if(!scoped.TryGetValue(unit.Unit,out var code))return new(false,"workflow_context_required: thiếu KIZ đã giữ cho đơn.");Db.BridgeScopedWbReservation(workflowContext,unit.Unit,code);}
             foreach(var batch in pending.Chunk(100))
             {
                 foreach(var item in batch)
                 {
                     ct.ThrowIfCancellationRequested();
+                    RequireWorkflowAuthorization(workflowContext);
                     var code=Db.ReserveWbKiz(store.Id,item.Order.ExternalOrderId,item.Gtin)
                         ??throw new InvalidOperationException($"{item.Order.ExternalOrderId}: không còn KIZ sẵn sàng.");
                     CheckWbKizGtin(code,item.Gtin,item.Order.ExternalOrderId);
                     if(!seen.Add(code))throw new InvalidOperationException("KIZ bị trùng giữa các đơn.");
                     progress?.Report($"Gắn KIZ: {expected.Count}/{pending.Count} · đơn {item.Order.ExternalOrderId}…");
+                    var unit=workflowContext.Snapshot.Units.Single(x=>x.Unit.OrderId==item.Order.ExternalOrderId).Unit;
+                    var previous=Db.LabelJobUnits(workflowContext.JobId);
+                    if(previous.Any(x=>x.Unit==unit&&x.Stage is "WbAttachSending" or "AttachUnknown"))return new(false,"WB chưa xác nhận request KIZ trước; giữ nguyên mã để đối soát.");
+                    var job=Db.GetLabelJob(workflowContext.JobId)!;if(!Db.TrySaveLabelJob(job.Id,job.Version,FbsLabelJobStage.Attaching,previous.Select(x=>x.Unit==unit?x with{Stage="WbAttachSending"}:x).ToArray()))return new(false,"Job đã đổi trong lúc chuẩn bị gắn mã.");
+                    RequireWorkflowAuthorization(workflowContext);
                     var attached=await Api.AttachWbSgtinAsync(store,item.Order.ExternalOrderId,code,ct).ConfigureAwait(false);
-                    if(!attached.Success)return new(false,$"{item.Order.ExternalOrderId}: {attached.Message} Mã đã được giữ cho đơn này; thử lại sẽ kiểm tra WB trước, không lấy mã mới.");
+                    RequireWorkflowAuthorization(workflowContext);
+                    if(!attached.Success){var current=Db.GetLabelJob(workflowContext.JobId)!;Db.TrySaveLabelJob(current.Id,current.Version,FbsLabelJobStage.NeedsReconciliation,Db.LabelJobUnits(current.Id).Select(x=>x.Unit==unit?x with{Stage="AttachUnknown"}:x).ToArray());return new(false,$"{item.Order.ExternalOrderId}: Mã đã được giữ cho đơn này; tiếp tục kiểm tra readback trên WB.");}
                     expected[item.Order.ExternalOrderId]=code;
                 }
                 var readback=await Api.GetWbPrintKizAsync(store,batch.Select(x=>x.Order.ExternalOrderId),ct,progress).ConfigureAwait(false);
+                RequireWorkflowAuthorization(workflowContext);
                 foreach(var item in batch)
                 {
                     var remote=readback[item.Order.ExternalOrderId].Codes;

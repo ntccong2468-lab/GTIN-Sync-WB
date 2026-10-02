@@ -38,14 +38,25 @@ public sealed partial class AppServices
         if(!await marketplaceFbsOperations.WaitAsync(0,ct).ConfigureAwait(false))return new(false,"Đang có một lượt đóng hàng Ozon/Yandex. Hãy chờ hoàn tất.");
         string? activeBatch=batchId;string? activeOrder=null;var done=0;
         try {
+            if(!License.CanRunFbsWorkflow().Allowed)return new(false,"License đã ký còn hiệu lực là bắt buộc để đóng hàng.");
             if(store.Marketplace is not (Marketplace.Ozon or Marketplace.Yandex))return new(false,"Luồng này chỉ dành cho Ozon/Yandex.");
-            var batch=Db.CreateMarketplaceFbsBatch(store,orderIds,batchId);activeBatch=batch.Id;
+            if(string.IsNullOrWhiteSpace(batchId))return new(false,"workflow_context_required: chọn batch đã nhận trước khi đóng hàng.");
+            if(orderIds.Any())return new(false,"Không thêm đơn mới trong lượt xuất nhãn. Hãy nhận đơn trước.");
+            if(workflowContext is null)workflowContext=await PrepareWorkflowContextAsync(new(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,batchId),new Fbs.FbsLabelAdapter(this,store.Marketplace,marketGtin:resolveGtin),ct);
+            RequireWorkflowAuthorization(workflowContext);
+            if(workflowContext.Snapshot.Target!=new LabelTarget(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,batchId))return new(false,"workflow_scope_mismatch");
+            var batch=Db.CreateMarketplaceFbsBatch(store,Array.Empty<string>(),batchId);activeBatch=batch.Id;
             var members=Db.MarketplaceFbsBatchOrders(store,batch.Id);
             if(members.Count==0)throw new InvalidOperationException("Lượt FBS chưa có đơn.");
             foreach(var saved in members) {
                 ct.ThrowIfCancellationRequested();activeOrder=saved.Id;
                 progress?.Report($"{store.Marketplace} · đọc toàn bộ đơn {saved.Id}…");
                 var snapshot=await ReadFreshMarketplaceFbsAsync(store,saved.Id,ct).ConfigureAwait(false);
+                RequireWorkflowAuthorization(workflowContext);
+                var demands=workflowContext.Snapshot.Units.Where(x=>x.Unit.OrderId==saved.Id).ToArray();
+                if(snapshot.Items.Sum(x=>x.Quantity)!=demands.Length||snapshot.Items.Any(i=>demands.Count(x=>x.Unit.ItemId==i.Id)!=i.Quantity||demands.Any(x=>x.Unit.ItemId==i.Id&&(x.Sku!=i.Offer||x.RequiresKiz!=i.RequiresKiz||i.RequiresKiz&&x.Gtin!=resolveGtin(i)||x.MappingVersion!=Db.WorkflowMappingVersion(store,i.Offer)))))throw new InvalidOperationException("snapshot_changed");
+                var scoped=Db.BoundScopedKiz(workflowContext);var legal=await WorkflowEligibility.VerifyAsync(workflowContext,scoped,ct);RequireWorkflowAuthorization(workflowContext);
+                if(demands.Any(x=>!legal.Any(p=>p.Unit==x.Unit&&p.Stage=="Ready")))continue; // Only whole ready postings may mutate in a partial batch.
                 if(!snapshot.CanPack && !snapshot.IsPacked)throw new InvalidOperationException("Đơn không sẵn sàng hoặc đã hủy. Chưa cấp KIZ/đóng hàng.");
                 if(!snapshot.IsPacked && Db.MarketplaceShipAlreadySubmitted(store,saved.Id))throw new InvalidOperationException("Lệnh đóng hàng đã gửi trước đó cho đơn này. Đối soát trạng thái trên sàn; tạo lượt mới không gửi lại lệnh.");
                 var reservations=Db.MarketplaceKizReservations(store,saved.Id);
@@ -89,15 +100,12 @@ public sealed partial class AppServices
                         if(reserved.Length==item.Quantity && current.Select(MarketplaceFbsPayloads.NormalizeCode).ToHashSet(StringComparer.Ordinal).SetEquals(reserved.Select(r=>MarketplaceFbsPayloads.NormalizeCode(r.Code))))current=reserved.Select(r=>r.Code).ToArray();
                         else if(reserved.Length==0)current=current.OrderBy(x=>x,StringComparer.Ordinal).ToArray();
                     }
-                    if(current.Count==0 && reserved.Length<item.Quantity) {
-                        var available=await EnsureKizQuantityAsync(store.Id,item.Offer,gtin,item.Quantity-reserved.Length,ct).ConfigureAwait(false);
-                        if(!available.Ok)throw new InvalidOperationException(available.Message);
-                    }
                     var selected=new List<string>();
                     for(var unit=0;unit<item.Quantity;unit++) {
                         var remoteCode=current.Count>0?current[unit]:null;
                         if(remoteCode is not null)CheckMarketplaceGtin(remoteCode,gtin,item.Offer);
-                        var code=Db.ReserveMarketplaceKiz(store,saved.Id,item.Id,unit,gtin,remoteCode)??throw new InvalidOperationException("Kho KIZ không còn đủ mã khả dụng.");
+                        var key=new FbsUnitKey(store.Id,store.Marketplace,saved.Id,item.Id,unit);if(!scoped.TryGetValue(key,out var held))throw new InvalidOperationException("scoped_binding_required");if(remoteCode is not null&&Db.CodeProtector.Identity(remoteCode)!=Db.CodeProtector.Identity(held))throw new InvalidOperationException("remote_binding_conflict");
+                        var code=Db.ReserveMarketplaceKiz(store,saved.Id,item.Id,unit,gtin,held)??throw new InvalidOperationException("Kho KIZ không còn đủ mã khả dụng.");
                         CheckMarketplaceGtin(code,gtin,item.Offer);selected.Add(code);
                     }
                     codes[item.Id]=selected;
@@ -107,11 +115,13 @@ public sealed partial class AppServices
                 if(snapshot.CanPack && (!matching || store.Marketplace==Marketplace.Yandex)) {
                     progress?.Report($"{saved.Id} · gửi KIZ và phân bổ đủ hàng…");
                     PriceUpdateResult submitted;
+                    RequireWorkflowAuthorization(workflowContext);
                     try {submitted=store.Marketplace==Marketplace.Ozon
                         ?await PrepareDurableOzonKizAsync(store,snapshot,codes,ct).ConfigureAwait(false)
                         :await Api.PrepareMarketplaceFbsKizAsync(store,snapshot,codes,layout,ct).ConfigureAwait(false);}
                     catch(Exception ex){submitted=new(false,ex.Message);}
                     remote=await Api.ReadMarketplaceKizAsync(store,snapshot,ct).ConfigureAwait(false);
+                    RequireWorkflowAuthorization(workflowContext);
                     matching=MarketplaceCodesMatch(snapshot,codes,remote);
                     if(!matching || !submitted.Success && (codes.Count==0 || store.Marketplace==Marketplace.Yandex))throw new InvalidOperationException(submitted.Message+" Mã đã giữ được bảo toàn; chưa đóng hoặc xuất nhãn.");
                 }
@@ -120,6 +130,7 @@ public sealed partial class AppServices
                 var fresh=await ReadFreshMarketplaceFbsAsync(store,saved.Id,ct).ConfigureAwait(false);
                 if(fresh.ItemFingerprint!=snapshot.ItemFingerprint)throw new InvalidOperationException("Danh sách hàng đã đổi trên sàn; dừng trước khi đóng đơn.");
                 var freshProof=await Api.ReadMarketplaceKizAsync(store,fresh,ct).ConfigureAwait(false);
+                RequireWorkflowAuthorization(workflowContext);
                 if(!MarketplaceCodesMatch(fresh,codes,freshProof) || fresh.Items.Where(x=>x.RequiresKiz).Any(x=>!gtins.TryGetValue(x.Id,out var oldGtin) || resolveGtin(x)!=oldGtin))
                     throw new InvalidOperationException("Requirements/GTIN/KIZ đã đổi trên sàn. Chưa gửi lệnh đóng hàng.");
                 if(!fresh.IsPacked) {
@@ -127,7 +138,9 @@ public sealed partial class AppServices
                     if(saved.Status is "SUBMITTING" or "AMBIGUOUS")throw new InvalidOperationException("Lệnh đóng hàng trước chưa rõ kết quả. Đối soát trên sàn; ứng dụng không tự gửi lại.");
                     if(!Db.TryBeginMarketplaceShip(store,saved.Id))throw new InvalidOperationException("Đơn này đã gửi lệnh đóng hàng. Chưa tự gửi lại.");
                     Db.SaveMarketplaceFbsOrder(store,batch.Id,saved.Id,"SUBMITTING");
+                    RequireWorkflowAuthorization(workflowContext);
                     var packed=await Api.ConfirmMarketplaceFbsAsync(store,fresh,ct).ConfigureAwait(false);
+                    RequireWorkflowAuthorization(workflowContext);
                     if(!packed.Success){Db.SaveMarketplaceFbsOrder(store,batch.Id,saved.Id,"AMBIGUOUS",packed.Message);return new(false,packed.Message,batch.Id);}
                     fresh=await ReadFreshMarketplaceFbsAsync(store,saved.Id,ct).ConfigureAwait(false);
                 }
@@ -164,7 +177,12 @@ public sealed partial class AppServices
     public async Task<LabelResult> ExportVerifiedMarketplaceLabelAsync(StoreProfile store,string orderId,Func<MarketplaceFbsItem,string> resolveGtin,CancellationToken ct=default,FbsWorkflowContext? workflowContext=null)
     {
         try {
+            if(!License.CanRunFbsWorkflow().Allowed)return new(false,"License đã ký còn hiệu lực là bắt buộc để xuất nhãn.");
+            if(workflowContext is null){var candidates=Db.TodayMarketplaceFbsBatches(store).Where(b=>Db.MarketplaceFbsBatchOrders(store,b.Id).Any(x=>x.Id==orderId)).ToArray();if(candidates.Length!=1)return new(false,"workflow_context_required: mở đúng batch đã nhận.");workflowContext=await PrepareWorkflowContextAsync(new(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,candidates[0].Id),new Fbs.FbsLabelAdapter(this,store.Marketplace,marketGtin:resolveGtin),ct);}
+            RequireWorkflowAuthorization(workflowContext);
+            if(workflowContext.Snapshot.Target.StoreId!=store.Id||!workflowContext.Snapshot.Units.Any(x=>x.Unit.OrderId==orderId))return new(false,"workflow_scope_mismatch");
             var current=await ReadFreshMarketplaceFbsAsync(store,orderId,ct).ConfigureAwait(false);
+            RequireWorkflowAuthorization(workflowContext);
             if(!current.IsPacked)return new(false,"Đơn chưa được sàn xác nhận đã đóng hoặc đang yêu cầu hủy.");
             var remote=await Api.ReadMarketplaceKizAsync(store,current,ct).ConfigureAwait(false);
             var expected=new Dictionary<string,IReadOnlyList<string>>(StringComparer.Ordinal);
@@ -174,6 +192,8 @@ public sealed partial class AppServices
                 expected[item.Id]=reserved.OrderBy(x=>x.Unit).Select(x=>x.Code).ToArray();foreach(var code in expected[item.Id])CheckMarketplaceGtin(code,gtin,item.Offer);
             }
             if(!MarketplaceCodesMatch(current,expected,remote))return new(false,"Mã hiện tại trên sàn khác mã đã xác nhận. Chưa xuất nhãn.");
+            var scoped=Db.BoundScopedKiz(workflowContext);var legal=await WorkflowEligibility.VerifyAsync(workflowContext,scoped,ct);RequireWorkflowAuthorization(workflowContext);
+            if(workflowContext.Snapshot.Units.Where(x=>x.Unit.OrderId==orderId).Any(x=>!legal.Any(v=>v.Unit==x.Unit&&v.Stage=="Ready")))return new(false,"KIZ cần legal proof và xác nhận đã dán mã.");
             if(store.Marketplace==Marketplace.Ozon)return await DownloadDurableOzonLabelAsync(store,orderId,ct).ConfigureAwait(false);
             return await Api.DownloadLabelAsync(store,orderId,ct).ConfigureAwait(false);
         }catch(Exception ex){return new(false,ex.Message);}
