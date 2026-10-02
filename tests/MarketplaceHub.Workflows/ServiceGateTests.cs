@@ -20,8 +20,10 @@ public static class ServiceGateTests
         });
         await r.CheckAsync("late_marketplace_read_cannot_recreate_deleted_store_state",async()=>{
             using var f=WorkflowFixture.Create();var store=f.Db.SaveStore(new(0,Marketplace.Ozon,"delete fixture","123","fixture-api","","","",true));var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-            var api=new MarketplaceGateway();typeof(MarketplaceGateway).GetField("http",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(api,new HttpClient(new AwaitHttp(async()=>{entered.SetResult();await release.Task;return new(System.Net.HttpStatusCode.OK){Content=new StringContent("{\"result\":{\"posting_number\":\"P\",\"status\":\"awaiting_packaging\",\"products\":[{\"sku\":100,\"offer_id\":\"A\",\"quantity\":1,\"name\":\"A\"}]}}",System.Text.Encoding.UTF8,"application/json")};})));
-            var app=WorkflowTestSupport.App(f.Db,api);var read=app.ReadFreshMarketplaceFbsAsync(store,"P");await entered.Task;f.Db.DeleteStore(store.Id);release.SetResult();try{await read;}catch(InvalidOperationException){ }
+            const string body="{\"result\":{\"posting_number\":\"P\",\"status\":\"awaiting_packaging\",\"requirements\":{\"products_requiring_mandatory_mark\":[]},\"products\":[{\"sku\":100,\"offer_id\":\"A\",\"quantity\":1,\"name\":\"A\"}]}}";var calls=0;
+            var api=new MarketplaceGateway();typeof(MarketplaceGateway).GetField("http",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(api,new HttpClient(new AwaitHttp(async()=>{if(++calls>1){entered.SetResult();await release.Task;}return new(System.Net.HttpStatusCode.OK){Content=new StringContent(body,System.Text.Encoding.UTF8,"application/json")};})));
+            var app=WorkflowTestSupport.App(f.Db,api);var before=await app.ReadFreshMarketplaceFbsAsync(store,"P");Expect(before.Items.Count==1&&f.Db.OrderRemoteStates(store.Id).Count==1,"Positive fixture did not reach state persistence");
+            var read=app.ReadFreshMarketplaceFbsAsync(store,"P");await entered.Task;f.Db.DeleteStore(store.Id);release.SetResult();try{await read;}catch(InvalidOperationException){ }
             Expect(Convert.ToInt64(f.Sql("SELECT COUNT(*) FROM order_remote_states WHERE store_id="+store.Id))==0,"Late remote read recreated deleted store state");
         });
     }
