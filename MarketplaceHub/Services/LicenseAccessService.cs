@@ -204,6 +204,7 @@ public sealed class LicenseAccessService
     }
 
     public LicenseGateResult CanOpenAddStore() => EvaluateCached(storage.Load(), LicenseGateCode.ValidCached);
+    public LicenseGateResult CanRunFbsWorkflow() => EvaluateCached(storage.Load(), LicenseGateCode.ValidCached);
 
     public async Task<LicenseGateResult> ValidateBeforeCreateStoreAsync(
         Marketplace marketplace, int currentStoreCount, int currentMarketplaceStoreCount, CancellationToken ct = default)
