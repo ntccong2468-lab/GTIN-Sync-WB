@@ -505,6 +505,7 @@ internal static class Program
                 }finally{app.Db.DeleteStore(oz.Id);}
             });
 
+            LabelJobUiTests.Run(Check,app,form,store);
         }
         finally { app.Db.DeleteStore(store.Id); }
         Console.WriteLine($"{checks - failures.Count}/{checks} UI regressions passed");
