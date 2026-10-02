@@ -41,43 +41,54 @@ public sealed partial class AppServices
     private async Task<(bool Ok, string Message)> SyncOrdersCoreAsync(StoreProfile store, CancellationToken ct)
     {
         var run = Db.StartSyncRun(store.Id, "fbs_orders");
+        var cached=Db.Orders(store.Id).Where(x=>x.Marketplace==store.Marketplace).ToArray();
+        var oldStates=Db.OrderRemoteStates(store.Id);
+        var members=store.Marketplace==Marketplace.Wildberries?Db.WbReceivedOrderIds(store.Id):Db.MarketplaceReceivedOrderIds(store);
+        var candidates=new OrderTruthService().Build(store,cached,members,oldStates).Orders
+            .Where(x=>x.State is not (OrderTruthState.Completed or OrderTruthState.Cancelled)).Select(x=>x.ExternalOrderId).ToArray();
+        var started=DateTimeOffset.UtcNow;
+        // Invalidate active cache before network I/O, including a failed queue refresh.
+        Db.UpsertOrderRemoteStates(store.Id,store.Marketplace,candidates.ToDictionary(id=>id,id=>
+            oldStates.TryGetValue(id,out var state)?state with{Complete=false}:new OrderRemoteState("","",false,started),StringComparer.Ordinal));
         try
         {
-            var rows = await Api.SyncFbsAsync(store, ct);
-            var written = await Task.Run(() => Db.UpsertOrders(store.Id, store.Marketplace, rows), ct);
-            if (store.Marketplace == Marketplace.Wildberries)
+            var rows=await Api.SyncFbsAsync(store,ct);
+            var written=await Task.Run(()=>Db.UpsertOrders(store.Id,store.Marketplace,rows),ct);
+            var returned=rows.GroupBy(x=>x.ExternalOrderId,StringComparer.Ordinal).ToDictionary(x=>x.Key,x=>x.First(),StringComparer.Ordinal);
+            if(store.Marketplace==Marketplace.Wildberries)
             {
-                var ids = rows.Select(x => x.ExternalOrderId).Distinct(StringComparer.Ordinal).ToArray();
-                var now = DateTimeOffset.UtcNow;
-                Db.UpsertOrderRemoteStates(store.Id, store.Marketplace,
-                    ids.ToDictionary(x => x, x => new OrderRemoteState(
-                        rows.First(r => r.ExternalOrderId == x).Status, "", false, now), StringComparer.Ordinal));
-                try
+                var ids=returned.Keys.Concat(candidates).Distinct(StringComparer.Ordinal).ToArray();
+                Db.UpsertOrderRemoteStates(store.Id,store.Marketplace,ids.ToDictionary(id=>id,id=>new OrderRemoteState("","",false,started),StringComparer.Ordinal));
+                var statuses=await Api.GetWbOrderStatusesAsync(store,ids,ct).ConfigureAwait(false);
+                var observed=DateTimeOffset.UtcNow;
+                Db.UpsertOrderRemoteStates(store.Id,store.Marketplace,statuses.ToDictionary(x=>x.Key,
+                    x=>new OrderRemoteState(x.Value.SupplierStatus,x.Value.WbStatus,true,observed),StringComparer.Ordinal));
+            }
+            else
+            {
+                var observed=DateTimeOffset.UtcNow;
+                Db.UpsertOrderRemoteStates(store.Id,store.Marketplace,returned.ToDictionary(x=>x.Key,x=>{
+                    var raw=JsonNode.Parse(x.Value.RawJson);var cancelled=raw?["cancelRequested"]?.ToString().Equals("true",StringComparison.OrdinalIgnoreCase)==true;
+                    return new OrderRemoteState(x.Value.Status,cancelled?"cancel_requested":"",!string.IsNullOrWhiteSpace(x.Value.Status),observed);
+                },StringComparer.Ordinal));
+                foreach(var id in candidates.Where(id=>!returned.ContainsKey(id)))
                 {
-                    var statuses = await Api.GetWbOrderStatusesAsync(store, ids, ct).ConfigureAwait(false);
-                    var observed = DateTimeOffset.UtcNow;
-                    Db.UpsertOrderRemoteStates(store.Id, store.Marketplace,
-                        statuses.ToDictionary(x => x.Key,
-                            x => new OrderRemoteState(x.Value.SupplierStatus, x.Value.WbStatus, true, observed),
-                            StringComparer.Ordinal));
-                }
-                catch (Exception ex) when (ex is not OperationCanceledException)
-                {
-                    var message = $"Đã lưu {written} dòng đơn nhưng trạng thái WB hiện tại chưa đầy đủ: {ex.Message}";
-                    Db.SaveSyncState(store.Id, "fbs_orders", "", "", "", message);
-                    Db.FinishSyncRun(run, false, rows.Count, written, message);
-                    return (false, message);
+                    ct.ThrowIfCancellationRequested();
+                    var snapshot=await Api.ReadMarketplaceFbsAsync(store,id,ct).ConfigureAwait(false);
+                    Db.UpsertOrders(store.Id,store.Marketplace,snapshot.Rows);
+                    Db.MarkOrderRemoteState(store.Id,store.Marketplace,id,snapshot.Rows[0].Status,
+                        snapshot.CancelRequested?"cancel_requested":"",true,DateTimeOffset.UtcNow);
                 }
             }
-            Db.SaveSyncState(store.Id, "fbs_orders", "", DateTimeOffset.UtcNow.AddDays(-30).ToString("O"), DateTimeOffset.UtcNow.ToString("O"), "");
-            Db.FinishSyncRun(run, true, rows.Count, written);
-            return (true, $"Đã đồng bộ {written} dòng đơn FBS và giữ lại trạng thái lịch sử trong cache.");
+            Db.SaveSyncState(store.Id,"fbs_orders","",DateTimeOffset.UtcNow.AddDays(-30).ToString("O"),DateTimeOffset.UtcNow.ToString("O"),"");
+            Db.FinishSyncRun(run,true,rows.Count,written);
+            return (true,$"Đã đồng bộ {written} dòng đơn FBS và đối soát các đơn đang xử lý trong cache.");
         }
-        catch (Exception ex)
+        catch(Exception ex)
         {
-            Db.SaveSyncState(store.Id, "fbs_orders", "", "", "", ex.Message);
-            Db.FinishSyncRun(run, false, 0, 0, ex.Message);
-            return (false, ex.Message);
+            var message="Chưa đồng bộ đủ trạng thái đơn hiện tại. Các đơn chưa đối soát được đánh dấu dữ liệu một phần. "+ex.Message;
+            Db.SaveSyncState(store.Id,"fbs_orders","","","",message);Db.FinishSyncRun(run,false,0,0,message);
+            return (false,message);
         }
     }
 

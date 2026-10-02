@@ -134,5 +134,7 @@ public sealed record WbReceiveResult(
     bool Created,
     int VerifiedMemberCount,
     IReadOnlyList<WbReceiveOrderResult> Orders,
-    string Message);
+    string Message,
+    DateTimeOffset? RetryAt = null,
+    string RetryEndpoint = "");
 public sealed record WbReceiveCheckpoint(string? SupplyId, string State, IReadOnlyList<string> MemberIds);

@@ -513,6 +513,9 @@ public sealed partial class MainForm : Form
         var orderTruth = BuildOrderTruth(store);
         var products = app.Db.Products(store.Id).Count;
         var kiz = app.Db.Kiz();
+        string TruthNote()=>orderTruth.IsAuthoritative
+            ? orderTruth.ObservedAt is { } at?$"Đã xác minh · {at.ToLocalTime():dd/MM HH:mm}":"Chưa có trạng thái đã xác minh"
+            : "Dữ liệu một phần · cần đồng bộ";
         var newCount = orderTruth.NewCount;
         var packCount = orderTruth.PackingCount;
         var shipCount = orderTruth.ShippingCount;
@@ -527,8 +530,8 @@ public sealed partial class MainForm : Form
         }
 
         AddMetric("Sản phẩm", products.ToString("N0"), "Hiện tại · " + MarketplaceName(store.Marketplace));
-        AddMetric("Đơn mới", newCount.ToString("N0"), orderTruth.IsAuthoritative ? "Hiện tại · Cần xử lý" : "Dữ liệu một phần · cần đồng bộ trạng thái");
-        AddMetric("Đang đóng gói", packCount.ToString("N0"), "Hiện tại · Đã xác nhận");
+        AddMetric("Đơn mới", newCount.ToString("N0"), TruthNote());
+        AddMetric("Đang đóng gói", packCount.ToString("N0"), TruthNote());
         AddMetric("KIZ sẵn sàng", kiz.Count(x => x.Status == "AVAILABLE").ToString("N0"), $"{kiz.Count:N0} mã trong kho");
 
         analyticsCard.Controls.Add(new Label { Text = "Phân tích đơn hàng", Left = 18, Top = 14, AutoSize = true, ForeColor = C.Text, Font = new Font("Segoe UI", 11, FontStyle.Bold) });
@@ -551,8 +554,8 @@ public sealed partial class MainForm : Form
             foreach (var control in overview.Controls.Cast<Control>().ToArray()) control.Dispose();
             overview.Controls.Clear();
             AddMetric("Sản phẩm", app.Db.Products(store.Id).Count.ToString("N0"), "Hiện tại · " + MarketplaceName(store.Marketplace));
-            AddMetric("Đơn mới", orderTruth.NewCount.ToString("N0"), orderTruth.IsAuthoritative ? "Hiện tại · Cần xử lý" : "Dữ liệu một phần · cần đồng bộ trạng thái");
-            AddMetric("Đang đóng gói", orderTruth.PackingCount.ToString("N0"), "Hiện tại · Đã xác nhận");
+            AddMetric("Đơn mới", orderTruth.NewCount.ToString("N0"), TruthNote());
+            AddMetric("Đang đóng gói", orderTruth.PackingCount.ToString("N0"), TruthNote());
             var pool = app.Db.Kiz();
             AddMetric("KIZ sẵn sàng", pool.Count(x => x.Status == "AVAILABLE").ToString("N0"), $"{pool.Count:N0} mã trong kho");
             var count = Math.Clamp((to.Value.Date - from.Value.Date).Days + 1, 1, 366);

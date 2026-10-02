@@ -42,6 +42,7 @@ internal static class Program
                 new FbsOrderRow(store.Id, Marketplace.Yandex, "1", "A", "Quần nam • A", 2, "PROCESSING/STARTED", false, "{\"creationDate\":\"2026-09-30\",\"items\":[{\"id\":2,\"offerId\":\"A\",\"count\":2}]}"),
                 new FbsOrderRow(store.Id, Marketplace.Yandex, "1", "B", "Quần nam • B", 1, "PROCESSING/STARTED", false, "{\"creationDate\":\"2026-09-30\",\"items\":[{\"id\":3,\"offerId\":\"B\",\"count\":1}]}")
             });
+        app.Db.MarkOrderRemoteState(store.Id,store.Marketplace,"1","PROCESSING/STARTED","");
         try
         {
             using var form = new MainForm(app);

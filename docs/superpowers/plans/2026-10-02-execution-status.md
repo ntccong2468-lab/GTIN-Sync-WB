@@ -30,3 +30,25 @@
 - Trước POST/PATCH lưu ý định và mã thao tác. Supply ID được lưu ngay khi server trả về, membership được lưu sau từng lần readback.
 - Nếu kết quả tạo shipment chưa rõ, chỉ nhận diện lại bằng tên chứa mã thao tác duy nhất. Không tìm thấy hoặc thấy nhiều kết quả thì giữ trạng thái cần đối soát và chặn POST mới.
 - Nếu đã giữ Supply ID, tiếp tục đúng supply sau khi đọc lại trạng thái/membership; shipment cũ hoặc đã đóng không nhận thêm đơn.
+
+## Rà soát cuối nhánh và lượt sửa
+
+Reviewer độc lập đã đọc `2eb7dfb..821084a`; không có Critical, có 8 Important. Test tái hiện ở remote `e2a058a`, RED đã xác nhận trên Windows regression `36965664915`/`36965670520`: cache New, mất journal, thiếu exact-target, mất deadline, NK quên mismatch, thiếu proof và packaging, FBO override. UI compile đã sửa.
+
+1. Important được xác nhận: helper UI không tồn tại làm suite không compile. Đổi sang handler async sẵn có trong test.
+2. Important được xác nhận: đồng bộ bỏ qua đơn active đã biến mất khỏi queue; đối soát cache theo endpoint từng sàn và đánh dấu chưa đủ dữ liệu trước mọi lượt refresh.
+3. Important được xác nhận: lỗi GET supply cũ có thể đóng journal. Giữ Supply ID trước request, chỉ terminal khi có bằng chứng trạng thái thật.
+4. Important được xác nhận: probe một đơn có thể mở rộng journal nhiều đơn. Thêm boundary exact-target bên trong semaphore nhận đơn.
+5. Important được xác nhận: NK Success toàn job không chứng minh mục tiêu đã chọn; lỗi size batch trước bị quên sau restart. Kiểm tra proof chính xác và tính kết quả từ trạng thái đã lưu.
+6. Important được xác nhận: NK thiếu kiểm tra cấp đóng gói/technical. Chỉ chấp nhận identifier trade-unit/multiplier 1 và explicit is_tech_gtin=false.
+7. Important được xác nhận: checkbox FBO có thể tắt KIZ bắt buộc. Khóa ô đã biết bắt buộc và bảo vệ cả boundary export.
+8. Important được xác nhận: Retry-After nhận WB chỉ ở memory. Migration bổ sung deadline/endpoint vào journal; restart không gọi lại trước deadline.
+
+Ruling: Chỉ một lượt sửa tập hợp sau review, mỗi lỗi có RED→GREEN và suite Windows đầy đủ — theo executing-plans — không gọi reviewer mới để tạo vòng lặp.
+Ruling: Bulk WB ghi thật tiếp tục chưa có UI cho đến khi thử một biến thể bằng API thật — ranh giới milestone đã duyệt — chi phí là seller chưa chạy bulk trong bản preview.
+Minor về thời điểm dữ liệu: hiển thị timestamp quan sát đã xác minh cùng nhãn một phần; không dùng chữ “Hiện tại” đơn độc cho cache.
+
+- Lượt sửa đang chờ GREEN: đối soát active cache cả WB/Ozon/Yandex; quan sát từ xa bắt buộc cho projection, không suy diễn cache là current. Fixtures UI dùng quan sát explicit.
+- Deadline nhận WB lưu additive `retry_at`/`retry_endpoint`; khi quota xảy ra không thực hiện các readback tiếp theo. Test quota reset nhịp memory sau scenario để tránh ảnh hưởng scenario kế tiếp.
+- Proof National Catalog revision 2 giữ cấp trade-unit, multiplier 1 và nontechnical explicit. Kết quả resumed job được tính trên proof đã lưu cho toàn snapshot, không dựa counter trong memory.
+- Test Center kiểm tra proof đúng store/scope/SKU/variant/GTIN/size ở cả mở gate và trước mutation; journal nhiều đơn bị chặn bên trong semaphore dù seller chỉ chọn một đơn.

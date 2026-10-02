@@ -4,7 +4,7 @@ using MarketplaceHub.Core;
 namespace MarketplaceHub.Infrastructure;
 
 public sealed record WbSupplySummary(string Id,string Name,DateTimeOffset CreatedAt,bool Done,int? OrderCount);
-public sealed record WbReceiveOperation(string OperationId,string? SupplyId,string Name,string State,IReadOnlySet<string> OrderIds);
+public sealed record WbReceiveOperation(string OperationId,string? SupplyId,string Name,string State,IReadOnlySet<string> OrderIds,DateTimeOffset? RetryAt=null,string RetryEndpoint="");
 
 public sealed partial class AppDatabase
 {
@@ -24,6 +24,10 @@ CREATE TABLE IF NOT EXISTS wb_receive_journal(
 CREATE INDEX IF NOT EXISTS ix_wb_receive_journal_pending ON wb_receive_journal(store_id,state,order_id);
 CREATE TABLE IF NOT EXISTS wb_kiz_reservations(code TEXT PRIMARY KEY,store_id INTEGER NOT NULL,order_id TEXT NOT NULL,gtin TEXT NOT NULL,status TEXT NOT NULL,updated_at TEXT NOT NULL,UNIQUE(store_id,order_id));";
         cmd.ExecuteNonQuery();
+        var columns=new HashSet<string>();using(var info=c.CreateCommand()){info.CommandText="PRAGMA table_info(wb_receive_journal)";using var rows=info.ExecuteReader();while(rows.Read())columns.Add(rows.GetString(1));}
+        foreach(var column in new[]{("retry_at","TEXT NULL"),("retry_endpoint","TEXT NOT NULL DEFAULT ''")})if(!columns.Contains(column.Item1)){
+            using var add=c.CreateCommand();add.CommandText="ALTER TABLE wb_receive_journal ADD COLUMN "+column.Item1+" "+column.Item2;add.ExecuteNonQuery();
+        }
     }
 
     public void BeginWbReceiveOperation(long storeId,string operationId,IEnumerable<string> orderIds,string? supplyId,string name)
@@ -43,18 +47,18 @@ VALUES($s,$op,$id,$supply,$name,'INTENT',$at) ON CONFLICT(store_id,operation_id,
     {
         var selected=orderIds.ToHashSet(StringComparer.Ordinal);
         using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
-        cmd.CommandText="SELECT operation_id,order_id,supply_id,name,state FROM wb_receive_journal WHERE store_id=$s AND state!='DONE' ORDER BY updated_at DESC";
+        cmd.CommandText="SELECT operation_id,order_id,supply_id,name,state,retry_at,retry_endpoint FROM wb_receive_journal WHERE store_id=$s AND state!='DONE' ORDER BY updated_at DESC";
         cmd.Parameters.AddWithValue("$s",storeId);
-        var operations=new Dictionary<string,(string? Supply,string Name,string State,HashSet<string> Ids)>(StringComparer.Ordinal);
+        var operations=new Dictionary<string,(string? Supply,string Name,string State,HashSet<string> Ids,DateTimeOffset? RetryAt,string Endpoint)>(StringComparer.Ordinal);
         using var row=cmd.ExecuteReader();while(row.Read()) {
             var op=row.GetString(0);
-            if(!operations.TryGetValue(op,out var data))data=(row.IsDBNull(2)?null:row.GetString(2),row.GetString(3),row.GetString(4),new(StringComparer.Ordinal));
+            if(!operations.TryGetValue(op,out var data))data=(row.IsDBNull(2)?null:row.GetString(2),row.GetString(3),row.GetString(4),new(StringComparer.Ordinal),row.IsDBNull(5)?null:DateTimeOffset.Parse(row.GetString(5)),row.GetString(6));
             data.Ids.Add(row.GetString(1));operations[op]=data;
         }
         var matches=operations.Where(x=>x.Value.Ids.Overlaps(selected)).ToArray();
         if(matches.Length>1)throw new InvalidOperationException("Các đơn thuộc nhiều thao tác nhận chưa hoàn tất. Mở từng shipment để đối soát riêng.");
         if(matches.Length==0)return null;
-        var match=matches[0];return new(match.Key,match.Value.Supply,match.Value.Name,match.Value.State,match.Value.Ids);
+        var match=matches[0];return new(match.Key,match.Value.Supply,match.Value.Name,match.Value.State,match.Value.Ids,match.Value.RetryAt,match.Value.Endpoint);
     }
 
     public void SaveWbReceiveOperation(long storeId,string operationId,string? supplyId,string state,IEnumerable<string> verifiedIds)
@@ -84,9 +88,13 @@ ON CONFLICT(store_id,order_id) DO UPDATE SET updated_at=$at WHERE supply_id=$sup
 
     public void FinishWbReceiveOperation(long storeId,string operationId,WbReceiveResult result)
     {
-        var terminal=result.Success||result.SupplyId is null&&result.Orders.All(x=>x.Disposition is WbReceiveDisposition.Cancelled or WbReceiveDisposition.Rejected);
+        var terminal=result.Success||result.SupplyId is null&&result.Orders.Count>0&&result.Orders.All(x=>x.RemoteStatus is not null&&(x.Disposition is WbReceiveDisposition.Cancelled or WbReceiveDisposition.Rejected));
         SaveWbReceiveOperation(storeId,operationId,result.SupplyId,terminal?"DONE":"RECONCILE_REQUIRED",result.Orders.Where(x=>x.Verified).Select(x=>x.OrderId));
         using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();
+        using(var retry=c.CreateCommand()){
+            retry.Transaction=tx;retry.CommandText="UPDATE wb_receive_journal SET retry_at=$retry,retry_endpoint=$endpoint WHERE store_id=$s AND operation_id=$op";
+            retry.Parameters.AddWithValue("$s",storeId);retry.Parameters.AddWithValue("$op",operationId);retry.Parameters.AddWithValue("$retry",(object?)result.RetryAt?.ToString("O")??DBNull.Value);retry.Parameters.AddWithValue("$endpoint",result.RetryEndpoint);retry.ExecuteNonQuery();
+        }
         foreach(var order in result.Orders) {
             using var cmd=c.CreateCommand();cmd.Transaction=tx;cmd.CommandText="UPDATE wb_receive_journal SET disposition=$d,detail=$detail WHERE store_id=$s AND operation_id=$op AND order_id=$id";
             cmd.Parameters.AddWithValue("$s",storeId);cmd.Parameters.AddWithValue("$op",operationId);cmd.Parameters.AddWithValue("$id",order.OrderId);cmd.Parameters.AddWithValue("$d",order.Disposition.ToString());cmd.Parameters.AddWithValue("$detail",order.Message);cmd.ExecuteNonQuery();

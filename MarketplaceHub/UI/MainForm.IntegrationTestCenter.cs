@@ -106,7 +106,7 @@ public sealed class IntegrationTestCenterDialog : Form
             }else if(ready){var page=await app.Api.ReadProductCatalogPageAsync(profile,"",lifetime.Token);Log($"Catalog · đọc {page.Entries.Count} sản phẩm / {page.Entries.Sum(x=>x.Variants.Count)} biến thể ở trang đầu.");}
             if(nationalKey.Text.Length>0){
                 var result=await app.SyncZnackGtinAsync(profile,new(nationalKey.Text,"",sandbox.Checked),lifetime.Token);Log("National Catalog · "+result.Message);
-                if(chosen?.Variant is not null)ready&=result.Success;
+                if(chosen?.Variant is { } selected)ready&=app.IsZnackTargetVerified(profile,new(nationalKey.Text,"",sandbox.Checked),selected);
             }else if(chosen?.Variant is not null){ready=false;Log("Nhập API key National Catalog để xác minh GTIN trước thao tác ghi thử.");}
             lifetime.Token.ThrowIfCancellationRequested();if(ready&&signature==Signature())verifiedSignature=signature;
             Log(verifiedSignature.Length>0?"Kiểm tra chỉ đọc đạt. Chọn xác nhận để mở đúng thao tác thử đã chọn.":"Chưa mở thao tác ghi. Kiểm tra thông tin cửa hàng, mapping hoặc credential rồi thử lại.");
@@ -120,6 +120,8 @@ public sealed class IntegrationTestCenterDialog : Form
         var profile=ReadProfile();SetBusy(true);
         try{
             if(chosen.Variant is { } variant){
+                if(!app.IsZnackTargetVerified(profile,new(nationalKey.Text,"",sandbox.Checked),variant))
+                    throw new InvalidOperationException("National Catalog chưa xác minh mục tiêu hiện tại. Kiểm tra chỉ đọc lại trước khi ghi.");
                 if(!app.Db.ConfirmedGtinMappings(profile).TryGetValue((variant.Sku,variant.VariantId),out var currentGtin)||currentGtin!=variant.Gtin)
                     throw new InvalidOperationException("Mapping đã thay đổi sau khi kiểm tra. Xác minh lại trước khi ghi.");
                 app.QueueWbGtinWritebackForVariant(profile,variant.Sku,variant.VariantId);
@@ -128,7 +130,7 @@ public sealed class IntegrationTestCenterDialog : Form
                 var supplies=await app.Api.GetWbTodaySuppliesAsync(profile,lifetime.Token);
                 using var chooser=new WbShipmentDialog(1,supplies);if(chooser.ShowDialog(this)!=DialogResult.OK)return;
                 var rows=app.Db.Orders(store.Id).Where(x=>x.ExternalOrderId==chosen.OrderId&&x.Marketplace==Marketplace.Wildberries).ToArray();
-                var result=await app.ReceiveWbOrdersAsync(profile,rows,chooser.Choice,lifetime.Token);Log($"WB · nhận đơn {chosen.OrderId} · Supply ID {result.SupplyId} · {result.Message}");
+                var result=await app.ReceiveWbProbeOrderAsync(profile,rows,chooser.Choice,lifetime.Token);Log($"WB · nhận đơn {chosen.OrderId} · Supply ID {result.SupplyId} · {result.Message}");
                 Log("Mở Đang đóng gói → shipment này để tự gán KIZ và xuất nhãn.");
             }
         }catch(OperationCanceledException){Log("Đã dừng; checkpoint được giữ để đối soát trước khi thử lại.");}catch(Exception){Log("Thao tác chưa được xác minh. Đối soát checkpoint hiện tại trước khi chọn lượt thử khác.");}

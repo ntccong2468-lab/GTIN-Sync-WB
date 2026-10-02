@@ -61,6 +61,7 @@ await Check("WB receive Retry-After survives restart and prevents recovery calls
         return Json("{\"id\":\"QUOTA-SUPPLY\",\"name\":\"quota\",\"done\":false,\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}");
     });
     var first=await app.ReceiveWbOrdersAsync(store,rows,new(null,"new"));
+    typeof(MarketplaceGateway).GetField("wbLabelNotBefore",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,default(DateTimeOffset));
     var db=new MarketplaceHub.Infrastructure.AppDatabase(app.Db.DbPath);var pending=db.RecoverableWbReceive(store.Id,new[]{"821"});
     Expect(!first.Success&&pending is not null&&pending.GetType().GetProperty("RetryAt")?.GetValue(pending) is DateTimeOffset at&&at>DateTimeOffset.UtcNow,"WB quota deadline was not durable.");
     var calls=0;var api=new MarketplaceGateway((_,_)=>Task.CompletedTask);typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(api,new HttpClient(new FixtureHttp(_=>{calls++;throw new Exception("Retry deadline bypassed");})));
@@ -177,9 +178,9 @@ await Check("Ozon and Yandex batch membership uses projection without WB semanti
         var store=new StoreProfile(9100+(int)marketplace,marketplace,marketplace.ToString(),"","","","","",true);
         var status=marketplace==Marketplace.Ozon?"awaiting_packaging":"PROCESSING/STARTED";
         var rows=new[]{new FbsOrderRow(store.Id,marketplace,"B-1","SKU","Áo",1,status,false,"{}")};
-        var service=new OrderTruthService();
-        Expect(service.Build(store,rows,new HashSet<string>(),new Dictionary<string,OrderRemoteState>()).NewCount==1,"Queue mới của "+marketplace+" không được nhận diện.");
-        Expect(service.Build(store,rows,new HashSet<string>{"B-1"},new Dictionary<string,OrderRemoteState>()).Orders.Single().State==OrderTruthState.InShipment,"Membership của "+marketplace+" bị áp quy tắc WB.");
+        var service=new OrderTruthService();var observed=new Dictionary<string,OrderRemoteState>{{"B-1",new(status,"",true,DateTimeOffset.UtcNow)}};
+        Expect(service.Build(store,rows,new HashSet<string>(),observed).NewCount==1,"Queue mới của "+marketplace+" không được nhận diện.");
+        Expect(service.Build(store,rows,new HashSet<string>{"B-1"},observed).Orders.Single().State==OrderTruthState.InShipment,"Membership của "+marketplace+" bị áp quy tắc WB.");
     }
     return Task.CompletedTask;
 });

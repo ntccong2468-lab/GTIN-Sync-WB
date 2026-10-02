@@ -1,5 +1,6 @@
 using MarketplaceHub.Core;
 using Microsoft.Data.Sqlite;
+using System.Text.Json.Nodes;
 
 namespace MarketplaceHub.Infrastructure;
 
@@ -152,6 +153,22 @@ ON CONFLICT(store_id,marketplace,sku,variant_id) DO UPDATE SET
  metadata_json=CASE WHEN gtin_mapping.gtin=$g THEN $json ELSE gtin_mapping.metadata_json END,
  last_error=CASE WHEN gtin_mapping.gtin=$g THEN $error ELSE 'Mapping thay đổi trong lúc đồng bộ; cần kiểm tra lại.' END,updated_at=$at";
         MappingParameters(cmd,store,target.Sku,target.VariantId,target.Gtin);cmd.Parameters.AddWithValue("$confirmed",confirmed?1:0);cmd.Parameters.AddWithValue("$good",goodId);cmd.Parameters.AddWithValue("$stage",stage);cmd.Parameters.AddWithValue("$json",metadata);cmd.Parameters.AddWithValue("$error",error);cmd.ExecuteNonQuery();tx.Commit();
+    }
+
+    public bool HasZnackTargetProof(StoreProfile store,GtinSyncTarget target)
+    {
+        using var c=new SqliteConnection(ConnectionString);c.Open();using var cmd=c.CreateCommand();
+        cmd.CommandText=@"SELECT m.metadata_json FROM gtin_mapping m JOIN product_variants v
+ ON v.store_id=m.store_id AND v.marketplace=m.marketplace AND v.sku=m.sku AND v.variant_id=m.variant_id
+ WHERE m.store_id=$s AND m.marketplace=$m AND m.sku=$sku AND m.variant_id=$v AND m.gtin=$g AND m.archived=0
+ AND m.znack_stage='PUBLISHED' AND m.znack_good_id!='' AND v.active=1 AND v.external_id=$external AND v.size=$size";
+        MappingParameters(cmd,store,target.Sku,target.VariantId,target.Gtin);cmd.Parameters.AddWithValue("$external",target.ExternalId);cmd.Parameters.AddWithValue("$size",target.Size);
+        var json=cmd.ExecuteScalar()?.ToString();if(json is null)return false;
+        try{
+            var proof=JsonNode.Parse(json);
+            return proof?["Revision"]?.ToString()=="2"&&proof?["Gtin"]?.ToString()==target.Gtin&&proof?["UnitLevel"]?.ToString()=="trade-unit"&&proof?["Multiplier"]?.ToString()=="1"
+                &&proof?["IsTechnical"] is JsonValue value&&value.TryGetValue<bool>(out var technical)&&!technical;
+        }catch(System.Text.Json.JsonException){return false;}
     }
 
     public void MarkWbGtinState(StoreProfile store,GtinSyncTarget target,string state,string error="")

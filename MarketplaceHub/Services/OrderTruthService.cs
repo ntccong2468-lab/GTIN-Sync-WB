@@ -18,12 +18,12 @@ public sealed class OrderTruthService
         {
             var lines = group.ToArray();
             var hasRemote = remoteStates.TryGetValue(group.Key, out var remote);
-            var authoritative = store.Marketplace != Marketplace.Wildberries || hasRemote && remote!.Complete;
+            var authoritative = hasRemote && remote!.Complete;
             var state = Classify(store.Marketplace, lines, shipmentMembers.Contains(group.Key), remote, authoritative);
             result.Add(new(group.Key, store.Marketplace, state, lines, authoritative, hasRemote ? remote!.ObservedAt : null));
         }
 
-        var observed = result.Where(x => x.ObservedAt.HasValue).Select(x => x.ObservedAt!.Value).DefaultIfEmpty().Min();
+        var observed = result.Where(x => x.IsAuthoritative && x.ObservedAt.HasValue).Select(x => x.ObservedAt!.Value).DefaultIfEmpty().Min();
         return new(result, result.All(x => x.IsAuthoritative), observed == default ? null : observed);
     }
 
@@ -41,7 +41,7 @@ public sealed class OrderTruthService
         if (IsCancelled(supplier) || IsCancelled(platform) || lines.Any(x => IsCancelled(x.Status)))
             return OrderTruthState.Cancelled;
 
-        if (marketplace == Marketplace.Wildberries && !authoritative)
+        if (!authoritative)
             return OrderTruthState.Unknown;
 
         if (supplier.Equals("complete", StringComparison.OrdinalIgnoreCase))

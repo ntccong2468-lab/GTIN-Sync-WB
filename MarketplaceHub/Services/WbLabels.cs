@@ -187,7 +187,7 @@ public sealed partial class MarketplaceGateway
             var wait = wbLabelNotBefore - DateTimeOffset.UtcNow;
             if (wait > TimeSpan.Zero)
             {
-                if (wait > TimeSpan.FromMinutes(5)) throw new InvalidOperationException($"WB giới hạn API. Hãy thử lại sau {Math.Ceiling(wait.TotalSeconds)} giây.");
+                if (wait > TimeSpan.FromMinutes(5)) throw new GtinQuotaException(endpoint,wait);
                 await wbLabelDelay(wait, ct).ConfigureAwait(false);
             }
             ct.ThrowIfCancellationRequested();
@@ -207,7 +207,7 @@ public sealed partial class MarketplaceGateway
             if (response.Headers.RetryAfter?.Delta is TimeSpan delta) seconds = Math.Max(seconds, delta.TotalSeconds);
             if (response.Headers.RetryAfter?.Date is DateTimeOffset at) seconds = Math.Max(seconds, (at - DateTimeOffset.UtcNow).TotalSeconds);
             wbLabelNotBefore = DateTimeOffset.UtcNow.AddSeconds(Math.Min(seconds, 86400));
-            if (attempt >= 3 || seconds > 300) throw new InvalidOperationException($"WB HTTP 429. Hãy thử lại sau {Math.Ceiling(seconds)} giây; app đã dừng các yêu cầu còn lại.");
+            if (attempt >= 3 || seconds > 300) throw new GtinQuotaException(endpoint,wbLabelNotBefore-DateTimeOffset.UtcNow);
             progress?.Report($"WB giới hạn API: chờ {Math.Ceiling(seconds)} giây rồi thử lại ({attempt + 1}/3)…");
         }
     }

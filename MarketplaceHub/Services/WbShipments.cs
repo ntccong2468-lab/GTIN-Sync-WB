@@ -102,7 +102,7 @@ public sealed partial class MarketplaceGateway
         var outcomes = selected.ToDictionary(x => x.ExternalOrderId,
             x => new WbReceiveOrderResult(x.ExternalOrderId, WbReceiveDisposition.Rejected, false, "Chưa kiểm tra trạng thái WB."),
             StringComparer.Ordinal);
-        string? supplyId = null;
+        string? supplyId = existingSupplyId;
         var created = false;
         var creating = false;
         if (selected.Length == 0)
@@ -248,7 +248,9 @@ public sealed partial class MarketplaceGateway
                 ? creating ? "Kết quả tạo shipment chưa rõ. Kiểm tra danh sách shipment hôm nay trước khi tạo lại. " : ""
                 : $"Shipment {supplyId} được giữ lại; đã xác nhận {verified}/{usable} đơn hợp lệ. Tiếp tục từ shipment này, không tạo lại. ";
             return new(false, supplyId, created, verified, OrderedOutcomes(selected, outcomes),
-                detail + (ex is OperationCanceledException ? "Tác vụ đã dừng; chưa tiếp tục KIZ/nhãn." : ex.Message));
+                detail + (ex is OperationCanceledException ? "Tác vụ đã dừng; chưa tiếp tục KIZ/nhãn." : ex.Message),
+                ex is GtinQuotaException quota ? DateTimeOffset.UtcNow + (quota.Delay < TimeSpan.Zero ? TimeSpan.Zero : quota.Delay) : null,
+                ex is GtinQuotaException limited ? limited.Endpoint : "");
         }
         finally { wbLabelGate.Release(); }
     }

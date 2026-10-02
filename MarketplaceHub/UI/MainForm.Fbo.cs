@@ -6,6 +6,13 @@ namespace MarketplaceHub.UI;
 
 public sealed partial class MainForm
 {
+    private static FboPreparationRow ResolveFboSelection(DataGridViewRow row)
+    {
+        if(!int.TryParse(row.Cells["quantity"].Value?.ToString(),out var quantity)||quantity is < 1 or > 10000)throw new InvalidOperationException("Số lượng phải từ 1 đến 10000.");
+        var source=(FboPreparationRow)row.Tag;
+        return source with{Quantity=quantity,NeedsKiz=source.NeedsKiz||row.Cells["marked"].Value is true};
+    }
+
     private void ShowFboPacking()
     {
         ClearWork();activePage=ShowFboPacking;
@@ -44,9 +51,9 @@ public sealed partial class MainForm
             else info.Text=$"{source.Length} biến thể · Chọn ‘Cần KIZ’ theo yêu cầu sản phẩm của bạn.";
             foreach(var item in source){var p=item.Row;if(pending is null&&q.Length>0&&!$"{p.Sku} {p.Name} {p.Size}".Contains(q,StringComparison.OrdinalIgnoreCase))continue;
                 var key=p.Sku+"\n"+p.VariantId;keep.TryGetValue(key,out var previous);
-                var index=grid.Rows.Add(pending is not null||previous.Selected,null,p.Name,p.Sku,p.Color,p.Size,p.Barcode,previous.Quantity??p.Quantity,(object?)previous.Marked??p.NeedsKiz,
+                var index=grid.Rows.Add(pending is not null||previous.Selected,null,p.Name,p.Sku,p.Color,p.Size,p.Barcode,previous.Quantity??p.Quantity,p.NeedsKiz||(previous.Marked is true),
                     pool.Count(x=>x.Gtin==GtinCode.Normalize(p.Barcode)&&x.Status=="AVAILABLE"&&x.Assigned.Length==0));
-                var row=grid.Rows[index];row.Tag=p;row.Height=72;if(pending is not null)row.ReadOnly=true;
+                var row=grid.Rows[index];row.Tag=p;row.Height=72;row.Cells["marked"].ReadOnly=p.NeedsKiz;if(pending is not null)row.ReadOnly=true;
                 if(item.ImageUrl.Length>0)_=LoadImageAsync(grid,index,1,item.ImageUrl);
             }
         }
@@ -57,9 +64,7 @@ public sealed partial class MainForm
             if(store is null)return;if(!await printOperations.WaitAsync(0,token))return;export.Enabled=false;
             try{
                 grid.EndEdit();var pending=app.Db.PendingFboPreparation(store);
-                var rows=pending?.Rows??grid.Rows.Cast<DataGridViewRow>().Where(x=>x.Cells[0].Value is true).Select(x=>{
-                    if(!int.TryParse(x.Cells["quantity"].Value?.ToString(),out var quantity)||quantity is < 1 or > 10000)throw new InvalidOperationException("Số lượng phải từ 1 đến 10000.");
-                    return ((FboPreparationRow)x.Tag) with{Quantity=quantity,NeedsKiz=x.Cells["marked"].Value is true};}).ToArray();
+                var rows=pending?.Rows??grid.Rows.Cast<DataGridViewRow>().Where(x=>x.Cells[0].Value is true).Select(ResolveFboSelection).ToArray();
                 if(rows.Count==0)throw new InvalidOperationException("Chưa chọn biến thể.");
                 if(rows.Any(x=>x.Barcode.Length==0||x.NeedsKiz&&GtinCode.Normalize(x.Barcode).Length==0))throw new InvalidOperationException("Barcode mơ hồ hoặc thiếu GTIN hợp lệ. Sửa mapping đúng biến thể trước khi in.");
                 var bundle=await Task.Run(()=>{

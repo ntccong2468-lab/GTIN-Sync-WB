@@ -100,12 +100,22 @@ public sealed class GtinMappingSyncService(AppDatabase db,MarketplaceGateway api
         }finally{gate.Release();}
     }
 
+    private static string NationalScope(StoreProfile store,NationalCatalogAccess access)=>Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ProductCatalog.Scope(store)+"\n"+access.Sandbox+"\n"+(access.ApiKey.Length>0?access.ApiKey:access.Token))));
+
+    public bool IsZnackTargetVerified(StoreProfile store,NationalCatalogAccess access,GtinSyncTarget target)
+    {
+        var job=db.GetGtinSyncJob(store,"ZNACK_PRODUCT");
+        if(job is null||job.State!="COMPLETE"||job.Scope!=NationalScope(store,access))return false;
+        var targets=JsonSerializer.Deserialize<GtinSyncTarget[]>(job.SnapshotJson)??Array.Empty<GtinSyncTarget>();
+        return targets.Contains(target)&&db.HasZnackTargetProof(store,target);
+    }
+
     public async Task<PriceUpdateResult> SyncZnackGtinAsync(StoreProfile store,NationalCatalogAccess access,CancellationToken ct=default,IProgress<string>? progress=null)
     {
         if(string.IsNullOrWhiteSpace(access.ApiKey)&&string.IsNullOrWhiteSpace(access.Token))return new(false,"Nhập API key National Catalog hoặc xác thực chứng thư Znack trước khi đồng bộ.");
         var gate=Gate(store);await gate.WaitAsync(ct).ConfigureAwait(false);
         try{
-            var scope=Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(ProductCatalog.Scope(store)+"\n"+access.Sandbox+"\n"+(access.ApiKey.Length>0?access.ApiKey:access.Token))));
+            var scope=NationalScope(store,access);
             var job=db.GetGtinSyncJob(store,"ZNACK_PRODUCT");
             if(job?.RetryAt is { } until&&until>DateTimeOffset.UtcNow)return new(false,$"National Catalog yêu cầu chờ đến {until.ToLocalTime():HH:mm:ss}. Checkpoint đã giữ.");
             if(job is not null&&job.State!="COMPLETE"&&job.Scope!=scope)return new(false,"Tài khoản National Catalog đã thay đổi. Đối soát checkpoint cũ trước khi dùng credential mới.");
@@ -115,7 +125,6 @@ public sealed class GtinMappingSyncService(AppDatabase db,MarketplaceGateway api
                 job=new(scope,JsonSerializer.Serialize(targets.Where(x=>GtinCode.Normalize(x.Gtin)==x.Gtin&&x.Gtin.Length>0)),0,"QUEUED",null,"");db.SaveGtinSyncJob(store,"ZNACK_PRODUCT",job);
             }
             var groups=(JsonSerializer.Deserialize<GtinSyncTarget[]>(job.SnapshotJson)??Array.Empty<GtinSyncTarget>()).GroupBy(x=>x.Gtin).OrderBy(x=>x.Key,StringComparer.Ordinal).Select(x=>x.ToArray()).ToArray();
-            var failed=0;
             try{
                 while(job.Cursor<groups.Length){
                     ct.ThrowIfCancellationRequested();var batch=groups.Skip(job.Cursor).Take(25).ToArray();progress?.Report($"National Catalog · GTIN {job.Cursor+1}–{job.Cursor+batch.Length}/{groups.Length}");
@@ -136,11 +145,15 @@ public sealed class GtinMappingSyncService(AppDatabase db,MarketplaceGateway api
                             var card=matches.Length==1?matches[0]:null;var status=card?["good_status"]?.ToString()??"";var goodId=card?["good_id"]?.ToString()??"";
                             var size=(card?["good_attrs"] as JsonArray)?.FirstOrDefault(x=>x?["attr_id"]?.ToString()=="35")?["attr_value"]?.ToString()??"";
                             var mismatch=size.Length>0&&target.Size.Length>0&&!size.Trim().Equals(target.Size.Trim(),StringComparison.OrdinalIgnoreCase);
-                            var published=card is not null&&goodId.Length>0&&status=="published"&&card["is_tech_gtin"]?.ToString().Equals("true",StringComparison.OrdinalIgnoreCase)!=true&&!mismatch;
-                            var stage=published?"PUBLISHED":mismatch?"VARIANT_MISMATCH":card is null?"NOT_FOUND":status.Length>0?status.ToUpperInvariant():"UNKNOWN";
-                            var error=published?"":mismatch?"Size National Catalog không khớp biến thể. Kiểm tra mapping.":"Chưa có đúng một card published với GTIN này.";
-                            if(!published)failed++;
-                            var metadata=JsonSerializer.Serialize(new{Gtin=target.Gtin,GoodId=goodId,Status=status,Size=Safe(size,store,access),Name=Safe(card?["good_name"]?.ToString()??"",store,access)});
+                            var identifier=(card?["identified_by"] as JsonArray)?.Where(x=>x?["type"]?.ToString()=="gtin"&&GtinCode.Normalize(x?["value"]?.ToString())==target.Gtin).ToArray()??Array.Empty<JsonNode?>();
+                            var unit=identifier.Length==1&&identifier[0]?["level"]?.ToString()=="trade-unit"&&identifier[0]?["multiplier"]?.ToString()=="1";
+                            var nontechnical=card?["is_tech_gtin"] is JsonValue technical&&technical.TryGetValue<bool>(out var isTechnical)&&!isTechnical;
+                            if(!long.TryParse(goodId,out var numericId)||numericId<=0)goodId="";
+                            var published=card is not null&&goodId.Length>0&&status=="published"&&nontechnical&&unit&&!mismatch;
+                            var stage=published?"PUBLISHED":mismatch?"VARIANT_MISMATCH":card is null?"NOT_FOUND":!unit?"UNIT_REQUIRED":!nontechnical?"TECHNICAL_UNKNOWN":"UNPUBLISHED";
+                            var error=published?"":mismatch?"Size National Catalog không khớp biến thể. Kiểm tra mapping.":"Cần đúng một GTIN trade-unit, multiplier 1, nontechnical và card published.";
+                            var metadata=JsonSerializer.Serialize(new{Revision=2,Gtin=target.Gtin,GoodId=goodId,Status=Safe(status,store,access),Size=Safe(size,store,access),
+                                UnitLevel=unit?"trade-unit":"",Multiplier=unit?1:0,IsTechnical=!nontechnical,Name=Safe(card?["good_name"]?.ToString()??"",store,access)});
                             db.ObserveZnackGtin(store,target,goodId,stage,published,metadata,error);
                         }
                     }
@@ -149,6 +162,7 @@ public sealed class GtinMappingSyncService(AppDatabase db,MarketplaceGateway api
                     db.SaveGtinSyncJob(store,"ZNACK_PRODUCT",job);if(job.State=="RATE_LIMIT")return new(false,"National Catalog đã chạm quota. Giữ checkpoint và tiếp tục sau 5 phút.");
                 }
                 if(groups.Length==0){db.SaveGtinSyncJob(store,"ZNACK_PRODUCT",job with{State="COMPLETE"});return new(false,"Chưa có GTIN hợp lệ để đồng bộ. Seller cần xác nhận mapping theo size.");}
+                var failed=groups.SelectMany(x=>x).Count(x=>!db.HasZnackTargetProof(store,x));
                 return new(failed==0,failed==0?$"Đã xác minh {groups.Length} GTIN với National Catalog.":$"Đã đọc National Catalog; {failed} biến thể cần kiểm tra trạng thái/size. Mapping đã xác nhận được giữ nguyên.");
             }catch(GtinQuotaException ex){db.SaveGtinSyncJob(store,"ZNACK_PRODUCT",job with{State="RATE_LIMIT",RetryAt=DateTimeOffset.UtcNow+Nonnegative(ex.Delay),LastError=ex.Message});return new(false,ex.Message);}
             catch(OperationCanceledException){db.SaveGtinSyncJob(store,"ZNACK_PRODUCT",job with{LastError="Đã dừng; tiếp tục từ checkpoint hiện tại."});return new(false,"Đã dừng đồng bộ National Catalog. Mapping đã xác nhận được giữ.");}
@@ -176,6 +190,7 @@ public sealed class GtinMappingSyncService(AppDatabase db,MarketplaceGateway api
 
 public sealed partial class AppServices
 {
+    public bool IsZnackTargetVerified(StoreProfile store,NationalCatalogAccess access,GtinSyncTarget target)=>new GtinMappingSyncService(Db,Api,znakHttp).IsZnackTargetVerified(store,access,target);
     public void QueueWbGtinWritebackForVariant(StoreProfile store,string sku,string variantId)=>new GtinMappingSyncService(Db,Api,znakHttp).QueueWbGtinWritebackForVariant(store,sku,variantId);
     public void QueueWbGtinWriteback(StoreProfile store)=>new GtinMappingSyncService(Db,Api,znakHttp).QueueWbGtinWriteback(store);
     public Task<PriceUpdateResult> ResumeWbGtinWritebackAsync(StoreProfile store,CancellationToken ct=default)=>new GtinMappingSyncService(Db,Api,znakHttp).ResumeWbGtinWritebackAsync(store,ct);
