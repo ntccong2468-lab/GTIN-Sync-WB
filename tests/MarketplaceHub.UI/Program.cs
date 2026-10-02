@@ -127,6 +127,8 @@ internal static class Program
                 Page(form,"ShowReport");Application.DoEvents();
                 var label=All(form).OfType<Label>().Single(x=>x.Text=="Đơn mới");
                 Expect(label.Parent!.Controls.OfType<Label>().Any(x=>x.Text=="1"),"Report did not render the canonical distinct count.");
+                var chart=All(form).Single(x=>x.GetType().Name=="ReportBarChart");var values=(double[])chart.GetType().GetProperty("Values")!.GetValue(chart)!;
+                Expect(values.Sum()==1,"Report chart counted product lines instead of distinct external orders.");
             });
             Check("KIZ Mapping exposes page controls and per-state inventory",()=>{
                 Page(form,"ShowKizMapping");Application.DoEvents();
