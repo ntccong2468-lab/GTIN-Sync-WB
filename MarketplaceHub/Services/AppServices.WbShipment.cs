@@ -85,11 +85,14 @@ public sealed partial class AppServices
 
     public async Task<IReadOnlyList<FbsOrderRow>> ReadWbSupplyOrdersAsync(StoreProfile store,string supplyId,CancellationToken ct=default)
     {
+        var generation=Db.StoreGeneration(store.Id);
         var ids=await Api.GetWbSupplyOrderIdsAsync(store,supplyId,ct).ConfigureAwait(false);
+        if(!Db.StoreGenerationMatches(store.Id,generation))throw new InvalidOperationException("store_deleted");
         Db.StoreWbSupplyMembership(store.Id,supplyId,ids);
         var local=Db.Orders(store.Id).Where(x=>x.Marketplace==Marketplace.Wildberries).ToDictionary(x=>x.ExternalOrderId,StringComparer.Ordinal);
         if(ids.Any(id=>!local.ContainsKey(id))) {
             var synced=await SyncOrdersAsync(store,ct).ConfigureAwait(false);
+            if(!Db.StoreGenerationMatches(store.Id,generation))throw new InvalidOperationException("store_deleted");
             ct.ThrowIfCancellationRequested();
             if(!synced.Ok)Db.Audit("FBS WB","Chưa tải đủ chi tiết shipment",synced.Message);
             local=Db.Orders(store.Id).Where(x=>x.Marketplace==Marketplace.Wildberries).ToDictionary(x=>x.ExternalOrderId,StringComparer.Ordinal);
@@ -97,6 +100,7 @@ public sealed partial class AppServices
         var missing=ids.Where(id=>!local.ContainsKey(id)).ToArray();
         foreach(var id in missing)local[id]=new(store.Id,Marketplace.Wildberries,id,"","Chưa tải được chi tiết sản phẩm · đồng bộ lại đơn",0,"unknown",true,"{\"unresolved\":true}");
         var statuses=await Api.GetWbOrderStatusesAsync(store,ids,ct).ConfigureAwait(false);
+        if(!Db.StoreGenerationMatches(store.Id,generation))throw new InvalidOperationException("store_deleted");
         var rows=ids.Select(id=>{
             var order=local[id];var raw=JsonNode.Parse(order.RawJson)??new JsonObject();raw["supplyId"]=supplyId;raw["wbStatus"]=statuses[id].WbStatus;
             return order with{Status=statuses[id].SupplierStatus,RawJson=raw.ToJsonString()};

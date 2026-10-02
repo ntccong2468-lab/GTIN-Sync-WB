@@ -38,7 +38,7 @@ ON order_remote_states(store_id,marketplace,observed_at DESC);";
             cmd.Transaction = tx;
             cmd.CommandText = @"INSERT INTO order_remote_states(
 store_id,marketplace,external_order_id,supplier_status,marketplace_status,is_complete,observed_at)
-VALUES($s,$m,$o,$supplier,$platform,$complete,$at)
+SELECT $s,$m,$o,$supplier,$platform,$complete,$at WHERE EXISTS(SELECT 1 FROM stores WHERE id=$s)
 ON CONFLICT(store_id,marketplace,external_order_id) DO UPDATE SET
  supplier_status=$supplier,marketplace_status=$platform,is_complete=$complete,observed_at=$at";
             cmd.Parameters.AddWithValue("$s", storeId);
