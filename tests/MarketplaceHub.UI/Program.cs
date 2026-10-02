@@ -50,6 +50,17 @@ internal static class Program
                 if (picker.Items[i] is StoreProfile s && s.Id == store.Id) picker.SelectedIndex = i;
             form.Show();
             Application.DoEvents();
+            Check("WB mixed receive dialog shows retained supply and one outcome per order",()=>{
+                var type=typeof(MainForm).Assembly.GetType("MarketplaceHub.UI.WbReceiveResultDialog");
+                Expect(type is not null,"WB per-order outcome dialog is missing.");
+                var result=new WbReceiveResult(true,"SUPPLY-UI",true,1,new[]{
+                    new WbReceiveOrderResult("301",WbReceiveDisposition.EligibleNew,true,"Đã thêm"),
+                    new WbReceiveOrderResult("302",WbReceiveDisposition.Cancelled,false,"Khách đã hủy")},"Đã xử lý");
+                using var dialog=(Form)Activator.CreateInstance(type!,result)!;
+                var grid=All(dialog).OfType<DataGridView>().Single(x=>x.Name=="wbReceiveOutcomes");
+                Expect(All(dialog).Any(x=>x.Name=="wbReceiveSupplyId"&&x.Text.Contains("SUPPLY-UI")),"Retained Supply ID is hidden.");
+                Expect(grid.Rows.Count==2&&grid.Rows.Cast<DataGridViewRow>().Any(x=>x.Cells[1].Value?.ToString()=="Khách đã hủy"),"Mixed outcomes were collapsed into one batch result.");
+            });
             Check("Ozon diagnostics keeps the real API key masked and declares read-only mode", () =>
             {
                 var ozon = new StoreProfile(999, Marketplace.Ozon, "fixture", "client", "top-secret", "", "", "", true);

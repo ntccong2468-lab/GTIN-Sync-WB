@@ -14,6 +14,17 @@ HttpResponseMessage Json(string body)=>new(HttpStatusCode.OK){Content=new String
 void Http(Func<HttpRequestMessage,HttpResponseMessage> response){typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,new HttpClient(new FixtureHttp(response)));typeof(MarketplaceGateway).GetField("wbLabelDelay",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,(Func<TimeSpan,CancellationToken,Task>)((_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;}));}
 string Posting(string status="awaiting_packaging",bool required=false)=>System.Text.Json.JsonSerializer.Serialize(new{result=new{posting_number="P",status,requirements=new{products_requiring_mandatory_mark=required?new[]{100}:Array.Empty<int>()},products=new[]{new{sku=100,offer_id="A",quantity=2,name="A"},new{sku=200,offer_id="B",quantity=1,name="B"}}}});
 try {
+await Check("WB receive journal survives restart and retains its resolved supply",()=>{
+    var begin=app.Db.GetType().GetMethod("BeginWbReceiveOperation");
+    Expect(begin is not null,"WB receive intent is not durable before the remote write.");
+    var store=Store(Marketplace.Wildberries);var operation="op-"+Guid.NewGuid().ToString("N");
+    begin!.Invoke(app.Db,new object?[]{store.Id,operation,new[]{"201","202"},null,"MarketplaceHub recovery"});
+    app.Db.GetType().GetMethod("SaveWbReceiveOperation")!.Invoke(app.Db,new object[]{store.Id,operation,"SUPPLY-RECOVERY","PATCH_PENDING",Array.Empty<string>()});
+    var reopened=new MarketplaceHub.Infrastructure.AppDatabase(app.Db.DbPath);
+    var pending=reopened.GetType().GetMethod("RecoverableWbReceive")!.Invoke(reopened,new object[]{store.Id,new[]{"201","202"}});
+    Expect(pending is not null&&pending.GetType().GetProperty("SupplyId")!.GetValue(pending)?.ToString()=="SUPPLY-RECOVERY","Restart lost the resolved shipment.");
+    return Task.CompletedTask;
+});
 await Check("Canonical truth counts one posting with several lines once",()=>{
     var store=new StoreProfile(9001,Marketplace.Wildberries,"WB","","","","","",true);
     var rows=new[]{
