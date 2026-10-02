@@ -50,6 +50,20 @@ public sealed partial class AppDatabase
     {
         using var c = WorkflowConnection(); return ReadPurchase(c, null, id);
     }
+    public PurchaseIntent? PurchaseForJob(PurchaseIntentRequest request)
+    {
+        using var c = WorkflowConnection(); using var cmd = WfSql(c, null, "SELECT id FROM kiz_purchase_intents WHERE job_id=$j AND revision=$r AND profile_id=$p AND environment=$e AND gtin=$g", ("$j", request.JobId), ("$r", request.Revision), ("$p", request.Profile.Id), ("$e", request.Profile.Environment), ("$g", request.Gtin));
+        return cmd.ExecuteScalar() is string id ? ReadPurchase(c, null, id) : null;
+    }
+    public PurchaseIntent? BlockingPurchase(SuzProfile profile, string gtin, string? exceptIntent = null)
+    {
+        using var c = WorkflowConnection(); using var cmd = WfSql(c, null, "SELECT id FROM kiz_purchase_intents WHERE gtin=$g AND (($o=owner_inn AND $e=environment) OR (store_id=$s AND owner_inn='' AND environment='Unknown')) AND stage NOT IN('CodesRecovered','Rejected') AND id<>COALESCE($id,'') ORDER BY created_at,id LIMIT 1", ("$g", gtin), ("$o", profile.OwnerInn), ("$e", profile.Environment), ("$s", profile.StoreId), ("$id", exceptIntent));
+        return cmd.ExecuteScalar() is string id ? ReadPurchase(c, null, id) : null;
+    }
+    public bool PurchaseHasConflicts(string intentId)
+    {
+        using var c = WorkflowConnection(); using var cmd = WfSql(c, null, "SELECT COUNT(*) FROM kiz_codes_scoped WHERE intent_id=$i AND conflict=1", ("$i", intentId)); return Convert.ToInt64(cmd.ExecuteScalar()) > 0;
+    }
     private static PurchaseIntent? ReadPurchase(SqliteConnection c, SqliteTransaction? tx, string id)
     {
         using var cmd = WfSql(c, tx, "SELECT request_json,request_key,stage,remote_order_id,retry_at,error_code FROM kiz_purchase_intents WHERE id=$id", ("$id", id)); using var row = cmd.ExecuteReader();
@@ -96,9 +110,13 @@ public sealed partial class AppDatabase
         var intent = ReadPurchase(c, tx, intentId); if (intent is null) return;
         if (intent.RemoteOrderId != block.OrderId || intent.Request.Gtin != block.Gtin || string.IsNullOrWhiteSpace(block.BlockId)) throw new InvalidOperationException("block_scope_mismatch");
         var rawJson = JsonSerializer.Serialize(block.Codes); var evidenceHash = protector.Identity(rawJson);
-        using var previous = WfSql(c, tx, "SELECT evidence_hash FROM kiz_purchase_blocks WHERE intent_id=$i AND block_id=$b", ("$i", intentId), ("$b", block.BlockId));
-        if (previous.ExecuteScalar() is string old && old != evidenceHash) throw new InvalidOperationException("block_evidence_changed");
-        using var save = WfSql(c, tx, "INSERT OR IGNORE INTO kiz_purchase_blocks VALUES($i,$b,$o,$g,$raw,$h)", ("$i", intentId), ("$b", block.BlockId), ("$o", block.OrderId), ("$g", block.Gtin), ("$raw", protector.Protect(rawJson)), ("$h", evidenceHash)); save.ExecuteNonQuery();
+        using var previous = WfSql(c, tx, "SELECT evidence_hash,codes_enc FROM kiz_purchase_blocks WHERE intent_id=$i AND block_id=$b", ("$i", intentId), ("$b", block.BlockId));
+        using (var row = previous.ExecuteReader())
+        {
+            if (row.Read() && row.GetString(0) != evidenceHash && JsonSerializer.Deserialize<string[]>(protector.Unprotect(row.GetString(1)))!.Length != 0)
+                throw new InvalidOperationException("block_evidence_changed");
+        }
+        using var save = WfSql(c, tx, "INSERT INTO kiz_purchase_blocks VALUES($i,$b,$o,$g,$raw,$h) ON CONFLICT(intent_id,block_id) DO UPDATE SET codes_enc=excluded.codes_enc,evidence_hash=excluded.evidence_hash", ("$i", intentId), ("$b", block.BlockId), ("$o", block.OrderId), ("$g", block.Gtin), ("$raw", protector.Protect(rawJson)), ("$h", evidenceHash)); save.ExecuteNonQuery();
         if (PurchaseAuthorizationMatches(c, tx, intentId))
         {
             foreach (var code in block.Codes)
