@@ -1,7 +1,7 @@
 # FBS/KIZ execution status
 
 Approved plan: 2026-10-02-fbs-kiz-label-jobs.md. Base: 1dc0d757.
-Feature branch: feat/fbs-kiz-label-jobs. Code tasks completed: 1/6.
+Feature branch: feat/fbs-kiz-label-jobs. Code tasks completed: 2/6.
 Baseline: cd1d59a, Windows run 37066694838: 196/196 checks passed. Live seller API: not run. Installer: disabled.
 
 Execution decisions: sparse shallow checkout preserves original Git object SHAs; Windows Actions runs exact-SHA RED/GREEN because this execution host lacks dotnet/WinForms. No historical test result counts as evidence for this branch.
@@ -15,4 +15,5 @@ Task 1 GREEN: bb7864b, run 37068480854: 12/12 persistence acceptance checks; exi
 Deferred within this plan: isolate old SelfTest from the seller DB as part of Task 6 portable acceptance; portable remains blocked until that check passes.
 
 Task 2 RED: bc39ec1, run 37068952244: missing new SUZ transport interfaces. Initial GREEN: 4dad543, run 37069501672, 25/25 workflows.
-Additional RED: 97506cd, run 37069848924, 25/27: wrong-GTIN order status and duplicate conflicting True API legal proof reproduced. Corrective GREEN pending.
+Additional RED: 97506cd, run 37069848924, 25/27: wrong-GTIN order status and duplicate conflicting True API legal proof reproduced.
+Task 2 GREEN: 4d2e1a1, run 37070102275, workflow job 111047288148: 27/27. Structured outcomes, exact signed JSON, safe-read backoff, persisted quota deadlines, block identity checks, CryptoPro output draining and exact True API CIS mapping implemented. Old purchase helpers remain until Task 4 replaces their entry points; this interim branch is not a portable release.
