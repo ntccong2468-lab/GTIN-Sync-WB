@@ -54,6 +54,11 @@ public static class TransportTests
             var result = await f.Client.ReceiveCodesAsync(f.Intent with { RemoteOrderId = "SUZ-1" }, 2, default);
             Expect(result.Kind == SuzOutcomeKind.Unknown, "Wrong order's block accepted");
         });
+        await r.CheckAsync("wrong_gtin_status_cannot_authorize_receive", async () => {
+            using var f = new TransportFixture(_ => SuzFixtureHttp.Json("[{\"orderId\":\"SUZ-1\",\"gtin\":\"04601234567886\",\"bufferStatus\":\"ACTIVE\",\"availableCodes\":2}]"));
+            var result = await f.Client.ReadOrderAsync(f.Intent with { RemoteOrderId = "SUZ-1" }, default);
+            Expect(result.Kind == SuzOutcomeKind.Unknown, "Wrong GTIN status authorized a stateful read");
+        });
         await r.CheckAsync("true_api_maps_requested_cis_exactly_not_array_position", async () => {
             using var f = new TransportFixture(_ => SuzFixtureHttp.Json(JsonSerializer.Serialize(new[] {
                 new { requestedCis = "010460123456789321OTHER-SERIAL", cisInfo = new { status = "INTRODUCED", statusEx = "EMPTY", gtin = WorkflowFixture.Gtin, ownerInn = "7701234567", packageType = "UNIT" } },
