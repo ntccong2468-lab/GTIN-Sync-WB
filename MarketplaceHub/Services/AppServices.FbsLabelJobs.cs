@@ -11,13 +11,13 @@ public sealed partial class AppServices
     public KizPurchaseCoordinator WorkflowPurchases {get;private set;}=null!;
     private void InitializeLabelWorkflows(FbsWorkflowDependencies? dependencies)
     {
-        var clock=dependencies?.Clock??new WorkflowClock();ISuzClient client;IKizLegalReader legal;
+        var clock=dependencies?.Clock??new WorkflowClock();workflowClock=clock;ISuzClient client;IKizLegalReader legal;
         if(dependencies is not null){client=dependencies.SuzClient;legal=dependencies.LegalReader;if(dependencies.CodeProtector is not null)Db.ConfigureWorkflowCodeProtector(dependencies.CodeProtector);}
         else{var http=new HttpClient(new HttpClientHandler{AllowAutoRedirect=false});var policy=new OperationPolicy(clock,httpClient:http);var suz=new SuzHttpClient(http,new CryptoProSuzSigner(),profile=>{
             if(Db.ZnakCredentialVersion()!=profile.CredentialVersion||Db.SuzProfileForStore(profile.StoreId)!=profile||!Db.Stores().Any(x=>x.Id==profile.StoreId))throw new InvalidOperationException("credential_version_changed");return Db.GetZnakConfig();},policy,clock);client=suz;legal=new TrueApiKizReader(suz,policy,http,clock,Db.CodeProtector);}
         WorkflowPurchases=new(Db,client,clock);WorkflowEligibility=new(Db,legal,clock);LabelJobs=new(Db,m=>new FbsLabelAdapter(this,m),WorkflowPurchases,WorkflowEligibility,License,new(),clock);
     }
-    public Task<LabelJobResult> ExportFbsLabelsAsync(LabelTarget target,IProgress<LabelJobResult>? progress=null,CancellationToken ct=default)=>LabelJobs.StartOrResumeAsync(target,progress,ct);
+    public Task<LabelJobResult> ExportFbsLabelsAsync(LabelTarget target,IProgress<LabelJobResult>? progress=null,CancellationToken ct=default)=>RunLabelWorker(target,(observer,token)=>LabelJobs.StartOrResumeAsync(target,observer,token),progress,ct);
     internal void RequireWorkflowAuthorization(FbsWorkflowContext context,bool requireActive=true)
     {if(!License.CanRunFbsWorkflow().Allowed||!Db.WorkflowAuthorizationMatches(context,requireActive))throw new InvalidOperationException("workflow_authorization_required");}
     internal string ResolveWorkflowMarketplaceGtin(StoreProfile store,MarketplaceFbsItem item)
