@@ -71,6 +71,14 @@ public static class TransportTests
             using var f = new TransportFixture(_ => new(HttpStatusCode.OK) { Content = new StringContent("{\"orderId\":\"SUZ-1\"}", Encoding.UTF8, "text/html") });
             var result = await f.Client.CreateOrderAsync(f.Intent, default); Expect(result.Kind == SuzOutcomeKind.Unknown, "Unexpected content type accepted");
         });
+        await r.CheckAsync("conflicting_duplicate_true_api_rows_confer_no_legal_proof", async () => {
+            using var f = new TransportFixture(_ => SuzFixtureHttp.Json(JsonSerializer.Serialize(new[] {
+                new { requestedCis = "010460123456789321SERIAL0000001", cisInfo = new { status = "INTRODUCED", statusEx = "EMPTY", gtin = WorkflowFixture.Gtin, ownerInn = "7701234567", packageType = "UNIT" } },
+                new { requestedCis = "010460123456789321SERIAL0000001", cisInfo = new { status = "RETIRED", statusEx = "EMPTY", gtin = WorkflowFixture.Gtin, ownerInn = "7701234567", packageType = "UNIT" } } })));
+            var reader = new TrueApiKizReader(f.Client, f.Policy, f.Http, f.Clock, f.Db.CodeProtector);
+            var proofs = await reader.ReadAsync(f.Profile, new[] { WorkflowFixture.Raw }, default);
+            Expect(proofs.Count == 0, "Ambiguous duplicate statuses conferred legal proof");
+        });
     }
     private sealed class TransportFixture : IDisposable
     {
