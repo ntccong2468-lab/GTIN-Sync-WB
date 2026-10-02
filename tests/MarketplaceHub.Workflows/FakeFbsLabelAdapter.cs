@@ -12,6 +12,7 @@ public sealed class FakeFbsLabelAdapter : IFbsLabelAdapter
     public Dictionary<FbsUnitKey,string> Assigned=new();
     public int MutationCalls,Downloads,Reads;
     public bool LoseAttach,OneLabelOnly,BarcodeOnly;
+    public HashSet<FbsUnitKey> PackedUnits=new();
     public Func<Task>? BeforeMutation,BeforeRead;
     private readonly string folder;
     public FakeFbsLabelAdapter(LabelJobSnapshot snapshot,string folder){Snapshot=snapshot;this.folder=folder;}
@@ -21,8 +22,10 @@ public sealed class FakeFbsLabelAdapter : IFbsLabelAdapter
     {
         MutationCalls++;if(BeforeMutation is not null)await BeforeMutation();if(LoseAttach)throw new HttpRequestException("lost attach response");
         foreach(var pair in codes)Assigned[pair.Key]=pair.Value;
-        return c.Snapshot.Units.Select(x=>new UnitWorkflowResult(x.Unit,"Verified",null,null)).ToArray();
+        foreach(var group in c.Snapshot.Units.GroupBy(x=>x.Unit.OrderId).Where(g=>g.All(x=>!x.RequiresKiz||codes.ContainsKey(x.Unit))))foreach(var unit in group)PackedUnits.Add(unit.Unit);
+        return c.Snapshot.Units.Where(x=>PackedUnits.Contains(x.Unit)).Select(x=>new UnitWorkflowResult(x.Unit,"Verified",null,null)).ToArray();
     }
+    public Task<IReadOnlyList<FbsUnitKey>> ReadCompletedUnitsAsync(FbsWorkflowContext context,CancellationToken ct)=>Task.FromResult<IReadOnlyList<FbsUnitKey>>(PackedUnits.ToArray());
     public Task<IReadOnlyList<VerifiedLabel>> DownloadLabelsAsync(FbsWorkflowContext c,IReadOnlyList<FbsUnitKey> eligible,CancellationToken ct)
     {
         Downloads++;var result=new List<VerifiedLabel>();foreach(var group in c.Snapshot.Units.GroupBy(x=>x.Unit.OrderId)){

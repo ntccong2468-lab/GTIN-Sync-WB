@@ -21,7 +21,12 @@ public static class CoordinatorTests
             using var f=CoordinatorFixture.Create();f.Stock();f.Physical();f.Adapter.LoseAttach=true;var first=await f.Run();var code=f.Db.ReserveScopedKiz(f.Context,f.Context.Snapshot.Units).Values.First();
             f.Adapter.LoseAttach=false;var resumed=await f.Coordinator.ResumeAsync(first.JobId,null,default);Expect(resumed.Stage==FbsLabelJobStage.NeedsReconciliation&&f.Adapter.MutationCalls==1&&f.Db.ReserveScopedKiz(f.Context,f.Context.Snapshot.Units).Values.First()==code,"Lost response replaced/re-attached code");
             foreach(var pair in f.Db.ReserveScopedKiz(f.Context,f.Context.Snapshot.Units))f.Adapter.Assigned[pair.Key]=pair.Value;
+            foreach(var unit in f.Context.Snapshot.Units)f.Adapter.PackedUnits.Add(unit.Unit);
             var recovered=await f.Coordinator.ResumeAsync(first.JobId,null,default);Expect(recovered.Stage==FbsLabelJobStage.LabelsReady&&f.Adapter.MutationCalls==1,"Readback did not recover without mutation");
+        });
+        await r.CheckAsync("code_readback_does_not_prove_remote_packing",async()=>{
+            using var f=CoordinatorFixture.Create();f.Stock();f.Physical();f.Adapter.LoseAttach=true;var first=await f.Run();foreach(var pair in f.Db.ReserveScopedKiz(f.Context,f.Context.Snapshot.Units))f.Adapter.Assigned[pair.Key]=pair.Value;
+            var resumed=await f.Coordinator.ResumeAsync(first.JobId,null,default);Expect(resumed.Stage==FbsLabelJobStage.NeedsReconciliation&&f.Adapter.Downloads==0&&f.Adapter.MutationCalls==1,"Code readback implied packing or repeated uncertain mutation");
         });
         foreach(var change in new[]{"quantity","mapping","requirement"})await r.CheckAsync("remote_snapshot_change_"+change,async()=>{
             using var f=CoordinatorFixture.Create();f.Stock();f.Physical();var s=f.Adapter.Snapshot;

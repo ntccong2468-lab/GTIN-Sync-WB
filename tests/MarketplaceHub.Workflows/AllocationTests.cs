@@ -12,6 +12,7 @@ public static class AllocationTests
             var scopes = new[] { new KizScope(f.Store.Id, "9999999999", "Production"), new KizScope(f.Store.Id, f.Profile.OwnerInn, "Sandbox"), new KizScope(0, f.Profile.OwnerInn, "Production") };
             for (var i=0;i<scopes.Length;i++) { try { f.Db.ImportScopedKiz(scopes[i], WorkflowFixture.Raw.Replace("SERIAL0000001", "OTHER0000000"+i), "Scan"); } catch(InvalidOperationException) { } }
             Expect(f.Db.ReserveScopedKiz(context, f.Snapshot.Units).Count==0, "Allocation crossed owner/environment/store");
+            f.Db.ImportScopedKiz(new(f.Store.Id,f.Profile.OwnerInn,f.Profile.Environment),"010460123456799421OTHER00000004\u001d91ABCD\u001d92TAIL","Scan");
             f.Db.ImportScopedKiz(new(f.Store.Id,f.Profile.OwnerInn,f.Profile.Environment),WorkflowFixture.Raw,"Scan");
             var held=f.Db.ReserveScopedKiz(context,f.Snapshot.Units); Expect(held.Count==1 && held.Values.Single()==WorkflowFixture.Raw,"Correct scoped stock unavailable");
             return Task.CompletedTask;
