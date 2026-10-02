@@ -24,6 +24,7 @@ jobs:
       - name: License add-store gates
         run: dotnet run --project tests/MarketplaceHub.License -c Release
       - name: Stateful Ozon and Yandex mock API
+        if: always()
         run: dotnet run --project tests/MarketplaceHub.MockApi -c Release
       - name: UI navigation and layout
         if: always()
