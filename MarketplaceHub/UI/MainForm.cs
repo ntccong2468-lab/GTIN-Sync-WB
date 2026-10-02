@@ -132,6 +132,7 @@ public sealed partial class MainForm : Form
         AddSide(menu, "⌁  Ánh xạ KIZ", ShowKizMapping);
         AddSide(menu, "▣  Đăng ký Znack", ShowZnakRegistration);
         AddSide(menu, "◇  Cấu hình Znack", ShowZnakSettings);
+        AddSide(menu, "⌕  Kiểm tra tích hợp", ShowIntegrationTestCenter);
 
         var printHistory = DarkOutline("◷  Lịch sử in", 238);
         printHistory.Left = 13; printHistory.Anchor = AnchorStyles.Left | AnchorStyles.Bottom;

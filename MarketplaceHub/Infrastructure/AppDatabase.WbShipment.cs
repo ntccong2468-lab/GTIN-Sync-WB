@@ -124,14 +124,15 @@ FROM wb_supplies s WHERE s.store_id=$store AND s.done=$done ORDER BY s.created_a
     public void StoreWbSupplyMembership(long storeId,string supplyId,IEnumerable<string> ids)
     {
         using var c=new SqliteConnection(ConnectionString);c.Open();using var tx=c.BeginTransaction();
-        using(var clear=c.CreateCommand()) {
-            clear.Transaction=tx;clear.CommandText="DELETE FROM wb_supply_orders WHERE store_id=$s AND supply_id=$supply";
-            clear.Parameters.AddWithValue("$s",storeId);clear.Parameters.AddWithValue("$supply",supplyId);clear.ExecuteNonQuery();
-        }
         foreach(var id in ids.Distinct()) {
+            using(var conflict=c.CreateCommand()){
+                conflict.Transaction=tx;conflict.CommandText="SELECT COUNT(*) FROM wb_supply_orders WHERE store_id=$s AND order_id=$o AND supply_id!=$p";
+                conflict.Parameters.AddWithValue("$s",storeId);conflict.Parameters.AddWithValue("$o",id);conflict.Parameters.AddWithValue("$p",supplyId);
+                if(Convert.ToInt32(conflict.ExecuteScalar())>0)throw new InvalidOperationException("WB trả đơn đã có shipment khác trong dữ liệu đã xác minh. Dừng để đối soát; không di chuyển membership.");
+            }
             using var cmd=c.CreateCommand();cmd.Transaction=tx;
             cmd.CommandText=@"INSERT INTO wb_supply_orders(store_id,order_id,supply_id,updated_at) VALUES($s,$o,$p,$at)
-ON CONFLICT(store_id,order_id) DO UPDATE SET supply_id=$p,updated_at=$at";
+ON CONFLICT(store_id,order_id) DO UPDATE SET updated_at=$at WHERE wb_supply_orders.supply_id=$p";
             cmd.Parameters.AddWithValue("$s",storeId);cmd.Parameters.AddWithValue("$o",id);cmd.Parameters.AddWithValue("$p",supplyId);cmd.Parameters.AddWithValue("$at",DateTimeOffset.UtcNow.ToString("O"));cmd.ExecuteNonQuery();
         }
         tx.Commit();

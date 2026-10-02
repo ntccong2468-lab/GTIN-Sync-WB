@@ -7,8 +7,8 @@
 - Nhiệm vụ 3 đã triển khai: nhật ký nhận đơn, phục hồi và dialog kết quả. RED `36959052332`; Windows xác nhận 24/24 FbsState (kể cả phục hồi không POST/PATCH trùng) và test dialog xanh tại `74a5d46`. Suite UI còn test FBO đỏ của nhiệm vụ 4.
 - Nhiệm vụ 4 hoàn tất: RED `74a5d46`, GREEN `ece45c9` trên Windows run `36960714781`: 13/13 Print, 31/31 UI, 24/24 FbsState. Nhãn chuẩn bị theo biến thể, số lượng, màu và KIZ; nhật ký FBO giữ mã khi lỗi.
 - Nhiệm vụ 5 hoàn tất: RED `36960836857`; GREEN nhiệm vụ 5 tại `275a1f7`, 26/26 FbsState, 32/32 UI. Test mapping được cách ly khỏi mã KIZ của scenario quyền sở hữu phía sau.
-- Nhiệm vụ 6 đang xác minh: RED `36961760258` (thiếu builder full-size) và `36961842055` (thiếu pipeline). Có mock 51 card, batch 50/1, 429, restart, readback sai; National Catalog 25 GTIN/request với checkpoint riêng.
-- Nhiệm vụ 7 chưa hoàn tất: Trung tâm kiểm tra.
+- Nhiệm vụ 6 hoàn tất: GREEN `52e57ab` run `36962953337`: 9/9 ProductSync, 26/26 MockApi, 26/26 FbsState, 13/13 Print, 32/32 UI. Mock 51 card chứng minh batch 50/1, 429, restart, readback sai; NK 25 GTIN/request/checkpoint riêng và metadata được che credential.
+- Nhiệm vụ 7 đang xác minh: RED `36963378571`/`36963679346` cho Trung tâm kiểm tra, single-target writeback và membership không được xóa khi refresh thiếu. Có preview Windows portable riêng; installer bị tắt kể cả manual dispatch.
 
 ## Các quyết định thực thi
 
@@ -22,6 +22,8 @@
 - Ảnh tham chiếu 041438/062902/062912 chưa khôi phục được từ ngữ cảnh/file; không tuyên bố độ giống hình ảnh 100%. Tiếp tục theo cấu trúc và hành vi WCode đã xác minh bằng nguồn công khai.
 - WCode công khai: `rupphi/relatest-wcode` phát hành 1.1.66; `test-wcode` chỉ có nguồn 1.1.32, `source-wcode` trả 404. Không gán nguồn cũ là nguồn 1.1.66. Pipeline dùng contract trong spec cùng tài liệu WB/National Catalog hiện tại.
 - WB chỉ thêm GTIN vào skus, giữ barcode hiện có và đầy đủ sizes; đọc card mới trước mọi retry rồi đọc lại từng size sau ghi. Metadata National Catalog chỉ lưu các trường cần thiết đã che secret, không lưu response thô.
+- TestCenter chỉ mở ghi sau read-only, đúng một mục tiêu và checkbox xác nhận; credential thay đổi làm mất xác minh. Nhận WB chỉ nhận đơn đã chọn, rồi seller vào shipment để KIZ/in; probe GTIN từ chối tiếp tục một job khác đang pending.
+- Nhiệm vụ 7: suite dùng SQLite fixture riêng trong thư mục temp, không dùng database cửa hàng của người chạy test. Membership WB chỉ bổ sung/đối soát, không xóa thành viên đã xác minh từ phản hồi thiếu.
 
 ## Quy tắc phục hồi nhận đơn
 

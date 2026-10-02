@@ -17,6 +17,8 @@ jobs:
         run: dotnet run --project tests/MarketplaceHub.Contracts -c Release
       - name: Ozon and Yandex FBS contracts
         run: dotnet run --project tests/MarketplaceHub.Fbs -c Release
+      - name: Product and GTIN synchronization contracts
+        run: dotnet run --project tests/MarketplaceHub.ProductSync -c Release
       - name: Persistent FBS recovery
         run: dotnet run --project tests/MarketplaceHub.FbsState -c Release
       - name: License add-store gates
@@ -28,6 +30,11 @@ jobs:
         env:
           MARKETPLACE_SCREENSHOTS: ${{ github.workspace }}/screenshots
         run: dotnet run --project tests/MarketplaceHub.UI -c Release
+      - name: Label and picking PDF regressions
+        if: always()
+        env:
+          MARKETPLACE_PRINT_SAMPLES: ${{ github.workspace }}/print-samples
+        run: dotnet run --project tests/MarketplaceHub.Print -c Release
       - uses: actions/upload-artifact@v4
         if: always()
         with:

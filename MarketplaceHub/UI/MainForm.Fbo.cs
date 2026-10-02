@@ -20,12 +20,13 @@ public sealed partial class MainForm
         var grid=DarkGrid();grid.Name="fboPreparation";grid.Dock=DockStyle.Fill;grid.ReadOnly=false;
         grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;
         grid.Columns.Add(new DataGridViewCheckBoxColumn{Name="selected",HeaderText="☐",Width=40});
-        grid.Columns.Add(new DataGridViewImageColumn{Name="image",HeaderText="Ảnh",Width=65,ReadOnly=true,ImageLayout=DataGridViewImageCellLayout.Zoom});
-        foreach(var col in new[]{("name","Sản phẩm",210),("sku","SKU",130),("color","Màu",95),("size","Size",60),("barcode","GTIN / Barcode",155)})
+        grid.Columns.Add(new DataGridViewImageColumn{Name="image",HeaderText="Ảnh",Width=60,ReadOnly=true,ImageLayout=DataGridViewImageCellLayout.Zoom,DefaultCellStyle=new DataGridViewCellStyle{NullValue=null}});
+        foreach(var col in new[]{("name","Sản phẩm",160),("sku","SKU",100),("color","Màu",70),("size","Size",50),("barcode","GTIN / Barcode",150)})
             grid.Columns.Add(new DataGridViewTextBoxColumn{Name=col.Item1,HeaderText=col.Item2,Width=col.Item3,ReadOnly=true});
         grid.Columns.Add(new DataGridViewTextBoxColumn{Name="quantity",HeaderText="Số lượng",Width=85});
         grid.Columns.Add(new DataGridViewCheckBoxColumn{Name="marked",HeaderText="Cần KIZ",Width=75});
         grid.Columns.Add(new DataGridViewTextBoxColumn{Name="available",HeaderText="KIZ sẵn sàng",Width=110,ReadOnly=true});card.Controls.Add(grid);
+        grid.Columns["quantity"].DisplayIndex=1;grid.Columns["selected"].Frozen=true;grid.Columns["quantity"].Frozen=true;
         void Load(){
             var keep=grid.Rows.Cast<DataGridViewRow>().Where(x=>x.Tag is FboPreparationRow).ToDictionary(x=>((FboPreparationRow)x.Tag).Sku+"\n"+((FboPreparationRow)x.Tag).VariantId,
                 x=>(Selected:x.Cells["selected"].Value is true,Quantity:x.Cells["quantity"].Value,Marked:x.Cells["marked"].Value));

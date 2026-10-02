@@ -80,6 +80,16 @@ internal static class Program
                 var consent=All(dialog).OfType<CheckBox>().Single(x=>x.Name=="liveMutationConfirmed");var mutation=All(dialog).OfType<Button>().Single(x=>x.Name=="runLiveMutation");
                 Expect(!consent.Checked&&!mutation.Enabled&&All(dialog).Any(x=>x.Name=="readOnlyIntegrationWarning"&&x.Text.Contains("chỉ đọc")),"Live panel enables remote writes by default.");
                 consent.Checked=true;Expect(!mutation.Enabled,"Consent without a selected verified target enabled mutation.");
+                var http=typeof(MarketplaceGateway).GetField("http",instance)!;var old=http.GetValue(app.Api);
+                try{
+                    http.SetValue(app.Api,new HttpClient(new FixtureHttp(_=>new HttpResponseMessage(HttpStatusCode.BadRequest){Content=new StringContent("{\"echo\":\"private-wb-token\"}")})));
+                    Pump((Task)type!.GetMethod("RunReadOnlyAsync",instance)!.Invoke(dialog,null)!);
+                    var output=All(dialog).OfType<TextBox>().Single(x=>x.Name=="liveReadOnlyReport");
+                    Expect(!output.Text.Contains("private-wb-token")&&output.Text.Contains("[đã che]"),"An echoed credential escaped redaction into the live report.");
+                    Expect(!mutation.Enabled,"Failed read-only validation enabled a write.");
+                }finally{http.SetValue(app.Api,old);}
+                var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);
+                dialog.Show(form);Application.DoEvents();using var image=new Bitmap(dialog.Width,dialog.Height);dialog.DrawToBitmap(image,new Rectangle(Point.Empty,dialog.Size));image.Save(Path.Combine(dir,"IntegrationTestCenter.png"));dialog.Close();
             });
             Check("Packed Ozon and Yandex orders remain available for label printing", () =>
             {
@@ -113,6 +123,7 @@ internal static class Program
                 var grid=All(form).OfType<DataGridView>().SingleOrDefault(x=>x.Name=="gtinMappingGrid");
                 Expect(grid is not null&&grid.Columns.Contains("variant")&&grid.Columns.Contains("available")&&grid.Columns.Contains("reserved")&&grid.Columns.Contains("assigned"),"Mapping still merges first product barcodes or hides inventory states.");
                 Expect(All(form).Any(x=>x.Name=="gtinMappingPage")&&All(form).OfType<Button>().Any(x=>x.Name=="nextGtinMappingPage"),"Mapping does not expose 50-row paging.");
+                var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);using var image=new Bitmap(form.Width,form.Height);form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"KizMapping.png"));
             });
             Check("Delivered orders are absent from active shipping tab", () =>
                 Expect(!State("IsShipping", "delivered"), "Delivered order is still active."));

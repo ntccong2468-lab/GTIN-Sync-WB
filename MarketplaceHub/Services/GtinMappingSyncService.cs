@@ -34,6 +34,25 @@ public sealed class GtinMappingSyncService(AppDatabase db,MarketplaceGateway api
         }finally{gate.Release();}
     }
 
+    public void QueueWbGtinWritebackForVariant(StoreProfile store,string sku,string variantId)
+    {
+        if(store.Marketplace!=Marketplace.Wildberries)throw new InvalidOperationException("Thao tác này chỉ dành cho cửa hàng WB đã chọn.");
+        var gate=Gate(store);if(!gate.Wait(0))throw new InvalidOperationException("Đang có tác vụ đồng bộ; chưa tạo lượt thử mới.");
+        try{
+            var row=Rows(store).SingleOrDefault(x=>x.Sku==sku&&x.VariantId==variantId);
+            if(row is null||!row.Confirmed||GtinCode.Normalize(row.Gtin)!=row.Gtin||row.Gtin.Length==0)
+                throw new InvalidOperationException("Mục tiêu thử phải là đúng một biến thể với GTIN đã xác nhận.");
+            var target=Target(row);var old=db.GetGtinSyncJob(store,"WB_WRITEBACK");
+            if(old is not null&&old.State!="COMPLETE"){
+                var pending=JsonSerializer.Deserialize<GtinSyncTarget[]>(old.SnapshotJson)??Array.Empty<GtinSyncTarget>();
+                if(old.Scope!=ProductCatalog.Scope(store)||pending.Length!=1||pending[0]!=target)
+                    throw new InvalidOperationException("Có lượt WB khác chưa đối soát. Không dùng thao tác thử một biến thể để tiếp tục lượt đó.");
+                return;
+            }
+            db.SaveGtinSyncJob(store,"WB_WRITEBACK",new(ProductCatalog.Scope(store),JsonSerializer.Serialize(new[]{target}),0,"QUEUED",null,""));
+        }finally{gate.Release();}
+    }
+
     public async Task<PriceUpdateResult> ResumeWbGtinWritebackAsync(StoreProfile store,CancellationToken ct=default,IProgress<string>? progress=null)
     {
         if(store.Marketplace!=Marketplace.Wildberries)return new(false,"Cập nhật GTIN lên card chỉ dành cho WB.");
@@ -157,6 +176,7 @@ public sealed class GtinMappingSyncService(AppDatabase db,MarketplaceGateway api
 
 public sealed partial class AppServices
 {
+    public void QueueWbGtinWritebackForVariant(StoreProfile store,string sku,string variantId)=>new GtinMappingSyncService(Db,Api,znakHttp).QueueWbGtinWritebackForVariant(store,sku,variantId);
     public void QueueWbGtinWriteback(StoreProfile store)=>new GtinMappingSyncService(Db,Api,znakHttp).QueueWbGtinWriteback(store);
     public Task<PriceUpdateResult> ResumeWbGtinWritebackAsync(StoreProfile store,CancellationToken ct=default)=>new GtinMappingSyncService(Db,Api,znakHttp).ResumeWbGtinWritebackAsync(store,ct);
     public Task<PriceUpdateResult> SyncZnackGtinAsync(StoreProfile store,NationalCatalogAccess access,CancellationToken ct=default)=>new GtinMappingSyncService(Db,Api,znakHttp).SyncZnackGtinAsync(store,access,ct);

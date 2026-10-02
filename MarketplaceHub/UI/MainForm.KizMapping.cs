@@ -23,6 +23,7 @@ public sealed partial class MainForm
         var next=ActionButton("Sau →",105);next.Name="nextGtinMappingPage";next.Left=122;next.Top=86;work.Controls.Add(next);
         var pageLabel=new Label{Name="gtinMappingPage",Left=245,Top=97,AutoSize=true,ForeColor=C.Text};work.Controls.Add(pageLabel);
         var catalog=ActionButton("Đồng bộ catalog",165);catalog.Left=485;catalog.Top=86;work.Controls.Add(catalog);
+        var check=ActionButton("Kiểm tra / đồng bộ Znack",245);check.Left=662;check.Top=86;check.Click+=(_,_)=>ShowIntegrationTestCenter();work.Controls.Add(check);
         var card=CardPanel();card.Left=4;card.Top=145;work.Controls.Add(card);
         var grid=DarkGrid();grid.Name="gtinMappingGrid";grid.Dock=DockStyle.Fill;grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;
         foreach(var column in new[]{("gtin","GTIN",155),("name","Sản phẩm",210),("variant","SKU / Size / Biến thể",170),("mapping","Mapping",100),
