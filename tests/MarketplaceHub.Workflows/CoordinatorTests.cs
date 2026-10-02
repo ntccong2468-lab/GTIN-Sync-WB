@@ -57,6 +57,9 @@ public static class CoordinatorTests
         foreach(var tampered in new[]{false,true})await r.CheckAsync("license_blocks_"+(tampered?"tampered":"expired"),async()=>{
             using var f=CoordinatorFixture.Create(expired:!tampered,tampered:tampered);f.Stock();f.Physical();var result=await f.Run();Expect(result.Stage!=FbsLabelJobStage.LabelsReady&&f.Adapter.MutationCalls==0&&f.Suz.TotalCalls==0,"Invalid signed license mutated");
         });
+        await r.CheckAsync("corrupt_saved_artifacts_do_not_preserve_labels_ready_on_export",async()=>{
+            using var f=CoordinatorFixture.Create();f.Stock();f.Physical();var first=await f.Run();foreach(var file in first.Artifacts)await File.WriteAllBytesAsync(file.FilePath,new byte[]{1,2,3});f.Adapter.BarcodeOnly=true;var again=await f.Run();Expect(again.Stage!=FbsLabelJobStage.LabelsReady&&again.VerifiedUnits==0,"Corrupt saved labels still covered the export job");
+        });
         await r.CheckAsync("store_deleted_during_read_blocks_later_phases",async()=>{
             using var f=CoordinatorFixture.Create();f.Stock();f.Physical();f.Adapter.BeforeRead=()=>{f.Db.DeleteStore(f.Data.Store.Id);return Task.CompletedTask;};var result=await f.Run();Expect(f.Adapter.MutationCalls==0&&result.Stage!=FbsLabelJobStage.LabelsReady&&Convert.ToInt64(f.Data.Sql("SELECT COUNT(*) FROM fbs_label_jobs"))==0,"Deleted store recreated by late callback");
         });

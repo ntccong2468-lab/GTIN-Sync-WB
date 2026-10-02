@@ -88,11 +88,11 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
                 if(!Allowed(context))return Result(job,"authorization_changed");
                 var whole=context.Snapshot.Units.Where(x=>x.Unit.OrderId==label.RemoteOrderId).Select(x=>x.Unit).ToHashSet();
                 if(!whole.SetEquals(label.Units)||whole.Any(u=>!eligible.Contains(u)))continue;
-                try{var artifact=await artifacts.PersistAsync(context,label,ct);manifest.RemoveAll(x=>x.Units.Any(whole.Contains));manifest.Add(artifact);if(!db.SaveLabelJobArtifacts(context,manifest))return Result(job,"authorization_changed");}
+                try{var artifact=await artifacts.PersistAsync(context,label,ct);manifest.RemoveAll(x=>x.OfficialMarketplaceLabel&&x.Units.Any(whole.Contains));manifest.Add(artifact);if(!db.SaveLabelJobArtifacts(context,manifest))return Result(job,"authorization_changed");}
                 catch(InvalidOperationException){ }
             }
-            var covered=manifest.SelectMany(x=>x.Units).ToHashSet();var final=verified.Select(x=>covered.Contains(x.Unit)?x with{Stage="LabelsReady"}:x).ToArray();
-            return Save(context,covered.Count==context.Snapshot.Units.Count?FbsLabelJobStage.LabelsReady:manifest.Count>0?FbsLabelJobStage.Partial:WaitingStage(verified,pendingPurchase),final,null,progress);
+            var covered=manifest.Where(x=>x.OfficialMarketplaceLabel).SelectMany(x=>x.Units).ToHashSet();var final=verified.Select(x=>covered.Contains(x.Unit)?x with{Stage="LabelsReady"}:x).ToArray();
+            return Save(context,covered.Count==context.Snapshot.Units.Count?FbsLabelJobStage.LabelsReady:manifest.Any(x=>x.OfficialMarketplaceLabel)?FbsLabelJobStage.Partial:WaitingStage(verified,pendingPurchase),final,null,progress);
         }
         catch(OperationCanceledException){return Save(context,FbsLabelJobStage.Paused,db.LabelJobUnits(jobId),"operation_paused",progress);}
         catch(Exception e)when(e is InvalidOperationException or HttpRequestException or IOException or TimeoutException){return Save(context,FbsLabelJobStage.NeedsReconciliation,db.LabelJobUnits(jobId),"workflow_reconciliation_required",progress);}
