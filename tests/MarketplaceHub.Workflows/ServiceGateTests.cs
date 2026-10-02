@@ -12,7 +12,7 @@ public static class ServiceGateTests
             Expect(Convert.ToInt64(f.Sql("SELECT COUNT(*) FROM order_remote_states WHERE store_id="+f.Store.Id))==0,"Deleted store accepted a state write");return Task.CompletedTask;
         });
         await r.CheckAsync("missing_variant_gtin_blocks_snapshot",async()=>{
-            using var f=WorkflowFixture.Create();var store=f.Db.SaveStore(new(0,Marketplace.Yandex,"missing GTIN","","","456","789","fixture-token",true));var batch=f.Db.CreateMarketplaceFbsBatch(store,new[]{"1"});
+            using var f=WorkflowFixture.Create();var store=f.Db.SaveStore(new(0,Marketplace.Yandex,"missing GTIN","","fixture-api","456","789","fixture-token",true));var batch=f.Db.CreateMarketplaceFbsBatch(store,new[]{"1"});
             var api=new MarketplaceGateway();typeof(MarketplaceGateway).GetField("http",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(api,new HttpClient(new AwaitHttp(()=>Task.FromResult(new HttpResponseMessage(System.Net.HttpStatusCode.OK){Content=new StringContent("{\"order\":{\"id\":1,\"status\":\"PROCESSING\",\"substatus\":\"STARTED\",\"items\":[{\"id\":2,\"offerId\":\"A\",\"count\":1,\"hasCis\":true}]}}",System.Text.Encoding.UTF8,"application/json")}))));
             var rejected=false;try{await new MarketplaceHub.Services.Fbs.FbsLabelAdapter(WorkflowTestSupport.App(f.Db,api),store.Marketplace,marketGtin:_=>"").ReadSnapshotAsync(new(store.Id,store.Marketplace,LabelTargetKind.MarketplaceBatch,batch.Id),default);}catch(InvalidOperationException ex){rejected=ex.Message.Contains("gtin_variant_required");}
             Expect(rejected,"Empty GTIN created a marked-unit snapshot");
