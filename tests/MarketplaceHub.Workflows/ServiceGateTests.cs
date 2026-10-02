@@ -18,6 +18,13 @@ public static class ServiceGateTests
             var app=new AppServices(f.Db,api,WorkflowTestSupport.SignedLicense(()=>DateTimeOffset.UtcNow,expired:true));var result=await app.PackMarketplaceFbsAsync(store,new[]{"P"},_=>"",true);
             Expect(!result.Success&&handler.Calls==0,"Invalid license reached remote packing boundary");
         });
+        await r.CheckAsync("late_marketplace_read_cannot_recreate_deleted_store_state",async()=>{
+            using var f=WorkflowFixture.Create();var store=f.Db.SaveStore(new(0,Marketplace.Ozon,"delete fixture","123","fixture-api","","","",true));var entered=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);var release=new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var api=new MarketplaceGateway();typeof(MarketplaceGateway).GetField("http",System.Reflection.BindingFlags.Instance|System.Reflection.BindingFlags.NonPublic)!.SetValue(api,new HttpClient(new AwaitHttp(async()=>{entered.SetResult();await release.Task;return new(System.Net.HttpStatusCode.OK){Content=new StringContent("{\"result\":{\"posting_number\":\"P\",\"status\":\"awaiting_packaging\",\"products\":[{\"sku\":100,\"offer_id\":\"A\",\"quantity\":1,\"name\":\"A\"}]}}",System.Text.Encoding.UTF8,"application/json")};})));
+            var app=WorkflowTestSupport.App(f.Db,api);var read=app.ReadFreshMarketplaceFbsAsync(store,"P");await entered.Task;f.Db.DeleteStore(store.Id);release.SetResult();try{await read;}catch(InvalidOperationException){ }
+            Expect(Convert.ToInt64(f.Sql("SELECT COUNT(*) FROM order_remote_states WHERE store_id="+store.Id))==0,"Late remote read recreated deleted store state");
+        });
     }
+    private sealed class AwaitHttp(Func<Task<HttpResponseMessage>> response):HttpMessageHandler{protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)=>response();}
     private sealed class GateHttp:HttpMessageHandler{public int Calls;protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct){Calls++;throw new Exception("Unauthorized request");}}
 }
