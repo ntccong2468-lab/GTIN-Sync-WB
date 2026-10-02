@@ -97,9 +97,10 @@ public sealed class KizPurchaseCoordinator(AppDatabase db, ISuzClient suz, IWork
         var listed = await suz.ListBlocksAsync(intent, ct);
         if (listed.Kind != SuzOutcomeKind.Confirmed || listed.Value is null)
             return Save(intent.Id, PurchaseStage.NeedsReconciliation, null, listed.RetryAt, listed.ErrorCode ?? "blocks_unavailable");
-        foreach (var block in listed.Value)
+        if (listed.Value.Any(block => !ValidBlock(intent, block)))
+            return Save(intent.Id, PurchaseStage.NeedsReconciliation, null, null, "block_identity_mismatch");
+        foreach (var block in listed.Value.DistinctBy(x => x.BlockId, StringComparer.Ordinal))
         {
-            if (!ValidBlock(intent, block)) return Save(intent.Id, PurchaseStage.NeedsReconciliation, null, null, "block_identity_mismatch");
             if (stored.Any(x => x.BlockId == block.BlockId && x.Codes.Count > 0)) continue;
             // Persist identity before the reconciliation request can be interrupted.
             db.SavePurchaseBlock(intent.Id, block with { Codes = Array.Empty<string>() });
