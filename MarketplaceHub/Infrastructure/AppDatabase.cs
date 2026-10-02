@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS znak_pipeline(
         EnsureProductCatalogTables(c);
         EnsureFboPreparationTables(c);
         EnsureGtinMappingTables(c);
+        InitializeWorkflowTables(c);
     }
 
     private static void EnsureZnakColumns(SqliteConnection c)
@@ -444,9 +445,12 @@ assigned_order=CASE WHEN kiz_pool.status IN('RESERVED','ASSIGNED') THEN kiz_pool
 
     public void SaveZnakConfig(ZnakConfig z)
     {
+        var previous = GetZnakConfig();
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
+        using var tx = c.BeginTransaction(deferred: false);
         using var cmd = c.CreateCommand();
+        cmd.Transaction = tx;
         cmd.CommandText = @"INSERT INTO znak_config(id,inn,environment,certificate_thumbprint,certificate_subject,auto_sign_mode,enabled,oms_id,oms_connection,auto_circulation)
 VALUES(1,$i,$e,$t,$s,$a,$n,$o,$c,$r)
 ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,certificate_subject=$s,auto_sign_mode=$a,enabled=$n,oms_id=$o,oms_connection=$c,auto_circulation=$r";
@@ -460,6 +464,12 @@ ON CONFLICT(id) DO UPDATE SET inn=$i,environment=$e,certificate_thumbprint=$t,ce
         cmd.Parameters.AddWithValue("$c", z.OmsConnection);
         cmd.Parameters.AddWithValue("$r", 1);
         cmd.ExecuteNonQuery();
+        if (previous != z)
+        {
+            using var version = WfSql(c, tx, "UPDATE kiz_crypto_metadata SET value=lower(hex(randomblob(16))) WHERE name='znak-credential-version'");
+            version.ExecuteNonQuery();
+        }
+        tx.Commit();
         Audit("Честный ЗНАК", "Lưu cấu hình", $"{z.Inn}:{z.Environment}:{z.AutoSignMode}");
     }
 
@@ -647,6 +657,7 @@ ON CONFLICT(store_id,sku) DO UPDATE SET gtin=$g,stage=$st,external_order_id=$o,d
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
         using var tx = c.BeginTransaction();
+        DeleteWorkflowStore(c, tx, id);
 
         using (var p = c.CreateCommand())
         {

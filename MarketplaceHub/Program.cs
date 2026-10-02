@@ -1,5 +1,6 @@
 using MarketplaceHub.Services;
 using MarketplaceHub.UI;
+using MarketplaceHub.Infrastructure;
 
 namespace MarketplaceHub;
 
@@ -27,7 +28,18 @@ internal static class Program
         try
         {
             if (File.Exists(CrashReportPath)) File.Delete(CrashReportPath);
-            Application.Run(new MainForm(new AppServices()));
+            var dbPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MarketplaceHub", "marketplacehub.db");
+            if (!DatabaseInstanceLock.TryAcquire(dbPath, out var instance))
+            {
+                MessageBox.Show("Marketplace Hub đang mở với cơ sở dữ liệu này.", "Marketplace Hub");
+                return;
+            }
+            using (instance)
+            {
+                var db = new AppDatabase(dbPath);
+                db.RecoverWorkflowClaims();
+                Application.Run(new MainForm(new AppServices(db, new MarketplaceGateway(), LicenseAccessService.CreateDefault())));
+            }
         }
         catch (Exception ex)
         {
