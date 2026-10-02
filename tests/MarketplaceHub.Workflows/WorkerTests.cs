@@ -41,6 +41,10 @@ public static class WorkerTests
             using var f=CoordinatorFixture.Create();f.Stock();f.Physical();var app=App(f);var first=await app.ExportFbsLabelsAsync(f.Context.Snapshot.Target);var again=await app.ExportFbsLabelsAsync(f.Context.Snapshot.Target);var print=await app.LabelJobs.ReprintAsync(first.JobId,first.Revision,default);
             Expect(first.Stage==FbsLabelJobStage.LabelsReady&&first.JobId==again.JobId&&print.JobId==first.JobId&&f.Suz.TotalCalls==0,"Export/reprint replaced job or purchased codes");
         });
+        await r.CheckAsync("startup_recovery_does_not_recover_paid_blocks",async()=>{
+            using var f=CoordinatorFixture.Create();var request=new PurchaseIntentRequest(f.Context.JobId,1,f.Context.Profile!,WorkflowFixture.Gtin,2,"");request=request with{PayloadHash=SuzHttpClient.PayloadHash(request)};var i=f.Db.GetOrCreatePurchaseIntent(request);f.Db.SavePurchaseOutcome(i.Id,PurchaseStage.DownloadUnknown,"SUZ-OLD",null,null);i=f.Db.GetPurchaseIntent(i.Id)!;f.Suz.Blocks=new[]{FakeSuzClient.FullBlock(i) with{Codes=Array.Empty<string>()}};await App(f).ResumePendingFbsJobsAsync(default);
+            Expect(f.Suz.RecoverCalls==0&&f.Suz.ReceiveCalls==0&&f.Suz.CreateCalls==0&&f.Db.PurchaseBlocks(i.Id).Any(x=>x.BlockId=="BLOCK-1"),"Startup used a stateful recovery request or lost known block identity");
+        });
         await r.CheckAsync("startup_recovery_does_not_receive_or_attach",async()=>{
             using var f=CoordinatorFixture.Create();var request=new PurchaseIntentRequest(f.Context.JobId,1,f.Context.Profile!,WorkflowFixture.Gtin,2,"");request=request with{PayloadHash=SuzHttpClient.PayloadHash(request)};var i=f.Db.GetOrCreatePurchaseIntent(request);f.Db.SavePurchaseOutcome(i.Id,PurchaseStage.Polling,"SUZ-OLD",null,null);var results=await App(f).ResumePendingFbsJobsAsync(default);
             Expect(results.Count==1&&f.Suz.CreateCalls==0&&f.Suz.ReceiveCalls==0&&f.Adapter.MutationCalls==0&&f.Adapter.Downloads==0&&f.Db.GetPurchaseIntent(i.Id)!.RemoteOrderId=="SUZ-OLD","Startup recovery acquired codes or expanded workflow");

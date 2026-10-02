@@ -6,6 +6,10 @@ public static class PurchaseTests
 {
     public static async Task Run(WorkflowTestRunner r)
     {
+        await r.CheckAsync("uncertain_receive_with_empty_block_listing_never_receives_again",async()=>{
+            using var f=PurchaseFixture.Create();f.Suz.OnReceive=(_,_)=>Task.FromResult(new SuzOutcome<SuzBlock>(SuzOutcomeKind.Unknown,null,"receive_unknown"));var first=await f.Coordinator.EnsureAsync(f.Request,default);await f.Coordinator.ResumeAsync(first.IntentId,default);await f.Reopen().ResumeAsync(first.IntentId,default);
+            Expect(f.Suz.ReceiveCalls==1&&f.Db.GetPurchaseIntent(first.IntentId)!.RemoteOrderId=="SUZ-1","Missing block listing erased receive checkpoint and repeated stateful request");
+        });
         await r.CheckAsync("concurrent_clicks_send_one_purchase_after_durable_checkpoint", async () => {
             using var f = PurchaseFixture.Create();
             f.Suz.OnCreate = (i, _) => { Expect(f.Db.GetPurchaseIntent(i.Id)!.Stage == PurchaseStage.CreateSending, "POST preceded durable sending checkpoint"); return Task.FromResult(new SuzOutcome<SuzOrderReceipt>(SuzOutcomeKind.Confirmed, new("SUZ-1"))); };
