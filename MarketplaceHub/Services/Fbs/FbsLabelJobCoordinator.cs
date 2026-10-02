@@ -91,8 +91,9 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
                 try{var artifact=await artifacts.PersistAsync(context,label,ct);manifest.RemoveAll(x=>x.OfficialMarketplaceLabel&&x.Units.Any(whole.Contains));manifest.Add(artifact);if(!db.SaveLabelJobArtifacts(context,manifest))return Result(job,"authorization_changed");}
                 catch(InvalidOperationException){ }
             }
-            var covered=manifest.Where(x=>x.OfficialMarketplaceLabel).SelectMany(x=>x.Units).ToHashSet();var final=verified.Select(x=>covered.Contains(x.Unit)?x with{Stage="LabelsReady"}:x).ToArray();
-            return Save(context,covered.Count==context.Snapshot.Units.Count?FbsLabelJobStage.LabelsReady:manifest.Any(x=>x.OfficialMarketplaceLabel)?FbsLabelJobStage.Partial:WaitingStage(verified,pendingPurchase),final,null,progress);
+            var valid=new List<LabelArtifact>();foreach(var item in manifest.Where(x=>x.OfficialMarketplaceLabel))if(await artifacts.ValidateAsync(item,ct))valid.Add(item);
+            var covered=valid.SelectMany(x=>x.Units).ToHashSet();var final=verified.Select(x=>covered.Contains(x.Unit)?x with{Stage="LabelsReady"}:x).ToArray();
+            return Save(context,covered.Count==context.Snapshot.Units.Count?FbsLabelJobStage.LabelsReady:valid.Count>0?FbsLabelJobStage.Partial:WaitingStage(verified,pendingPurchase),final,covered.Count<eligible.Length?"label_download_pending":null,progress);
         }
         catch(OperationCanceledException){return Save(context,FbsLabelJobStage.Paused,db.LabelJobUnits(jobId),"operation_paused",progress);}
         catch(Exception e)when(e is InvalidOperationException or HttpRequestException or IOException or TimeoutException){return Save(context,FbsLabelJobStage.NeedsReconciliation,db.LabelJobUnits(jobId),"workflow_reconciliation_required",progress);}
@@ -102,7 +103,7 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
     {
         var job=db.GetLabelJob(jobId);if(job is null||job.Revision!=revision)return Empty(FbsLabelJobStage.NeedsReconciliation,"revision_not_found");
         var context=new FbsWorkflowContext(job.Id,job.Revision,job.Snapshot,db.LabelJobProfile(job.Id));if(!Allowed(context,requireActive:false))return Result(job,"authorization_required");
-        var manifest=db.LabelJobArtifacts(jobId).ToList();var broken=new List<LabelArtifact>();foreach(var item in manifest)if(!await artifacts.ValidateAsync(item,ct))broken.Add(item);
+        var manifest=db.LabelJobArtifacts(jobId).ToList();var broken=new List<LabelArtifact>();foreach(var item in manifest.Where(x=>x.OfficialMarketplaceLabel))if(!await artifacts.ValidateAsync(item,ct))broken.Add(item);
         if(broken.Count>0){var units=broken.SelectMany(x=>x.Units).Distinct().ToArray();foreach(var label in await adapters(job.Snapshot.Target.Marketplace).DownloadLabelsAsync(context,units,ct)){
             if(!Allowed(context,requireActive:false))return Result(job,"authorization_changed");var original=broken.FirstOrDefault(x=>x.Units.ToHashSet().SetEquals(label.Units));if(original is null)continue;
             var restored=await artifacts.PersistAsync(context,label,ct);manifest.Remove(original);manifest.Add(restored);
@@ -121,6 +122,6 @@ public sealed class FbsLabelJobCoordinator(AppDatabase db,Func<Marketplace,IFbsL
     private bool SaveCheckpoint(FbsWorkflowContext context,FbsLabelJobStage stage,IReadOnlyList<UnitWorkflowResult> units){var current=db.GetLabelJob(context.JobId);return current is not null&&db.TrySaveLabelJob(current.Id,current.Version,stage,units);}
     private LabelJobResult Save(FbsWorkflowContext context,FbsLabelJobStage stage,IReadOnlyList<UnitWorkflowResult> units,string? error,IProgress<LabelJobResult>? progress){SaveCheckpoint(context,stage,units);var job=db.GetLabelJob(context.JobId);var result=job is null?Empty(FbsLabelJobStage.NeedsReconciliation,"job_deleted"):Result(job,error);progress?.Report(result);return result;}
     private LabelJobResult Result(FbsLabelJob job,string? error=null){var units=db.LabelJobUnits(job.Id);return new(job.Id,job.Revision,job.Stage,units.Count(x=>x.Stage=="LabelsReady"),job.Snapshot.Units.Count,units,db.LabelJobArtifacts(job.Id),error);}
-    private static FbsLabelJobStage WaitingStage(IReadOnlyList<UnitWorkflowResult> units,bool purchase)=>units.Any(x=>x.Stage=="AwaitingLegalState")?FbsLabelJobStage.AwaitingLegalState:units.Any(x=>x.Stage=="AwaitingPhysicalMark")?FbsLabelJobStage.AwaitingPhysicalMark:purchase?FbsLabelJobStage.AwaitingPurchase:FbsLabelJobStage.AwaitingCodes;
+    private static FbsLabelJobStage WaitingStage(IReadOnlyList<UnitWorkflowResult> units,bool purchase)=>units.Any(x=>x.Stage=="AwaitingLegalState")?FbsLabelJobStage.AwaitingLegalState:units.Any(x=>x.Stage=="AwaitingPhysicalMark")?FbsLabelJobStage.AwaitingPhysicalMark:purchase?FbsLabelJobStage.AwaitingPurchase:units.Count>0&&units.All(x=>x.Stage=="Ready")?FbsLabelJobStage.Verifying:FbsLabelJobStage.AwaitingCodes;
     private static LabelJobResult Empty(FbsLabelJobStage stage,string error)=>new("",0,stage,0,0,Array.Empty<UnitWorkflowResult>(),Array.Empty<LabelArtifact>(),error);
 }

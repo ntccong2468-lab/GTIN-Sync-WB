@@ -32,7 +32,7 @@ public sealed class FbsLabelJobDialog:Form
         resume=Action("fbsJobResume","Kiểm tra / tiếp tục");pause=Action("fbsJobPause","Tạm dừng");reprint=Action("fbsJobReprint","In lại nhãn sàn");matrix=Action("kizPrintDataMatrix","Xuất Data Matrix");var profile=Action("kizWorkflowProfile","Profile KIZ");revision=Action("fbsJobRevision","Revision mới");
         var light=new CheckBox{Text="Giao diện sáng",AutoSize=true,Margin=new(8,10,0,0)};actions.Controls.Add(light);light.CheckedChanged+=(_,_)=>SetAppearance(!light.Checked);
         resume.Click+=async(_,_)=>await RunAsync(workerLifetime);pause.Click+=(_,_)=>{if(current is not null)app.PauseFbsLabelJob(current.JobId);};
-        reprint.Click+=async(_,_)=>await Execute(async()=>{var result=await app.LabelJobs.ReprintAsync(current!.JobId,current.Revision,workerLifetime);Apply(result);if(result.ErrorCode is null)Open(result.Artifacts.Where(x=>x.OfficialMarketplaceLabel));});
+        reprint.Click+=async(_,_)=>await Execute(async()=>{var result=await app.LabelJobs.ReprintAsync(current!.JobId,current.Revision,workerLifetime);Apply(result);Open(result.Artifacts.Where(x=>x.OfficialMarketplaceLabel));});
         matrix.Click+=async(_,_)=>await Execute(async()=>Open(await app.ExportJobDataMatrixAsync(current!.JobId,workerLifetime)));
         confirm.Click+=async(_,_)=>await Execute(async()=>{
             units.EndEdit();var selected=units.Rows.Cast<DataGridViewRow>().Where(x=>x.Cells["selected"].Value is true).Select(x=>(FbsUnitKey)x.Tag!).ToArray();
@@ -69,8 +69,7 @@ public sealed class FbsLabelJobDialog:Form
     private async Task MatchScanAsync()
     {
         try{
-            if(current is null||units.CurrentRow?.Tag is not FbsUnitKey key)throw new InvalidOperationException("Chọn đúng một sản phẩm để scan.");var job=app.GetFbsLabelJob(current.JobId)??throw new InvalidOperationException("Tác vụ chưa được lập.");var context=new FbsWorkflowContext(job.Id,job.Revision,job.Snapshot,app.Db.LabelJobProfile(job.Id));var held=app.Db.BoundScopedKiz(context);
-            var raw=scan.Text;var matched=await app.ScanJobKizAsync(job.Id,key,raw,workerLifetime);scanned[key]=matched.CodeHash!;if(!IsDisposed&&subscribed){Apply(app.ProjectLabelJob(job.Id));foreach(DataGridViewRow row in units.Rows)if((FbsUnitKey)row.Tag! == key)row.Cells["selected"].Value=true;detail.Text="Scan đã khớp. Dán đúng sản phẩm rồi xác nhận tem đã chọn.";scan.Clear();}
+            if(current is null||units.CurrentRow?.Tag is not FbsUnitKey key)throw new InvalidOperationException("Chọn đúng một sản phẩm để scan.");var job=app.GetFbsLabelJob(current.JobId)??throw new InvalidOperationException("Tác vụ chưa được lập.");var raw=scan.Text;var matched=await app.ScanJobKizAsync(job.Id,key,raw,workerLifetime);scanned[key]=matched.CodeHash!;if(!IsDisposed&&subscribed){Apply(app.ProjectLabelJob(job.Id));foreach(DataGridViewRow row in units.Rows)if((FbsUnitKey)row.Tag! == key)row.Cells["selected"].Value=true;detail.Text="Scan đã khớp. Dán đúng sản phẩm rồi xác nhận tem đã chọn.";scan.Clear();}
         }catch(InvalidOperationException ex){detail.Text=ex.Message;scan.Clear();}
     }
     private void Changed(LabelJobResult result)
@@ -81,6 +80,6 @@ public sealed class FbsLabelJobDialog:Form
     public void Unsubscribe(){if(!subscribed)return;subscribed=false;app.FbsLabelJobChanged-=Changed;}
     private void SetStageColor(LabelJobResult result)=>stage.ForeColor=result.Stage==FbsLabelJobStage.LabelsReady&&result.TotalUnits>0&&result.VerifiedUnits==result.TotalUnits?(darkAppearance?C.Green:Color.FromArgb(0,110,60)):(darkAppearance?C.Orange:Color.FromArgb(130,65,0));
     protected override void Dispose(bool disposing){if(disposing)Unsubscribe();base.Dispose(disposing);}
-    private static void Open(IEnumerable<LabelArtifact> artifacts){foreach(var item in artifacts)if(File.Exists(item.FilePath))Process.Start(new ProcessStartInfo(item.FilePath){UseShellExecute=true});}
-    private static string StageText(FbsLabelJobStage value)=>value switch{FbsLabelJobStage.Purchasing=>"Đang yêu cầu cấp KIZ",FbsLabelJobStage.AwaitingLegalState=>"Chờ trạng thái pháp lý",FbsLabelJobStage.AwaitingPhysicalMark=>"Chờ dán tem vật lý",FbsLabelJobStage.Partial=>"Đã có một phần nhãn",FbsLabelJobStage.LabelsReady=>"Nhãn sẵn sàng",FbsLabelJobStage.Paused=>"Đã tạm dừng",FbsLabelJobStage.NeedsReconciliation=>"Cần đối soát",FbsLabelJobStage.SnapshotChanged=>"Nhu cầu đã thay đổi",_=>value.ToString()};
+    private static void Open(IEnumerable<LabelArtifact> artifacts){foreach(var item in artifacts)if(File.Exists(item.FilePath)&&Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(File.ReadAllBytes(item.FilePath)))==item.Sha256)Process.Start(new ProcessStartInfo(item.FilePath){UseShellExecute=true});}
+    private static string StageText(FbsLabelJobStage value)=>value switch{FbsLabelJobStage.Purchasing=>"Đang yêu cầu cấp KIZ",FbsLabelJobStage.Verifying=>"Đang xác minh nhãn",FbsLabelJobStage.AwaitingLegalState=>"Chờ trạng thái pháp lý",FbsLabelJobStage.AwaitingPhysicalMark=>"Chờ dán tem vật lý",FbsLabelJobStage.Partial=>"Đã có một phần nhãn",FbsLabelJobStage.LabelsReady=>"Nhãn sẵn sàng",FbsLabelJobStage.Paused=>"Đã tạm dừng",FbsLabelJobStage.NeedsReconciliation=>"Cần đối soát",FbsLabelJobStage.SnapshotChanged=>"Nhu cầu đã thay đổi",_=>value.ToString()};
 }
