@@ -82,7 +82,7 @@ internal static class Program
                 consent.Checked=true;Expect(!mutation.Enabled,"Consent without a selected verified target enabled mutation.");
                 var http=typeof(MarketplaceGateway).GetField("http",instance)!;var old=http.GetValue(app.Api);
                 try{
-                    http.SetValue(app.Api,new HttpClient(new FixtureHttp(_=>new HttpResponseMessage(HttpStatusCode.BadRequest){Content=new StringContent("{\"echo\":\"private-wb-token\"}")})));
+                    http.SetValue(app.Api,new HttpClient(new AsyncFixtureHttp((_,_)=>Task.FromResult(new HttpResponseMessage(HttpStatusCode.BadRequest){Content=new StringContent("{\"echo\":\"private-wb-token\"}")}))));
                     Pump((Task)type!.GetMethod("RunReadOnlyAsync",instance)!.Invoke(dialog,null)!);
                     var output=All(dialog).OfType<TextBox>().Single(x=>x.Name=="liveReadOnlyReport");
                     Expect(!output.Text.Contains("private-wb-token")&&output.Text.Contains("[đã che]"),"An echoed credential escaped redaction into the live report.");
@@ -109,6 +109,15 @@ internal static class Program
                 Expect(grid.Rows.Cast<DataGridViewRow>().Select(x=>x.Cells["color"].Value?.ToString()).Distinct().Count()==2,"Variant color identity was lost.");
                 var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);
                 using var image=new Bitmap(form.Width,form.Height);form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"FboPreparation.png"));
+            });
+            Check("FBO mandatory marking cannot be disabled before export",()=>{
+                var product=app.Db.Products(store.Id).Single();app.Db.ReplaceProducts(store.Id,store.Marketplace,new[]{product with{RawJson="{\"needsKiz\":true}"}});
+                Page(form,"ShowFboPacking");Application.DoEvents();var grid=All(form).OfType<DataGridView>().Single(x=>x.Name=="fboPreparation");
+                Expect(grid.Rows.Count>0&&grid.Rows.Cast<DataGridViewRow>().All(x=>x.Cells["marked"].Value is true&&x.Cells["marked"].ReadOnly),"Seller can disable a known mandatory KIZ requirement.");
+                var row=grid.Rows[0];row.Cells["marked"].Value=false;
+                var resolve=typeof(MainForm).GetMethod("ResolveFboSelection",BindingFlags.Static|BindingFlags.NonPublic);Expect(resolve is not null,"FBO export lacks mandatory marking boundary.");
+                var selected=(FboPreparationRow)resolve!.Invoke(null,new object[]{row})!;Expect(selected.NeedsKiz,"Unchecked UI state bypassed mandatory KIZ quantity/reservation checks.");
+                app.Db.ReplaceProducts(store.Id,store.Marketplace,new[]{product});
             });
             Check("Report and FBS projection count one external order instead of product lines", () =>
             {

@@ -45,12 +45,24 @@ async Task GtinMocks(){
     Expect(!mismatch.Success&&db.GetGtinMappingPage(store,0,50,"GTIN-51","all").Rows.Single(x=>x.VariantId=="510").WbStage!="VERIFIED","Wrong WB readback keeps changed variant pending");
     var nk=new NationalCatalogMockApi();var service=new GtinMappingSyncService(db,api,new HttpClient(nk),(_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;});
     var access=new NationalCatalogAccess("fake-national-secret","",false);var wbCheckpoint=db.GetGtinSyncJob(store,"WB_WRITEBACK");
+    nk.MismatchGtin=NewGtin(1);
     var limited=await service.SyncZnackGtinAsync(store,access);
     Expect(!limited.Success&&db.GetGtinSyncJob(store,"ZNACK_PRODUCT") is {Cursor:25,RetryAt:not null},"National Catalog persists first 25-GTIN batch and stops on endpoint quota");
     Expect(db.GetGtinSyncJob(store,"WB_WRITEBACK")==wbCheckpoint,"National Catalog quota does not reset independent WB checkpoint");
     using(var c=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+db.DbPath)){c.Open();using var cmd=c.CreateCommand();cmd.CommandText="UPDATE gtin_sync_jobs SET retry_at='2000-01-01T00:00:00+00:00' WHERE endpoint='ZNACK_PRODUCT'";cmd.ExecuteNonQuery();}
     var nkDone=await new GtinMappingSyncService(new MarketplaceHub.Infrastructure.AppDatabase(path),api,new HttpClient(nk),(_,_)=>Task.CompletedTask).SyncZnackGtinAsync(store,access);
-    Expect(nkDone.Success&&nk.Batches.Count==4&&nk.Batches[0].SequenceEqual(nk.Batches[1])==false&&nk.Batches[1].SequenceEqual(nk.Batches[2]),"National Catalog restart resumes failed batch without re-fetching completed 25 GTINs");
+    Expect(!nkDone.Success&&nk.Batches.Count==4&&nk.Batches[0].SequenceEqual(nk.Batches[1])==false&&nk.Batches[1].SequenceEqual(nk.Batches[2]),"National Catalog restart retains earlier size mismatch without re-fetching completed 25 GTINs");
+    var proof=typeof(GtinMappingSyncService).GetMethod("IsZnackTargetVerified");Expect(proof is not null,"Live GTIN gate requires exact National Catalog evidence");
+    if(proof is not null){
+        var wrong=new GtinSyncTarget("GTIN-1","10","1","48",NewGtin(1));
+        Expect(!(bool)proof.Invoke(service,new object[]{store,access,wrong})!,"Earlier mismatched target cannot pass live write gate after resume");
+        var absent=new GtinSyncTarget("GTIN-1","10","1","48",NewGtin(999));
+        db.UpsertSellerGtinMapping(store,absent.Sku,absent.VariantId,absent.Gtin);
+        Expect(!(bool)proof.Invoke(service,new object[]{store,access,absent})!,"A new target absent from checkpoint cannot unlock the live gate");
+    }
+    nk.BoxGtin=NewGtin(2);nk.TechnicalUnknownGtin=NewGtin(3);nk.MismatchGtin="";
+    var packaging=await service.SyncZnackGtinAsync(store,access);
+    Expect(!packaging.Success&&db.GetGtinMappingPage(store,0,50,"GTIN-2","all").Rows.Single(x=>x.VariantId=="20").ZnackStage!="PUBLISHED"&&db.GetGtinMappingPage(store,0,50,"GTIN-3","all").Rows.Single(x=>x.VariantId=="30").ZnackStage!="PUBLISHED","Box GTIN and missing technical status cannot confirm a consumer variant");
     using(var c=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+db.DbPath)){c.Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT COUNT(*) FROM gtin_mapping WHERE metadata_json LIKE '%fake-national-secret%'";Expect(Convert.ToInt32(cmd.ExecuteScalar())==0,"National Catalog metadata redacts credentials before persistence");}
     Expect(db.GetGtinMappingPage(store,0,50,"GTIN-51","all").Rows.Single(x=>x.VariantId=="510").Source=="seller","Znack suggestions never replace confirmed seller source");
     var single=typeof(GtinMappingSyncService).GetMethod("QueueWbGtinWritebackForVariant");
@@ -122,14 +134,14 @@ sealed class GtinMockApi:HttpMessageHandler
 
 sealed class NationalCatalogMockApi:HttpMessageHandler
 {
-    public List<string[]> Batches{get;}=new();
+    public List<string[]> Batches{get;}=new();public string MismatchGtin{get;set;}="";public string BoxGtin{get;set;}="";public string TechnicalUnknownGtin{get;set;}="";
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct){
         ct.ThrowIfCancellationRequested();var query=request.RequestUri!.Query.TrimStart('?').Split('&');
         var gtins=Uri.UnescapeDataString(query.Single(x=>x.StartsWith("gtins="))[6..]).Split(';');Batches.Add(gtins);
         if(Batches.Count==2){var result=Json("{}",HttpStatusCode.TooManyRequests);result.Headers.TryAddWithoutValidation("Retry-After","3600");return Task.FromResult(result);}
-        var cards=new JsonArray(gtins.Select(g=>(JsonNode?)new JsonObject{["good_id"]=100,["good_status"]="published",["good_name"]="Áo fake-national-secret",
-            ["identified_by"]=new JsonArray(new JsonObject{["type"]="gtin",["value"]=g}),
-            ["good_attrs"]=new JsonArray(new JsonObject{["attr_id"]=35,["attr_value"]=g=="04601234567893"?"50":"48"})}).ToArray());
+        var cards=new JsonArray(gtins.Select(g=>(JsonNode?)new JsonObject{["good_id"]=100,["good_status"]="published",["is_tech_gtin"]=g==TechnicalUnknownGtin?(JsonNode?)null:JsonValue.Create(false),["good_name"]="Áo fake-national-secret",
+            ["identified_by"]=new JsonArray(new JsonObject{["type"]="gtin",["value"]=g,["level"]=g==BoxGtin?"box":"trade-unit",["multiplier"]=g==BoxGtin?28:1}),
+            ["good_attrs"]=new JsonArray(new JsonObject{["attr_id"]=35,["attr_value"]=g==MismatchGtin||g=="04601234567893"?"50":"48"})}).ToArray());
         return Task.FromResult(Json(new JsonObject{["result"]=cards}.ToJsonString()));
     }
     static HttpResponseMessage Json(string text,HttpStatusCode status=HttpStatusCode.OK)=>new(status){Content=new StringContent(text,Encoding.UTF8,"application/json")};

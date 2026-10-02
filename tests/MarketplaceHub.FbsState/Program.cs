@@ -14,6 +14,58 @@ HttpResponseMessage Json(string body)=>new(HttpStatusCode.OK){Content=new String
 void Http(Func<HttpRequestMessage,HttpResponseMessage> response){typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,new HttpClient(new FixtureHttp(response)));typeof(MarketplaceGateway).GetField("wbLabelDelay",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,(Func<TimeSpan,CancellationToken,Task>)((_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;}));}
 string Posting(string status="awaiting_packaging",bool required=false)=>System.Text.Json.JsonSerializer.Serialize(new{result=new{posting_number="P",status,requirements=new{products_requiring_mandatory_mark=required?new[]{100}:Array.Empty<int>()},products=new[]{new{sku=100,offer_id="A",quantity=2,name="A"},new{sku=200,offer_id="B",quantity=1,name="B"}}}});
 try {
+await Check("Consecutive marketplace sync reconciles disappeared orders and invalidates failed refresh",async()=>{
+    foreach(var marketplace in new[]{Marketplace.Wildberries,Marketplace.Ozon,Marketplace.Yandex}){
+        var store=Store(marketplace);var id=marketplace==Marketplace.Ozon?"P":"201";
+        var status=marketplace==Marketplace.Wildberries?"new":marketplace==Marketplace.Ozon?"awaiting_packaging":"PROCESSING/STARTED";
+        app.Db.UpsertOrders(store.Id,marketplace,new[]{new FbsOrderRow(store.Id,marketplace,id,"A","A",1,status,false,"{}")});
+        app.Db.MarkOrderRemoteState(store.Id,marketplace,id,status,"waiting");
+        Http(r=>{
+            var path=r.RequestUri!.AbsolutePath;
+            if(path.EndsWith("/status"))return Json("{\"orders\":[{\"id\":201,\"supplierStatus\":\"new\",\"wbStatus\":\"canceled_by_client\"}]}");
+            if(path.EndsWith("/posting/fbs/get"))return Json(Posting("awaiting_deliver"));
+            if(marketplace==Marketplace.Yandex&&path.EndsWith("/201"))return Json("{\"order\":{\"id\":201,\"status\":\"PROCESSING\",\"substatus\":\"READY_TO_SHIP\",\"items\":[{\"id\":1,\"offerId\":\"A\",\"count\":1}]}}");
+            return marketplace==Marketplace.Ozon?Json("{\"result\":{\"postings\":[],\"has_next\":false}}") : Json("{\"orders\":[],\"next\":0,\"pager\":{}}");
+        });
+        var result=await app.SyncOrdersAsync(store);var truth=new OrderTruthService().Build(store,app.Db.Orders(store.Id),new HashSet<string>(),app.Db.OrderRemoteStates(store.Id));
+        Expect(result.Ok&&truth.NewCount==0&&truth.Orders.Single().IsAuthoritative,marketplace+": an omitted old order remained New.");
+        if(marketplace==Marketplace.Wildberries)app.Db.MarkOrderRemoteState(store.Id,marketplace,id,"new","waiting");
+        Http(_=>new HttpResponseMessage(HttpStatusCode.ServiceUnavailable){Content=new StringContent("{}")});
+        var failed=await app.SyncOrdersAsync(store);truth=new OrderTruthService().Build(store,app.Db.Orders(store.Id),new HashSet<string>(),app.Db.OrderRemoteStates(store.Id));
+        Expect(!failed.Ok&&!truth.IsAuthoritative&&truth.NewCount==0,marketplace+": failed refresh left cached active states authoritative.");
+    }
+});
+await Check("WB recovery detail failure retains journal and supply",async()=>{
+    var store=Store(Marketplace.Wildberries);var rows=new[]{new FbsOrderRow(store.Id,store.Marketplace,"801","A","A",1,"new",false,"{}")};app.Db.UpsertOrders(store.Id,store.Marketplace,rows);
+    app.Db.BeginWbReceiveOperation(store.Id,"detail-failure",new[]{"801"},"RETAINED","recovery");
+    Http(r=>r.RequestUri!.AbsolutePath.EndsWith("/supplies")?Json("{\"next\":0,\"supplies\":[]}"):new HttpResponseMessage(HttpStatusCode.ServiceUnavailable){Content=new StringContent("{}")});
+    var result=await app.ReceiveWbOrdersAsync(store,rows,new(null,"new"));
+    var pending=new MarketplaceHub.Infrastructure.AppDatabase(app.Db.DbPath).RecoverableWbReceive(store.Id,new[]{"801"});
+    Expect(!result.Success&&result.SupplyId=="RETAINED"&&pending is {SupplyId:"RETAINED"},"A failed recovery GET closed the retained supply journal.");
+});
+await Check("WB live probe refuses expansion into a multi-order recovery",async()=>{
+    var store=Store(Marketplace.Wildberries);var rows=new[]{new FbsOrderRow(store.Id,store.Marketplace,"811","A","A",1,"new",false,"{}"),new FbsOrderRow(store.Id,store.Marketplace,"812","B","B",1,"new",false,"{}")};app.Db.UpsertOrders(store.Id,store.Marketplace,rows);
+    app.Db.BeginWbReceiveOperation(store.Id,"probe-multi",new[]{"811","812"},"RETAINED","recovery");var calls=0;Http(_=>{calls++;throw new Exception("Probe must stop before any API call");});
+    var method=typeof(AppServices).GetMethod("ReceiveWbProbeOrderAsync");Expect(method is not null,"Exact-target WB probe boundary is missing.");
+    var result=await (Task<WbReceiveResult>)method!.Invoke(app,new object[]{store,rows.Take(1).ToArray(),new WbShipmentChoice(null,"probe"),CancellationToken.None})!;
+    Expect(!result.Success&&calls==0&&app.Db.RecoverableWbReceive(store.Id,new[]{"811"}) is not null,"Single-order consent expanded a pending multi-order mutation.");
+});
+await Check("WB receive Retry-After survives restart and prevents recovery calls",async()=>{
+    var store=Store(Marketplace.Wildberries);var rows=new[]{new FbsOrderRow(store.Id,store.Marketplace,"821","A","A",1,"new",false,"{}")};app.Db.UpsertOrders(store.Id,store.Marketplace,rows);
+    app.Db.BeginWbReceiveOperation(store.Id,"receive-quota",new[]{"821"},"QUOTA-SUPPLY","quota");
+    Http(r=>{
+        var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/status")){var limited=new HttpResponseMessage(HttpStatusCode.TooManyRequests){Content=new StringContent("{}")};limited.Headers.TryAddWithoutValidation("Retry-After","3600");return limited;}
+        if(path.EndsWith("/supplies"))return Json("{\"next\":0,\"supplies\":[]}");
+        if(path.EndsWith("/order-ids"))return Json("{\"orderIds\":[]}");
+        return Json("{\"id\":\"QUOTA-SUPPLY\",\"name\":\"quota\",\"done\":false,\"createdAt\":\""+DateTimeOffset.UtcNow.ToString("O")+"\"}");
+    });
+    var first=await app.ReceiveWbOrdersAsync(store,rows,new(null,"new"));
+    var db=new MarketplaceHub.Infrastructure.AppDatabase(app.Db.DbPath);var pending=db.RecoverableWbReceive(store.Id,new[]{"821"});
+    Expect(!first.Success&&pending is not null&&pending.GetType().GetProperty("RetryAt")?.GetValue(pending) is DateTimeOffset at&&at>DateTimeOffset.UtcNow,"WB quota deadline was not durable.");
+    var calls=0;var api=new MarketplaceGateway((_,_)=>Task.CompletedTask);typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(api,new HttpClient(new FixtureHttp(_=>{calls++;throw new Exception("Retry deadline bypassed");})));
+    var restarted=new AppServices(db,api,LicenseAccessService.CreateDefault());var retry=await restarted.ReceiveWbOrdersAsync(store,rows,new(null,"new"));Expect(!retry.Success&&calls==0,"Restart retried WB receive before server Retry-After.");
+});
 await Check("WB verified membership survives incomplete refresh and cannot switch shipment",()=>{
     var store=Store(Marketplace.Wildberries);app.Db.StoreWbSupplyMembership(store.Id,"ORIGINAL",new[]{"911"});app.Db.StoreWbSupplyMembership(store.Id,"ORIGINAL",Array.Empty<string>());
     Expect(app.Db.WbReceivedOrderIds(store.Id).Contains("911"),"An incomplete membership refresh released a verified order back to New.");
