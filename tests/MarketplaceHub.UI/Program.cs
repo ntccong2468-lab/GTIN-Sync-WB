@@ -238,7 +238,7 @@ internal static class Program
                     new ProductRow(store.Id, Marketplace.Yandex, "A", "A", "Quần A", 1250, "", "{}"),
                     new ProductRow(store.Id, Marketplace.Yandex, "B", "B", "Quần B", 1350, "", "{}") });
                 app.Db.UpsertOrders(store.Id, Marketplace.Yandex, new[] { a with { Sku = "B", Name = "Quần B", NeedsKiz = true } });
-                app.Db.CreateMarketplaceFbsBatch(store,new[]{a.ExternalOrderId});
+                if(!app.Db.MarketplaceReceivedOrderIds(store).Contains(a.ExternalOrderId))app.Db.CreateMarketplaceFbsBatch(store,new[]{a.ExternalOrderId});
                 Page(form, "ShowFbs");
                 var packed = (Task<PriceUpdateResult>)typeof(MainForm).GetMethod("CreateShipmentWithKizAsync", instance)!
                     .Invoke(form, new object[] { store, new[] { a }, true })!;

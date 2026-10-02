@@ -160,7 +160,9 @@ public sealed partial class AppServices
 
     public async Task<MarketplaceFbsSnapshot> ReadFreshMarketplaceFbsAsync(StoreProfile store,string orderId,CancellationToken ct=default)
     {
+        var generation=Db.StoreGeneration(store.Id);
         var snapshot=await Api.ReadMarketplaceFbsAsync(store,orderId,ct).ConfigureAwait(false);
+        if(!Db.StoreGenerationMatches(store.Id,generation))throw new InvalidOperationException("store_deleted");
         Db.MarkOrderRemoteState(store.Id,store.Marketplace,orderId,snapshot.Rows[0].Status,snapshot.CancelRequested?"cancel_requested":"");
         var reserved=Db.MarketplaceKizReservations(store,orderId).Select(x=>x.ItemId).ToHashSet(StringComparer.Ordinal);
         return snapshot with{Items=snapshot.Items.Select(x=>x with{RequiresKiz=x.RequiresKiz || reserved.Contains(x.Id)}).ToArray()};
