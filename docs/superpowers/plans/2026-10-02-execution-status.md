@@ -56,3 +56,6 @@ Minor về thời điểm dữ liệu: hiển thị timestamp quan sát đã xá
 - GREEN phần logic tại remote `83decc0` regression `36966242058`: 31/31 FbsState, 33/33 MockApi, 13/13 Print; 33/34 UI. UI còn assertion cũ `requests==1` không còn đúng khi cần đọc chi tiết đơn biến mất.
 Ruling: Cập nhật test khóa sync để trả chi tiết thật và yêu cầu đúng hai request orders (queue + reconcile), đồng thời full sync vẫn bị chặn — đây là điều chỉnh fixture theo hành vi mới đã duyệt, không bỏ kiểm tra khóa.
 - Bổ sung positive control: probe WB hợp lệ phải nhận đúng một đơn; proof NK đúng target vẫn mở gate dù target khác mismatch, credential khác phải làm proof mất hiệu lực.
+
+- 8 finding Important đã GREEN đầy đủ tại remote `fa4a166`, Windows build `36966594616`; positive controls đạt 32/32 FbsState và 35/35 MockApi.
+- QA ảnh còn hai lỗi thuộc mục tiêu giao diện/số liệu: toolbar KIZ Mapping bị khuất ở viewport 1044 px; biểu đồ ngày vẫn đếm hai SKU thành hai đơn. Test RED `b2db32b`, regression `36966954613` xác nhận cả hai assertion thất bại. Sửa responsive toolbar thành hai hàng ở cửa sổ nhỏ và distinct external order theo ngày; đang đợi GREEN cuối.

@@ -536,7 +536,7 @@ public sealed partial class MainForm : Form
 
         analyticsCard.Controls.Add(new Label { Text = "Phân tích đơn hàng", Left = 18, Top = 14, AutoSize = true, ForeColor = C.Text, Font = new Font("Segoe UI", 11, FontStyle.Bold) });
         var days = Enumerable.Range(0, 7).Select(i => DateTime.Today.AddDays(-6 + i)).ToArray();
-        var dayValues = days.Select(day => orders.Count(o => OrderDate(o)?.Date == day.Date)).Select(x => (double)x).ToArray();
+        var dayValues = days.Select(day => (double)orders.Where(o => OrderDate(o)?.Date == day.Date).Select(o => o.ExternalOrderId).Distinct(StringComparer.Ordinal).Count()).ToArray();
         var chart = new ReportBarChart
         {
             Left = 18, Top = 50, Width = analyticsCard.Width - 36, Height = 205,
@@ -560,7 +560,7 @@ public sealed partial class MainForm : Form
             AddMetric("KIZ sẵn sàng", pool.Count(x => x.Status == "AVAILABLE").ToString("N0"), $"{pool.Count:N0} mã trong kho");
             var count = Math.Clamp((to.Value.Date - from.Value.Date).Days + 1, 1, 366);
             var range = Enumerable.Range(0, count).Select(i => from.Value.Date.AddDays(i)).ToArray();
-            chart.Values = range.Select(day => (double)orders.Count(o => OrderDate(o)?.Date == day)).ToArray();
+            chart.Values = range.Select(day => (double)orders.Where(o => OrderDate(o)?.Date == day).Select(o => o.ExternalOrderId).Distinct(StringComparer.Ordinal).Count()).ToArray();
             chart.Labels = range.Select(day => day.ToString("dd/MM")).ToArray();
             chart.Invalidate();
         }

@@ -18,10 +18,10 @@ public sealed partial class MainForm
         filter.Items.AddRange(new object[]{"Tất cả","Đã xác nhận","Chưa xác nhận","KIZ sẵn sàng","Có lỗi"});
         var filters=new[]{"all","mapped","unmapped","available","error"};filter.SelectedIndex=Math.Max(0,Array.IndexOf(filters,state.Filter));work.Controls.Add(filter);
         var refresh=IconButton("↻");refresh.Left=656;refresh.Top=0;work.Controls.Add(refresh);
-        var summary=new Label{Left=4,Top=55,AutoSize=true,ForeColor=C.Muted};work.Controls.Add(summary);
+        var summary=new Label{Left=4,Top=55,AutoSize=false,AutoEllipsis=true,Height=28,ForeColor=C.Muted};work.Controls.Add(summary);
         var previous=ActionButton("← Trước",105);previous.Left=4;previous.Top=86;work.Controls.Add(previous);
         var next=ActionButton("Sau →",105);next.Name="nextGtinMappingPage";next.Left=122;next.Top=86;work.Controls.Add(next);
-        var pageLabel=new Label{Name="gtinMappingPage",Left=245,Top=97,AutoSize=true,ForeColor=C.Text};work.Controls.Add(pageLabel);
+        var pageLabel=new Label{Name="gtinMappingPage",Left=245,Top=97,AutoSize=false,Height=44,TextAlign=ContentAlignment.MiddleLeft,ForeColor=C.Text};work.Controls.Add(pageLabel);
         var catalog=ActionButton("Đồng bộ catalog",165);catalog.Left=485;catalog.Top=86;work.Controls.Add(catalog);
         var check=ActionButton("Kiểm tra / đồng bộ Znack",245);check.Left=662;check.Top=86;check.Click+=(_,_)=>ShowIntegrationTestCenter();work.Controls.Add(check);
         var card=CardPanel();card.Left=4;card.Top=145;work.Controls.Add(card);
@@ -67,7 +67,16 @@ public sealed partial class MainForm
                     if(MessageBox.Show(this,$"Lưu trữ mapping của {row.Sku} · size {row.Size}? KIZ và lịch sử được giữ lại.","Lưu trữ mapping",MessageBoxButtons.YesNo,MessageBoxIcon.Question)==DialogResult.Yes){app.Db.ArchiveGtinMapping(store,row.Sku,row.VariantId);Load();}break;
             }}catch(Exception ex){ShowInfo(ex.Message);}
         };
-        refreshActivePage=Load;SetWorkResize((_,_)=>{card.Width=Math.Max(500,work.ClientSize.Width-36);card.Height=Math.Max(200,work.ClientSize.Height-card.Top-28);});
-        card.Width=work.ClientSize.Width-36;card.Height=work.ClientSize.Height-card.Top-28;Load();
+        void LayoutMapping(){
+            var width=Math.Max(500,work.ClientSize.Width-36);var compact=width<950;
+            search.Left=compact?4:175;search.Top=compact?49:0;search.Width=Math.Max(210,width-search.Left-filter.Width-refresh.Width-28);
+            filter.Left=search.Right+12;filter.Top=search.Top;refresh.Left=filter.Right+12;refresh.Top=search.Top;
+            summary.Top=compact?98:55;summary.Width=width;
+            previous.Top=next.Top=compact?129:86;pageLabel.Top=previous.Top;pageLabel.Width=compact?width-pageLabel.Left:Math.Max(220,width-pageLabel.Left-catalog.Width-check.Width-40);
+            catalog.Left=compact?4:width-catalog.Width-check.Width-12;catalog.Top=compact?181:86;
+            check.Left=catalog.Right+12;check.Top=catalog.Top;card.Top=compact?238:145;
+            card.Width=width;card.Height=Math.Max(200,work.ClientSize.Height-card.Top-28);
+        }
+        refreshActivePage=Load;SetWorkResize((_,_)=>LayoutMapping());LayoutMapping();Load();
     }
 }
