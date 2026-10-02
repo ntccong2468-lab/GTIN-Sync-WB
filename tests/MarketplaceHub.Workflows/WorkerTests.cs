@@ -33,6 +33,10 @@ public static class WorkerTests
             Expect(matrix.Count>0&&matrix.All(x=>x.Kind=="DataMatrix"&&!x.OfficialMarketplaceLabel&&File.Exists(x.FilePath)),"Preparation codes were presented as official labels");
             f.Physical();f.Adapter.BarcodeOnly=true;var result=await app.ExportFbsLabelsAsync(f.Context.Snapshot.Target);Expect(result.Stage!=FbsLabelJobStage.LabelsReady&&result.VerifiedUnits==0,"Data Matrix manifest falsely covered shipping labels");Expect(f.Suz.TotalCalls==0,"Printing held KIZ acquired new codes");
         });
+        await r.CheckAsync("reprint_does_not_refetch_preparation_artifacts_as_shipping_labels",async()=>{
+            using var f=CoordinatorFixture.Create();f.Stock();f.Db.ReserveScopedKiz(f.Context,f.Context.Snapshot.Units);var app=App(f);await app.ExportJobDataMatrixAsync(f.Context.JobId,default);var result=await app.LabelJobs.ReprintAsync(f.Context.JobId,1,default);
+            Expect(f.Adapter.Downloads==0&&result.Artifacts.All(x=>!x.OfficialMarketplaceLabel)&&f.Suz.TotalCalls==0,"Reprint converted preparation codes into shipping labels");
+        });
         await r.CheckAsync("export_and_reprint_share_job",async()=>{
             using var f=CoordinatorFixture.Create();f.Stock();f.Physical();var app=App(f);var first=await app.ExportFbsLabelsAsync(f.Context.Snapshot.Target);var again=await app.ExportFbsLabelsAsync(f.Context.Snapshot.Target);var print=await app.LabelJobs.ReprintAsync(first.JobId,first.Revision,default);
             Expect(first.Stage==FbsLabelJobStage.LabelsReady&&first.JobId==again.JobId&&print.JobId==first.JobId&&f.Suz.TotalCalls==0,"Export/reprint replaced job or purchased codes");

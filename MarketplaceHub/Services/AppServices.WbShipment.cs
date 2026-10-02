@@ -238,6 +238,7 @@ public sealed partial class AppServices
         IReadOnlyDictionary<string,string> gtinByOrder,CancellationToken ct=default)
     {
         try {
+            if(!License.CanRunFbsWorkflow().Allowed)return new(false,"License hợp lệ là bắt buộc trước khi giao shipment.");
             var supply=await Api.GetWbSupplyAsync(store,supplyId,ct).ConfigureAwait(false);
             if(supply.Done)return new(false,"Shipment đã chuyển sang giao hàng; không giao lại.");
             var orders=await ReadWbSupplyOrdersAsync(store,supplyId,ct).ConfigureAwait(false);
@@ -245,6 +246,8 @@ public sealed partial class AppServices
             var metadata=await Api.GetWbPrintKizAsync(store,orders.Select(x=>x.ExternalOrderId),ct).ConfigureAwait(false);
             var verified=ValidateWbSupplyKiz(store,orders,gtinByOrder,metadata);
             if(!verified.Success)return verified;
+            var context=await PrepareWorkflowContextAsync(new(store.Id,store.Marketplace,LabelTargetKind.WbSupply,supplyId),new Fbs.FbsLabelAdapter(this,store.Marketplace,row=>gtinByOrder.TryGetValue(row.ExternalOrderId,out var gtin)?gtin:""),ct).ConfigureAwait(false);
+            ct.ThrowIfCancellationRequested();RequireWorkflowAuthorization(context);
             return await Api.DeliverSupplyAsync(store,supplyId,ct).ConfigureAwait(false);
         }catch(Exception ex){return new(false,ex.Message);}
     }

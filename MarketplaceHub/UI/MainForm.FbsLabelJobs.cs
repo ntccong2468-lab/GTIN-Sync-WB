@@ -2,6 +2,10 @@ using MarketplaceHub.Core;
 namespace MarketplaceHub.UI;
 public sealed partial class MainForm
 {
+    private async void RecoverSavedFbsJobs(object? sender,EventArgs e)
+    {
+        try{await app.ResumePendingFbsJobsAsync(lifetimeCts.Token);}catch(OperationCanceledException){}catch{if(!IsDisposed)statusLabel.Text="• Có tác vụ FBS cần đối soát; mở lại shipment/batch.";}
+    }
     private Task ShowFbsLabelJobAsync(LabelTarget target,CancellationToken pageToken)
     {
         if(pageToken.IsCancellationRequested||IsDisposed)return Task.CompletedTask;

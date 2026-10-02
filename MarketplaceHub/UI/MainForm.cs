@@ -68,6 +68,7 @@ public sealed partial class MainForm : Form
 
         RefreshStores();
         ShowDashboard();
+        Shown+=RecoverSavedFbsJobs;
         autoSync.Tick += async (_, _) =>
         {
             if (autoSyncRunning || IsDisposed) return;
