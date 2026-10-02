@@ -6,7 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 
-var app=new AppServices();var failures=new List<string>();var checks=0;var stores=new List<StoreProfile>();
+var app=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-state-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());var failures=new List<string>();var checks=0;var stores=new List<StoreProfile>();
 async Task Check(string name,Func<Task> run){checks++;try{await run();Console.WriteLine("PASS "+name);}catch(Exception ex){failures.Add(name);Console.WriteLine("FAIL "+name+": "+ex.GetBaseException().Message);}}
 void Expect(bool ok,string message){if(!ok)throw new Exception(message);}
 StoreProfile Store(Marketplace m){var store=app.Db.SaveStore(new(0,m,"STATE-FIXTURE-"+Guid.NewGuid().ToString("N"),"123","fixture","456","789","fixture-wb-token",true));stores.Add(store);return store;}
@@ -14,6 +14,12 @@ HttpResponseMessage Json(string body)=>new(HttpStatusCode.OK){Content=new String
 void Http(Func<HttpRequestMessage,HttpResponseMessage> response){typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,new HttpClient(new FixtureHttp(response)));typeof(MarketplaceGateway).GetField("wbLabelDelay",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,(Func<TimeSpan,CancellationToken,Task>)((_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;}));}
 string Posting(string status="awaiting_packaging",bool required=false)=>System.Text.Json.JsonSerializer.Serialize(new{result=new{posting_number="P",status,requirements=new{products_requiring_mandatory_mark=required?new[]{100}:Array.Empty<int>()},products=new[]{new{sku=100,offer_id="A",quantity=2,name="A"},new{sku=200,offer_id="B",quantity=1,name="B"}}}});
 try {
+await Check("WB verified membership survives incomplete refresh and cannot switch shipment",()=>{
+    var store=Store(Marketplace.Wildberries);app.Db.StoreWbSupplyMembership(store.Id,"ORIGINAL",new[]{"911"});app.Db.StoreWbSupplyMembership(store.Id,"ORIGINAL",Array.Empty<string>());
+    Expect(app.Db.WbReceivedOrderIds(store.Id).Contains("911"),"An incomplete membership refresh released a verified order back to New.");
+    var blocked=false;try{app.Db.StoreWbSupplyMembership(store.Id,"OTHER",new[]{"911"});}catch(InvalidOperationException){blocked=true;}
+    Expect(blocked&&app.Db.FindWbSupplyForOrder(store.Id,"911")=="ORIGINAL","Membership refresh moved an order to another shipment.");return Task.CompletedTask;
+});
 await Check("GTIN mapping pages 50 exact variants and preserves seller rules across catalog refresh and restart",()=>{
     var pageMethod=app.Db.GetType().GetMethod("GetGtinMappingPage");var save=app.Db.GetType().GetMethod("UpsertSellerGtinMapping");
     Expect(pageMethod is not null&&save is not null,"Durable variant GTIN mapping repository is missing.");

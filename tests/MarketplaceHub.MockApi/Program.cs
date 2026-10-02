@@ -5,7 +5,7 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 
-var app=new AppServices();
+var app=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-mock-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());
 var mock=new OzonYandexMockApi();
 typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,new HttpClient(mock));
 var suffix=Guid.NewGuid().ToString("N");
@@ -53,6 +53,17 @@ async Task GtinMocks(){
     Expect(nkDone.Success&&nk.Batches.Count==4&&nk.Batches[0].SequenceEqual(nk.Batches[1])==false&&nk.Batches[1].SequenceEqual(nk.Batches[2]),"National Catalog restart resumes failed batch without re-fetching completed 25 GTINs");
     using(var c=new Microsoft.Data.Sqlite.SqliteConnection("Data Source="+db.DbPath)){c.Open();using var cmd=c.CreateCommand();cmd.CommandText="SELECT COUNT(*) FROM gtin_mapping WHERE metadata_json LIKE '%fake-national-secret%'";Expect(Convert.ToInt32(cmd.ExecuteScalar())==0,"National Catalog metadata redacts credentials before persistence");}
     Expect(db.GetGtinMappingPage(store,0,50,"GTIN-51","all").Rows.Single(x=>x.VariantId=="510").Source=="seller","Znack suggestions never replace confirmed seller source");
+    var single=typeof(GtinMappingSyncService).GetMethod("QueueWbGtinWritebackForVariant");
+    if(single is not null){
+        var blocked=false;try{single.Invoke(service,new object[]{store,"GTIN-1","10"});}catch(TargetInvocationException ex){blocked=ex.InnerException is InvalidOperationException;}
+        Expect(blocked,"Single-target live probe refuses another pending writeback operation");
+        var probe=db.SaveStore(new(0,Marketplace.Wildberries,"LIVE-PROBE-FIXTURE","","","","","fake-wb-token",true));var probeScope=ProductCatalog.Scope(probe);
+        db.BeginProductCatalog(probe,probeScope);db.ApplyProductCatalogPage(probe,"",probeScope,new(entries.Take(3).Select(x=>ProductCatalog.Entry(x.Product with{StoreId=probe.Id})).ToArray(),"",true));
+        foreach(var entry in entries.Take(3))db.UpsertSellerGtinMapping(probe,entry.Product.Sku,entry.Variants[0].VariantId,NewGtin(int.Parse(entry.Product.ExternalId)));
+        single.Invoke(service,new object[]{probe,"GTIN-2","20"});var snapshot=JsonNode.Parse(db.GetGtinSyncJob(probe,"WB_WRITEBACK")!.SnapshotJson)!.AsArray();
+        handler.ReadIds.Clear();var probeDone=await service.ResumeWbGtinWritebackAsync(probe);
+        Expect(snapshot.Count==1&&snapshot[0]!["Sku"]!.ToString()=="GTIN-2"&&probeDone.Success&&handler.ReadIds.All(x=>x==2),"Live GTIN probe reads/verifies only the explicitly selected variant");db.DeleteStore(probe.Id);
+    }
     db.DeleteStore(store.Id);
 }
 try
@@ -92,7 +103,7 @@ return failures.Count==0?0:1;
 
 sealed class GtinMockApi:HttpMessageHandler
 {
-    public Dictionary<int,JsonObject> Cards{get;}=new();public List<int[]> Writes{get;}=new();
+    public Dictionary<int,JsonObject> Cards{get;}=new();public List<int[]> Writes{get;}=new();public List<int> ReadIds{get;}=new();
     public bool PreservedSizes{get;private set;}=true;public bool HideLastReadback{get;set;}
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage r,CancellationToken ct){
         ct.ThrowIfCancellationRequested();var body=JsonNode.Parse(r.Content!.ReadAsStringAsync(ct).GetAwaiter().GetResult())!;
@@ -103,7 +114,7 @@ sealed class GtinMockApi:HttpMessageHandler
                 if(!(HideLastReadback&&id==51))Cards[id]=card.DeepClone().AsObject();}
             return Task.FromResult(Json("{\"error\":false}"));
         }
-        var search=body["settings"]!["filter"]!["textSearch"]!.ToString();var nm=int.Parse(search);
+        var search=body["settings"]!["filter"]!["textSearch"]!.ToString();var nm=int.Parse(search);ReadIds.Add(nm);
         return Task.FromResult(Json(new JsonObject{["cards"]=new JsonArray(Cards[nm].DeepClone()),["cursor"]=new JsonObject{["total"]=1}}.ToJsonString()));
     }
     static HttpResponseMessage Json(string text,HttpStatusCode status=HttpStatusCode.OK)=>new(status){Content=new StringContent(text,Encoding.UTF8,"application/json")};

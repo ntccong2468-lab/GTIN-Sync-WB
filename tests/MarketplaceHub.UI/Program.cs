@@ -32,7 +32,7 @@ internal static class Program
         }
         HttpResponseMessage Json(string body) => new(HttpStatusCode.OK) { Content = new StringContent(body, Encoding.UTF8, "application/json") };
         IEnumerable<Control> All(Control parent) => parent.Controls.Cast<Control>().SelectMany(x => new[] { x }.Concat(All(x)));
-        var app = new AppServices();
+        var app = new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-ui-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());
         var marker = "UI-FIXTURE-" + Guid.NewGuid().ToString("N");
         var store = app.Db.SaveStore(new StoreProfile(0, Marketplace.Yandex, marker, "123", "fixture", "456", "789", "fixture", true));
         app.Db.ReplaceProducts(store.Id, Marketplace.Yandex,
