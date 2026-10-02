@@ -30,7 +30,8 @@ public sealed class TrueApiKizReader(SuzHttpClient auth, OperationPolicy policy,
             {
                 var identifier = SuzHttpClient.Text(row, "requestedCis"); if (identifier == "" || SuzHttpClient.Text(row, "errorCode") != "") continue;
                 string cis; try { cis = protector.CisIdentity(identifier); } catch (InvalidOperationException) { continue; }
-                if (!requested.TryGetValue(cis, out var raw) || !seen.Add(cis)) continue;
+                if (!requested.TryGetValue(cis, out var raw)) continue;
+                if (!seen.Add(cis)) { result.RemoveAll(p => p.CodeHash == protector.Identity(raw)); continue; }
                 var info = row?["cisInfo"] as JsonObject; if (info is null || info["errorCode"] is not null) continue;
                 var gtin = GtinCode.Normalize(SuzHttpClient.Text(info, "gtin")); var owner = SuzHttpClient.Text(info, "ownerInn");
                 var status = SuzHttpClient.Text(info, "status"); var package = SuzHttpClient.Text(info, "packageType");

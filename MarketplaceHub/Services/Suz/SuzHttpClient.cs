@@ -81,7 +81,7 @@ public sealed class SuzHttpClient
     public Task<SuzOutcome<SuzOrderStatus>> ReadOrderAsync(PurchaseIntent intent, CancellationToken ct) => Request(intent, OperationKind.SuzStatus, "/api/v3/order/status", "&orderId=" + Escape(intent.RemoteOrderId), root => {
         var entries = root as JsonArray ?? new JsonArray(root?.DeepClone());
         var row = entries.FirstOrDefault(x => Text(x, "gtin") == intent.Request.Gtin) ?? (entries.Count == 1 ? entries[0] : null);
-        if (row is null || (Text(row, "orderId") != "" && Text(row, "orderId") != intent.RemoteOrderId)) return null;
+        if (row is null || (Text(row, "orderId") != "" && Text(row, "orderId") != intent.RemoteOrderId) || (Text(row, "gtin") != "" && Text(row, "gtin") != intent.Request.Gtin)) return null;
         var state = Text(row, "bufferStatus"); if (state == "") state = Text(row, "status");
         return state == "" ? null : new SuzOrderStatus(intent.RemoteOrderId!, state, Int(row, "availableCodes"), state is "REJECTED" or "DECLINED" ? "remote_rejected" : null);
     }, ct);
