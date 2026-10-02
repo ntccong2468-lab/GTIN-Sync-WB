@@ -1,7 +1,7 @@
 name: Marketplace Hub regression tests
 on:
   push:
-    branches: ["fix/dashboard-fbs-stability", "marketplace-hub-v2"]
+    branches: ["fix/dashboard-fbs-stability", "marketplace-hub-v2", "feat/fbs-kiz-label-jobs"]
     paths: ["MarketplaceHub/**", "tests/MarketplaceHub.*/**", ".github/workflows/marketplace-regression.yml", "!MarketplaceHub/dist/**"]
   pull_request:
     branches: ["marketplace-hub-v2"]
