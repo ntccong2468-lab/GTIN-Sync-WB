@@ -6,6 +6,20 @@ on:
   pull_request:
     branches: ["marketplace-hub-v2"]
 jobs:
+  workflows:
+    runs-on: windows-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: |
+            /*
+            !MarketplaceHub/dist/
+          sparse-checkout-cone-mode: false
+      - uses: actions/setup-dotnet@v4
+        with: { dotnet-version: "8.0.x" }
+      - name: Durable FBS KIZ workflows
+        run: dotnet run --project tests/MarketplaceHub.Workflows -c Release
   regression:
     runs-on: windows-latest
     timeout-minutes: 15
@@ -18,9 +32,6 @@ jobs:
           sparse-checkout-cone-mode: false
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: "8.0.x" }
-      - name: Durable FBS KIZ workflows
-        if: always()
-        run: dotnet run --project tests/MarketplaceHub.Workflows -c Release
       - name: API contracts
         run: dotnet run --project tests/MarketplaceHub.Contracts -c Release
       - name: Ozon and Yandex FBS contracts
