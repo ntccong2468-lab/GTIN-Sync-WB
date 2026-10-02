@@ -71,7 +71,9 @@ public sealed partial class AppDatabase
         var request = JsonSerializer.Deserialize<PurchaseIntentRequest>(row.GetString(0))!; var authorization = row.GetString(1); row.Close();
         using var profile = WfSql(c, tx, "SELECT profile_json FROM kiz_profiles WHERE store_id=$s AND current=1", ("$s", request.Profile.StoreId));
         var current = JsonSerializer.Deserialize<SuzProfile>((string)profile.ExecuteScalar()!)!;
-        return current.Id == request.Profile.Id && current.Version == request.Profile.Version && current.OwnerInn == request.Profile.OwnerInn && current.Environment == request.Profile.Environment && current.CredentialVersion == authorization;
+        using var configVersion = WfSql(c, tx, "SELECT value FROM kiz_crypto_metadata WHERE name='znak-credential-version'");
+        var activeCredential = (string)configVersion.ExecuteScalar()!;
+        return current.Id == request.Profile.Id && current.Version == request.Profile.Version && current.OwnerInn == request.Profile.OwnerInn && current.Environment == request.Profile.Environment && current.CredentialVersion == authorization && authorization == activeCredential;
     }
     public bool TryBeginPurchase(string intentId)
     {
