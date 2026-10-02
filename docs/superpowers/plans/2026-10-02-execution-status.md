@@ -4,11 +4,11 @@
 
 - Nhiệm vụ 1 đã hoàn tất: chuẩn hóa trạng thái, đếm external order duy nhất, loại membership và hủy khỏi Đơn mới. Windows CI xanh tại `5472ed3`, regression run `36936280076`.
 - Nhiệm vụ 2 đã hoàn tất: kết quả theo từng đơn, selection hỗn hợp không chặn đơn hợp lệ, batch `100/100/5` cho 205 đơn. Windows CI xanh tại `acfe9b5`, regression run `36937180622`.
-- Nhiệm vụ 3 đã triển khai: nhật ký nhận đơn, phục hồi và dialog kết quả. RED `36959052332`; Windows xác nhận 24/24 FbsState (kể cả phục hồi không POST/PATCH trùng) và test dialog xanh tại `74a5d46`. Suite UI còn test FBO đỏ của nhiệm vụ 4.
+- Nhiệm vụ 3 hoàn tất: nhật ký nhận đơn, phục hồi và dialog kết quả. RED `36959052332`; Windows xác nhận 24/24 FbsState (kể cả phục hồi không POST/PATCH trùng) và test dialog xanh tại `74a5d46`. Suite UI còn test FBO đỏ của nhiệm vụ 4.
 - Nhiệm vụ 4 hoàn tất: RED `74a5d46`, GREEN `ece45c9` trên Windows run `36960714781`: 13/13 Print, 31/31 UI, 24/24 FbsState. Nhãn chuẩn bị theo biến thể, số lượng, màu và KIZ; nhật ký FBO giữ mã khi lỗi.
 - Nhiệm vụ 5 hoàn tất: RED `36960836857`; GREEN nhiệm vụ 5 tại `275a1f7`, 26/26 FbsState, 32/32 UI. Test mapping được cách ly khỏi mã KIZ của scenario quyền sở hữu phía sau.
 - Nhiệm vụ 6 hoàn tất: GREEN `52e57ab` run `36962953337`: 9/9 ProductSync, 26/26 MockApi, 26/26 FbsState, 13/13 Print, 32/32 UI. Mock 51 card chứng minh batch 50/1, 429, restart, readback sai; NK 25 GTIN/request/checkpoint riêng và metadata được che credential.
-- Nhiệm vụ 7 đang xác minh: RED `36963378571`/`36963679346` cho Trung tâm kiểm tra, single-target writeback và membership không được xóa khi refresh thiếu. Có preview Windows portable riêng; installer bị tắt kể cả manual dispatch.
+- Nhiệm vụ 7 hoàn tất kiểm thử giả lập, đang bàn giao API thật: RED `36963378571`/`36963679346` cho Trung tâm kiểm tra, single-target writeback và membership không được xóa khi refresh thiếu. Có preview Windows portable riêng; installer bị tắt kể cả manual dispatch.
 
 ## Các quyết định thực thi
 
@@ -59,3 +59,29 @@ Ruling: Cập nhật test khóa sync để trả chi tiết thật và yêu cầ
 
 - 8 finding Important đã GREEN đầy đủ tại remote `fa4a166`, Windows build `36966594616`; positive controls đạt 32/32 FbsState và 35/35 MockApi.
 - QA ảnh còn hai lỗi thuộc mục tiêu giao diện/số liệu: toolbar KIZ Mapping bị khuất ở viewport 1044 px; biểu đồ ngày vẫn đếm hai SKU thành hai đơn. Test RED `b2db32b`, regression `36966954613` xác nhận cả hai assertion thất bại. Sửa responsive toolbar thành hai hàng ở cửa sổ nhỏ và distinct external order theo ngày; đang đợi GREEN cuối.
+
+## Xác minh cuối và ranh giới API thật
+
+Remote code `92220145cae66d79242e60dffb263d984a71c584` (local `fc27d54`) đã GREEN trên Windows regression `36967354996`:
+
+| Suite | Kết quả |
+|---|---:|
+| Contracts | 37/37 |
+| Fbs | 22/22 |
+| ProductSync | 9/9 |
+| FbsState | 32/32 |
+| License | 14/14 |
+| MockApi | 35/35 |
+| UI | 34/34 |
+| Print | 13/13 |
+| Tổng | 196/196 |
+
+Đã đọc ảnh cuối Báo cáo và KIZ Mapping: biểu đồ đếm 1 external order có 2 SKU thành 1; toolbar kiểm tra Znack nằm trọn trong viewport 1044 px và chỉ lưới có thanh cuộn ngang. Đã xem ảnh FBO, Test Center và shipment WB; ô nhập credential được che và report echo đã được redaction.
+
+Ruling: Giữ nhánh `fix/dashboard-fbs-stability` cùng PR hiện có, không merge nhánh chính — tiếp tục quyền push đã xác nhận và ranh giới API thật — workspace quản lý bởi host được giữ lại theo finishing-a-development-branch.
+
+Gói bàn giao là Windows portable của build `36967354995`, không phải installer. Bước tiếp theo cần seller nhập API thật trực tiếp trong Kiểm tra tích hợp, chạy chỉ đọc và gửi báo cáo đã che; chỉ thử ghi đúng một biến thể/đơn sau xác minh và checkbox xác nhận. Chưa chạy API thật, chưa tạo bộ cài.
+
+Windows build `36967354995` đã thành công: 196/196 test, zero failure trong log, publish self-contained win-x64 và upload preview 75.792.073 byte. Artifact `11209962932`: https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/36967354995/artifacts/11209962932 . Tất cả bước installer đều skipped. PR regression `36967360641` cũng success.
+
+Bàn giao: giải nén ZIP, mở MarketplaceHub.exe → chọn cửa hàng → KIZ Mapping → Kiểm tra / đồng bộ Znack (hoặc Kiểm tra tích hợp ở menu). Seller nhập token WB và API key National Catalog trong ô che, chạy Kiểm tra chỉ đọc, gửi báo cáo đã che. Đây là ranh giới cần dữ liệu thật, không yêu cầu dán secret vào chat. Nhiệm vụ 7 hoàn tất phần đã có thể kiểm chứng bằng mock; kiểm tra API thật và installer còn chờ seller.
