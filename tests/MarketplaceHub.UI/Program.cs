@@ -133,6 +133,8 @@ internal static class Program
                 var grid=All(form).OfType<DataGridView>().SingleOrDefault(x=>x.Name=="gtinMappingGrid");
                 Expect(grid is not null&&grid.Columns.Contains("variant")&&grid.Columns.Contains("available")&&grid.Columns.Contains("reserved")&&grid.Columns.Contains("assigned"),"Mapping still merges first product barcodes or hides inventory states.");
                 Expect(All(form).Any(x=>x.Name=="gtinMappingPage")&&All(form).OfType<Button>().Any(x=>x.Name=="nextGtinMappingPage"),"Mapping does not expose 50-row paging.");
+                var actions=All(form).OfType<Button>().Where(x=>x.Text is "← Trước" or "Sau →" or "Đồng bộ catalog" or "Kiểm tra / đồng bộ Znack").ToArray();
+                Expect(actions.Length==4&&actions.All(x=>x.Left>=0&&x.Right<=x.Parent!.ClientSize.Width),"KIZ Mapping actions are cut off in the current Windows viewport.");
                 var dir=Environment.GetEnvironmentVariable("MARKETPLACE_SCREENSHOTS")??Path.Combine(Path.GetTempPath(),"MarketplaceHub-screenshots");Directory.CreateDirectory(dir);using var image=new Bitmap(form.Width,form.Height);form.DrawToBitmap(image,new Rectangle(Point.Empty,form.Size));image.Save(Path.Combine(dir,"KizMapping.png"));
             });
             Check("Delivered orders are absent from active shipping tab", () =>
