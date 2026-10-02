@@ -58,6 +58,7 @@ async Task GtinMocks(){
 try
 {
     Expect(typeof(AppServices).GetMethod("SyncZnackGtinAsync") is not null&&typeof(AppServices).GetMethod("QueueWbGtinWriteback") is not null&&typeof(AppServices).GetMethod("ResumeWbGtinWritebackAsync") is not null,"Znack/WB durable GTIN pipeline is available for end-to-end mock validation");
+    Expect(typeof(GtinMappingSyncService).GetMethod("QueueWbGtinWritebackForVariant") is not null,"Live GTIN probe can queue only one explicitly selected variant");
     foreach(var store in new[]{ozon,yandex})
     {
         var sku=store.Marketplace==Marketplace.Ozon?"OZ-SKU":"YA-SKU";

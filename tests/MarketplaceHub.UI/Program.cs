@@ -71,6 +71,16 @@ internal static class Program
                 Expect(warning.Text.Contains("chỉ đọc") && warning.Text.Contains("không tạo job nhãn"), "Mutation boundary is not visible to the seller.");
                 Expect(All(dialog).OfType<Button>().Any(x => x.Name == "copyOzonRedactedReport"), "Redacted diagnostic export is missing.");
             });
+            Check("Live validation center starts read-only with masked credentials and disabled mutation",()=>{
+                var type=typeof(MainForm).Assembly.GetType("MarketplaceHub.UI.IntegrationTestCenterDialog");Expect(type is not null,"Local live validation center is missing.");
+                var wb=store with{Marketplace=Marketplace.Wildberries,Token="private-wb-token"};
+                using var dialog=(Form)Activator.CreateInstance(type!,app,wb)!;
+                var token=All(dialog).OfType<TextBox>().Single(x=>x.Name=="liveWbToken");var nk=All(dialog).OfType<TextBox>().Single(x=>x.Name=="liveNationalCatalogKey");
+                Expect(token.UseSystemPasswordChar&&nk.UseSystemPasswordChar,"Live credentials are visible unmasked.");
+                var consent=All(dialog).OfType<CheckBox>().Single(x=>x.Name=="liveMutationConfirmed");var mutation=All(dialog).OfType<Button>().Single(x=>x.Name=="runLiveMutation");
+                Expect(!consent.Checked&&!mutation.Enabled&&All(dialog).Any(x=>x.Name=="readOnlyIntegrationWarning"&&x.Text.Contains("chỉ đọc")),"Live panel enables remote writes by default.");
+                consent.Checked=true;Expect(!mutation.Enabled,"Consent without a selected verified target enabled mutation.");
+            });
             Check("Packed Ozon and Yandex orders remain available for label printing", () =>
             {
                 foreach (var state in new[] { "awaiting_deliver", "PROCESSING/READY_TO_SHIP" })
