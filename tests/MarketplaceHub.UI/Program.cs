@@ -98,6 +98,12 @@ internal static class Program
                 var label=All(form).OfType<Label>().Single(x=>x.Text=="Đơn mới");
                 Expect(label.Parent!.Controls.OfType<Label>().Any(x=>x.Text=="1"),"Report did not render the canonical distinct count.");
             });
+            Check("KIZ Mapping exposes page controls and per-state inventory",()=>{
+                Page(form,"ShowKizMapping");Application.DoEvents();
+                var grid=All(form).OfType<DataGridView>().SingleOrDefault(x=>x.Name=="gtinMappingGrid");
+                Expect(grid is not null&&grid.Columns.Contains("variant")&&grid.Columns.Contains("available")&&grid.Columns.Contains("reserved")&&grid.Columns.Contains("assigned"),"Mapping still merges first product barcodes or hides inventory states.");
+                Expect(All(form).Any(x=>x.Name=="gtinMappingPage")&&All(form).OfType<Button>().Any(x=>x.Name=="nextGtinMappingPage"),"Mapping does not expose 50-row paging.");
+            });
             Check("Delivered orders are absent from active shipping tab", () =>
                 Expect(!State("IsShipping", "delivered"), "Delivered order is still active."));
             Check("Old page controls are disposed on navigation", () =>

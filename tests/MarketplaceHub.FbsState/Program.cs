@@ -14,6 +14,42 @@ HttpResponseMessage Json(string body)=>new(HttpStatusCode.OK){Content=new String
 void Http(Func<HttpRequestMessage,HttpResponseMessage> response){typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,new HttpClient(new FixtureHttp(response)));typeof(MarketplaceGateway).GetField("wbLabelDelay",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,(Func<TimeSpan,CancellationToken,Task>)((_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;}));}
 string Posting(string status="awaiting_packaging",bool required=false)=>System.Text.Json.JsonSerializer.Serialize(new{result=new{posting_number="P",status,requirements=new{products_requiring_mandatory_mark=required?new[]{100}:Array.Empty<int>()},products=new[]{new{sku=100,offer_id="A",quantity=2,name="A"},new{sku=200,offer_id="B",quantity=1,name="B"}}}});
 try {
+await Check("GTIN mapping pages 50 exact variants and preserves seller rules across catalog refresh and restart",()=>{
+    var pageMethod=app.Db.GetType().GetMethod("GetGtinMappingPage");var save=app.Db.GetType().GetMethod("UpsertSellerGtinMapping");
+    Expect(pageMethod is not null&&save is not null,"Durable variant GTIN mapping repository is missing.");
+    var store=Store(Marketplace.Wildberries);var scope=ProductCatalog.Scope(store);
+    var entries=Enumerable.Range(0,60).Select(i=>ProductCatalog.Entry(new ProductRow(store.Id,store.Marketplace,(5000+i).ToString(),"MAP-"+i.ToString("D2"),"Áo "+i,10,"",
+        System.Text.Json.JsonSerializer.Serialize(new{nmID=5000+i,sizes=new[]{new{chrtID=10000+i*2,techSize="48",skus=new[]{"4601234567893"}},new{chrtID=10001+i*2,techSize="50",skus=new[]{"4601234567893"}}}})))).ToArray();
+    app.Db.BeginProductCatalog(store,scope);app.Db.ApplyProductCatalogPage(store,"",scope,new(entries,"",true));
+    object Page(MarketplaceHub.Infrastructure.AppDatabase db,int offset=0,string query="")=>pageMethod!.Invoke(db,new object[]{store,offset,50,query,"all"})!;
+    object[] Rows(object page)=>((System.Collections.IEnumerable)page.GetType().GetProperty("Rows")!.GetValue(page)!).Cast<object>().ToArray();
+    string Value(object row,string property)=>row.GetType().GetProperty(property)!.GetValue(row)?.ToString()??"";
+    var first=Page(app.Db);Expect(Rows(first).Length==50&&Convert.ToInt32(first.GetType().GetProperty("Total")!.GetValue(first))==120,"Page size or distinct variants are wrong.");
+    save!.Invoke(app.Db,new object[]{store,"MAP-59","10118","04601234567893"});
+    save.Invoke(app.Db,new object[]{store,"MAP-59","10119","04601234567893"});
+    var mapped=Rows(Page(app.Db));Expect(mapped.Take(2).All(x=>Value(x,"Sku")=="MAP-59"&&Value(x,"Source")=="seller"&&Value(x,"Confirmed")=="True"),"Seller-confirmed variants are not first or were grouped by SKU.");
+    Expect(Convert.ToInt32(Page(app.Db).GetType().GetProperty("MappingRuleCount")!.GetValue(Page(app.Db)))==2,"Rule count was confused with GTIN inventory count.");
+    var invalid=false;try{save.Invoke(app.Db,new object[]{store,"MAP-59","10118","04601234567894"});}catch(TargetInvocationException ex){invalid=ex.InnerException is InvalidOperationException;}Expect(invalid,"Invalid checksum overwrote seller mapping.");
+    app.Db.BeginProductCatalog(store,scope);var changed=entries[^1] with{Variants=entries[^1].Variants.Select(x=>x with{Gtin="",Barcodes=Array.Empty<string>()}).ToArray()};
+    app.Db.ApplyProductCatalogPage(store,"",scope,new(new[]{changed},"",true));
+    var reopened=new MarketplaceHub.Infrastructure.AppDatabase(app.Db.DbPath);
+    Expect(Rows(Page(reopened,0,"MAP-59")).All(x=>Value(x,"Gtin")=="04601234567893"&&Value(x,"Source")=="seller"),"Refresh/restart lost confirmed seller GTIN.");
+    Expect(Rows(Page(reopened,100)).Length==20,"Final page restarted at zero or returned over 50 rows.");
+    return Task.CompletedTask;
+});
+await Check("GTIN mapping isolates stores and archives without deleting KIZ",()=>{
+    var page=app.Db.GetType().GetMethod("GetGtinMappingPage");var save=app.Db.GetType().GetMethod("UpsertSellerGtinMapping");var archive=app.Db.GetType().GetMethod("ArchiveGtinMapping");
+    Expect(page is not null&&save is not null&&archive is not null,"Safe GTIN mapping archive is missing.");
+    var one=Store(Marketplace.Ozon);var two=Store(Marketplace.Ozon);
+    foreach(var store in new[]{one,two}){var scope=ProductCatalog.Scope(store);app.Db.BeginProductCatalog(store,scope);app.Db.ApplyProductCatalogPage(store,"",scope,new(new[]{ProductCatalog.Entry(new ProductRow(store.Id,store.Marketplace,"11","A","A",10,"","{\"barcodes\":[\"4601234567893\"]}"))},"",true));}
+    save!.Invoke(app.Db,new object[]{one,"A","11","04601234567893"});
+    var untouched=page!.Invoke(app.Db,new object[]{two,0,50,"","all"})!;
+    Expect(Convert.ToInt32(untouched.GetType().GetProperty("MappingRuleCount")!.GetValue(untouched))==0,"Mapping leaked to another store.");
+    var code="010460123456789321mapping-"+Guid.NewGuid().ToString("N");app.Db.UpsertKiz(code,"04601234567893","AVAILABLE");
+    archive!.Invoke(app.Db,new object[]{one,"A","11"});var hidden=page.Invoke(app.Db,new object[]{one,0,50,"","all"})!;
+    Expect(Convert.ToInt32(hidden.GetType().GetProperty("Total")!.GetValue(hidden))==0&&app.Db.Kiz().Any(x=>x.Code==code),"Archiving deleted KIZ or left the mapping active.");
+    return Task.CompletedTask;
+});
 await Check("WB receive journal survives restart and retains its resolved supply",()=>{
     var begin=app.Db.GetType().GetMethod("BeginWbReceiveOperation");
     Expect(begin is not null,"WB receive intent is not durable before the remote write.");
