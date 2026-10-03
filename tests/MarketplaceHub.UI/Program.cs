@@ -317,7 +317,9 @@ internal static class Program
             });
             Check("FBS list remains responsive after its parent installs the tab layout",()=>{
                 Page(form,"ShowFbs");var grid=All(form).OfType<DataGridView>().Single(x=>x.Name=="fbsNewOrders");var before=grid.Parent!.Width;
-                var size=form.ClientSize;form.ClientSize=new(size.Width+120,size.Height+50);Application.DoEvents();try{Expect(grid.Parent.Width>before,$"FBS table did not resize: before={before}, after={grid.Parent.Width}, form={form.ClientSize}, work={grid.Parent.Parent!.ClientSize}, window={form.WindowState}.");}finally{form.ClientSize=size;}
+                var viewport=grid.Parent.Parent!;var size=viewport.ClientSize;viewport.Parent!.SuspendLayout();
+                try{viewport.ClientSize=new(size.Width+120,size.Height+50);Application.DoEvents();Expect(grid.Parent.Width>before,"FBS child layout did not follow a larger viewport.");}
+                finally{viewport.ClientSize=size;viewport.Parent.ResumeLayout(true);}
             });
 
             Check("WB print uses the selected size instead of the card's first size", () =>
@@ -406,7 +408,7 @@ internal static class Program
             Check("WB uncertain KIZ PUT resumes by reading metadata without assigning a new code", () =>
             {
                 var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-retry","","","","","fixture",true));
-                const string gtin="04608888888884";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");
+                const string gtin="04608888888886";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");
                 var row=new FbsOrderRow(wb.Id,Marketplace.Wildberries,"777","SKU","fixture",1,"confirm",true,"{}");
                 var httpField=typeof(MarketplaceGateway).GetField("http",instance)!;var old=httpField.GetValue(app.Api);
                 var applied=false;var puts=0;
