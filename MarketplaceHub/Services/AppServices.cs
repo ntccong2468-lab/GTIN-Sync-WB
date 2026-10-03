@@ -223,7 +223,9 @@ public sealed partial class AppServices
             var token=await GetSuzTokenAsync(config,ct).ConfigureAwait(false);
             if(orderId.Length==0)
             {
-                if(!Db.TryBeginSuzPurchase(storeId,sku,gtin,missing))
+                available=Available();if(available.Count>=quantity)return (true,"Kho KIZ vừa được bổ sung bởi lượt khác.",available);
+                missing=quantity-available.Count;
+                if(!Db.TryBeginSuzPurchase(storeId,sku,gtin,missing,persisted?.UpdatedAt))
                     return (false,"Một cửa sổ khác đã bắt đầu order SUZ. Chờ/đối soát order đã lưu; chưa mua thêm.",available);
                 try{orderId=await CreateSuzOrderAsync(config,token,gtin,missing,ct).ConfigureAwait(false);}
                 catch(Exception ex) when(ex is SuzOrderRejectedException or SuzQuotaException)

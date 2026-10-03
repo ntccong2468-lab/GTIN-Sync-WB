@@ -99,7 +99,7 @@ await Check("SUZ concurrent application instances create at most one paid order"
     }
     var one=SuzApp(store,Respond);var two=SuzApp(store,Respond);
     var results=await Task.WhenAll(Task.Run(()=>one.EnsureKizQuantityAsync(store.Id,"CONCURRENT","04601234567893",1)),Task.Run(()=>two.EnsureKizQuantityAsync(store.Id,"CONCURRENT","04601234567893",1)));
-    Expect(creates==1&&results.Any(x=>x.Ok)&&app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId=="CONCURRENT-ORDER","Concurrent app instances bought two orders or lost the checkpoint.");
+    Expect(creates==1&&results.Any(x=>x.Ok)&&app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId=="CONCURRENT-ORDER",$"Concurrent acquisition: creates={creates}, results={string.Join(";",results.Select(x=>x.Message))}, checkpoint={app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId}.");
 });
 await Check("SUZ Retry-After survives restart without further authentication or status calls",async()=>{
     var store=Store(Marketplace.Ozon);app.Db.UpsertZnakPipeline(store.Id,"QUOTA","04601234567893","POLLING","QUOTA-ORDER","");var statusCalls=0;

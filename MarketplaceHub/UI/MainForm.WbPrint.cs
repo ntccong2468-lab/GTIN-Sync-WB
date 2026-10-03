@@ -90,7 +90,7 @@ public sealed partial class MainForm
                 if(requireProduct && candidates.Length!=1)
                     throw new InvalidOperationException($"{order.ExternalOrderId}: chưa có đúng một barcode sàn của biến thể WB. Hãy đồng bộ lại catalog.");
                 // Keep the original marketplace barcode; registered GTIN is resolved separately for KIZ.
-                barcode=candidates.FirstOrDefault()??"";
+                barcode=candidates.Length==1?candidates[0]:"";
             }
             else if(barcode.Length==0)barcode=meta.Barcode;
         }
