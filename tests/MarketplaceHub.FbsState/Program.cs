@@ -81,6 +81,34 @@ await Check("SUZ malformed create response cannot trigger another purchase",asyn
     var second=await target.EnsureKizQuantityAsync(store.Id,"AMBIGUOUS","04601234567893",1);
     Expect(!first.Ok&&!second.Ok&&creates==1&&app.Db.ZnakPipelines(store.Id).Single().Stage=="CREATE_AMBIGUOUS","Malformed success allowed a second paid purchase.");
 });
+await Check("SUZ definitive rejection can retry without an ambiguous purchase lock",async()=>{
+    var store=Store(Marketplace.Ozon);var creates=0;var target=SuzApp(store,r=>{
+        if(r.RequestUri!.AbsolutePath.Contains("/auth/"))return SuzAuth(r);creates++;return new(HttpStatusCode.BadRequest){Content=new StringContent("{}")};
+    });
+    await target.EnsureKizQuantityAsync(store.Id,"REJECTED","04601234567893",1);await target.EnsureKizQuantityAsync(store.Id,"REJECTED","04601234567893",1);
+    Expect(creates==2&&app.Db.ZnakPipelines(store.Id).Single().Stage=="ERROR","Known rejected purchase became permanently ambiguous.");
+});
+await Check("SUZ concurrent application instances create at most one paid order",async()=>{
+    var store=Store(Marketplace.Ozon);var creates=0;using var barrier=new CountdownEvent(2);
+    HttpResponseMessage Respond(HttpRequestMessage r){var path=r.RequestUri!.AbsolutePath;
+        if(path.EndsWith("/auth/key")){barrier.Signal();Expect(barrier.Wait(TimeSpan.FromSeconds(5)),"Second acquisition never reached authentication");return SuzAuth(r);}
+        if(path.Contains("/auth/"))return SuzAuth(r);
+        if(path=="/api/v3/order"){Interlocked.Increment(ref creates);return Json("{\"orderId\":\"CONCURRENT-ORDER\"}");}
+        if(path.EndsWith("/status"))return Json("[{\"gtin\":\"04601234567893\",\"bufferStatus\":\"ACTIVE\",\"availableCodes\":1}]");
+        return Json("{\"codes\":[\"010460123456789321concurrent-fixture\"]}");
+    }
+    var one=SuzApp(store,Respond);var two=SuzApp(store,Respond);
+    var results=await Task.WhenAll(Task.Run(()=>one.EnsureKizQuantityAsync(store.Id,"CONCURRENT","04601234567893",1)),Task.Run(()=>two.EnsureKizQuantityAsync(store.Id,"CONCURRENT","04601234567893",1)));
+    Expect(creates==1&&results.Any(x=>x.Ok)&&app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId=="CONCURRENT-ORDER","Concurrent app instances bought two orders or lost the checkpoint.");
+});
+await Check("Znack registration preparation cannot erase a pending SUZ purchase",async()=>{
+    var store=Store(Marketplace.Wildberries);app.Db.UpsertZnakPipeline(store.Id,"PREP","04601234567893","ERROR","PENDING-ORDER","network interrupted");
+    var method=typeof(AppServices).GetMethod("PrepareZnakRegistrationAsync");Expect(method is not null,"Registration preparation still shares the paid-order journal.");
+    var product=new ProductRow(store.Id,store.Marketplace,"10","PREP","Áo",10,"","{\"nmID\":10,\"sizes\":[{\"chrtID\":11,\"skus\":[\"4601234567893\"]}]}");
+    var result=await (Task<PriceUpdateResult>)method!.Invoke(app,new object[]{store,new[]{product},CancellationToken.None})!;
+    var pending=app.Db.ZnakPipelines(store.Id).Single();Expect(result.Success&&pending.Stage=="ERROR"&&pending.ExternalOrderId=="PENDING-ORDER"&&pending.Gtin=="04601234567893","Local registration preparation discarded a known paid purchase.");
+});
+
 await Check("GTIN mapping exposes marketplace barcode separately from seller GTIN",()=>{
     var store=Store(Marketplace.Wildberries);var scope=ProductCatalog.Scope(store);
     app.Db.BeginProductCatalog(store,scope);app.Db.ApplyProductCatalogPage(store,"",scope,new(new[]{ProductCatalog.Entry(new ProductRow(store.Id,store.Marketplace,"41","TECH","Áo",10,"","{\"nmID\":41,\"sizes\":[{\"chrtID\":51,\"techSize\":\"XL\",\"skus\":[\"123456789000\"]}]}"))},"",true));

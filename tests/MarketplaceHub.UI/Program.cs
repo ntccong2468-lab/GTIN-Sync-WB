@@ -55,6 +55,20 @@ internal static class Program
                 Page(form,"ShowKizMapping");var grid=All(form).OfType<DataGridView>().Single(x=>x.Name=="gtinMappingGrid");
                 Expect(grid.Columns.Contains("marketplaceBarcode")&&grid.Columns["marketplaceBarcode"].HeaderText.Contains("Barcode")&&grid.Columns["gtin"].HeaderText.Contains("GTIN"),"Mapping has no separate marketplace barcode column.");
             });
+            Check("WB product label refuses multiple barcodes without order identity",()=>{
+                var method=typeof(MainForm).GetMethod("BuildWbPrintOrder",instance)!;
+                var product=new ProductRow(store.Id,Marketplace.Wildberries,"10","A","Áo",10,"","{\"sizes\":[{\"chrtID\":11,\"techSize\":\"XL\",\"skus\":[\"barcode-a\",\"barcode-b\"]}]}");
+                var row=new FbsOrderRow(store.Id,Marketplace.Wildberries,"BARCODE-AMBIG","A","Áo",1,"confirm",false,"{\"chrtId\":11}");
+                var rejected=false;try{method.Invoke(form,new object[]{row,product,new LabelResult(true,"fixture"),Array.Empty<string>(),true});}catch(TargetInvocationException ex){rejected=ex.InnerException is InvalidOperationException;}
+                Expect(rejected,"WB silently chose the first ambiguous barcode.");
+            });
+            Check("Yandex picking retains separate item IDs when offers repeat",()=>{
+                var method=typeof(MainForm).GetMethod("BuildMarketplacePickingOrder",instance);Expect(method is not null,"Picking exporter still resolves items by Single SKU.");
+                var items=new[]{new MarketplaceFbsItem("10","A","Áo",1,false,new System.Text.Json.Nodes.JsonObject()),new MarketplaceFbsItem("11","A","Áo",2,false,new System.Text.Json.Nodes.JsonObject())};
+                var snapshot=new MarketplaceFbsSnapshot(store.Id,Marketplace.Yandex,"REPEATED","PROCESSING","READY_TO_SHIP",items,new System.Text.Json.Nodes.JsonObject(),false,"");
+                var rows=items.Select(item=>(WbPrintOrder)method!.Invoke(form,new object[]{store,snapshot,item})!).ToArray();
+                Expect(rows.Select(x=>x.Quantity).SequenceEqual(new[]{1,2})&&rows.All(x=>x.OrderId=="REPEATED")&&rows.Sum(x=>x.Quantity)==3,"Repeated offer lost an item or quantity in picking export.");
+            });
             Check("WB mixed receive dialog shows retained supply and one outcome per order",()=>{
                 var type=typeof(MainForm).Assembly.GetType("MarketplaceHub.UI.WbReceiveResultDialog");
                 Expect(type is not null,"WB per-order outcome dialog is missing.");
