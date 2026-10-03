@@ -71,6 +71,23 @@ await Check("SUZ refuses wrong-GTIN downloaded codes without losing the order",a
     var result=await target.EnsureKizQuantityAsync(store.Id,"WRONG","04601234567893",1);Expect(!result.Ok&&!app.Db.Kiz().Any(x=>x.Code==code)&&app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId=="WRONG-ORDER","Wrong-GTIN code entered the pool or order checkpoint was erased.");
 });
 
+await Check("SUZ malformed create response cannot trigger another purchase",async()=>{
+    var store=Store(Marketplace.Ozon);var creates=0;var target=SuzApp(store,r=>{
+        if(r.RequestUri!.AbsolutePath.Contains("/auth/"))return SuzAuth(r);
+        if(r.RequestUri.AbsolutePath=="/api/v3/order"){creates++;return Json("{}");}
+        throw new Exception("No status request without an order ID");
+    });
+    var first=await target.EnsureKizQuantityAsync(store.Id,"AMBIGUOUS","04601234567893",1);
+    var second=await target.EnsureKizQuantityAsync(store.Id,"AMBIGUOUS","04601234567893",1);
+    Expect(!first.Ok&&!second.Ok&&creates==1&&app.Db.ZnakPipelines(store.Id).Single().Stage=="CREATE_AMBIGUOUS","Malformed success allowed a second paid purchase.");
+});
+await Check("GTIN mapping exposes marketplace barcode separately from seller GTIN",()=>{
+    var store=Store(Marketplace.Wildberries);var scope=ProductCatalog.Scope(store);
+    app.Db.BeginProductCatalog(store,scope);app.Db.ApplyProductCatalogPage(store,"",scope,new(new[]{ProductCatalog.Entry(new ProductRow(store.Id,store.Marketplace,"41","TECH","Áo",10,"","{\"nmID\":41,\"sizes\":[{\"chrtID\":51,\"techSize\":\"XL\",\"skus\":[\"123456789000\"]}]}"))},"",true));
+    app.Db.UpsertSellerGtinMapping(store,"TECH","51","04601234567893");var row=app.Db.GetGtinMappingPage(store).Rows.Single();
+    Expect(row.Gtin=="04601234567893"&&row.GetType().GetProperty("MarketplaceBarcodes")?.GetValue(row)?.ToString()=="123456789000","Seller GTIN hid the marketplace technical barcode.");return Task.CompletedTask;
+});
+
 await Check("Consecutive marketplace sync reconciles disappeared orders and invalidates failed refresh",async()=>{
     foreach(var marketplace in new[]{Marketplace.Wildberries,Marketplace.Ozon,Marketplace.Yandex}){
         var store=Store(marketplace);var id=marketplace==Marketplace.Ozon?"P":"201";

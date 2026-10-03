@@ -51,6 +51,10 @@ internal static class Program
                 if (picker.Items[i] is StoreProfile s && s.Id == store.Id) picker.SelectedIndex = i;
             form.Show();
             Application.DoEvents();
+            Check("GTIN mapping grid labels barcode and registered GTIN separately",()=>{
+                Page(form,"ShowKizMapping");var grid=All(form).OfType<DataGridView>().Single(x=>x.Name=="gtinMappingGrid");
+                Expect(grid.Columns.Contains("marketplaceBarcode")&&grid.Columns["marketplaceBarcode"].HeaderText.Contains("Barcode")&&grid.Columns["gtin"].HeaderText.Contains("GTIN"),"Mapping has no separate marketplace barcode column.");
+            });
             Check("WB mixed receive dialog shows retained supply and one outcome per order",()=>{
                 var type=typeof(MainForm).Assembly.GetType("MarketplaceHub.UI.WbReceiveResultDialog");
                 Expect(type is not null,"WB per-order outcome dialog is missing.");
