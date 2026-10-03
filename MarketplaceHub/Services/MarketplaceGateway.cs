@@ -607,7 +607,7 @@ public sealed partial class MarketplaceGateway
         if (s.Marketplace != Marketplace.Wildberries)
             throw new NotSupportedException("Quyết toán tài chính trực tiếp hiện chỉ hỗ trợ Wildberries.");
         from=from.Date;to=to.Date;
-        var today=DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(3)).Date;
+        var today=MarketplaceDates.MoscowToday(DateTimeOffset.UtcNow);
         if(from>to || (to-from).Days>=45 || from<new DateTime(2025,1,1) || to>today)
             throw new ArgumentException("Chọn kỳ quyết toán từ 1 đến 45 ngày, từ năm 2025 đến hôm nay (Moscow).");
         var fields=new[]{"retailAmountSum","forPaySum","deliveryServiceSum","paidStorageSum","paidAcceptanceSum",

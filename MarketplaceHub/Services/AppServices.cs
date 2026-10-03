@@ -208,6 +208,9 @@ public sealed partial class AppServices
         if(!config.Enabled)return (false,$"Thiếu {missing} KIZ và Znack chưa bật.",available);
         if(string.IsNullOrWhiteSpace(config.OmsId)||string.IsNullOrWhiteSpace(config.OmsConnection)||string.IsNullOrWhiteSpace(config.CertificateThumbprint))
             return (false,$"Thiếu {missing} KIZ. Cấu hình omsId, omsConnection và chứng thư CryptoPro trước.",available);
+        var retry=Db.SyncState(0,SuzRetryScope(config)).Cursor;
+        if(DateTimeOffset.TryParse(retry,out var until)&&until>DateTimeOffset.UtcNow)
+            return (false,$"SUZ yêu cầu chờ đến {until.ToLocalTime():HH:mm:ss}. Order và checkpoint được giữ.",available);
         var persisted=Db.ZnakPipelines(storeId).FirstOrDefault(x=>x.Sku.Equals(sku,StringComparison.OrdinalIgnoreCase));
         var pending=persisted is not null&&persisted.Stage!="CODES_DOWNLOADED";
         if(pending&&persisted!.Gtin!=gtin)
@@ -220,8 +223,13 @@ public sealed partial class AppServices
             var token=await GetSuzTokenAsync(config,ct).ConfigureAwait(false);
             if(orderId.Length==0)
             {
-                Db.UpsertZnakPipeline(storeId,sku,gtin,"BUYING","",$"Mua {missing} KIZ");
+                if(!Db.TryBeginSuzPurchase(storeId,sku,gtin,missing))
+                    return (false,"Một cửa sổ khác đã bắt đầu order SUZ. Chờ/đối soát order đã lưu; chưa mua thêm.",available);
                 try{orderId=await CreateSuzOrderAsync(config,token,gtin,missing,ct).ConfigureAwait(false);}
+                catch(Exception ex) when(ex is SuzOrderRejectedException or SuzQuotaException)
+                {
+                    Db.UpsertZnakPipeline(storeId,sku,gtin,"ERROR","",ex.Message);return (false,ex.Message,available);
+                }
                 catch(Exception ex)
                 {
                     // A missing ID or interrupted response cannot prove a paid POST was rejected.
@@ -257,10 +265,25 @@ public sealed partial class AppServices
         }
     }
 
+    private sealed class SuzQuotaException(string message):Exception(message);
+    private static string SuzRetryScope(ZnakConfig config)=>"suz_retry:"+Convert.ToHexString(System.Security.Cryptography.SHA256.HashData(
+        Encoding.UTF8.GetBytes(config.Environment+"\n"+config.OmsId+"\n"+config.OmsConnection)));
+    private void CheckSuzQuota(ZnakConfig config,HttpResponseMessage response)
+    {
+        if(response.StatusCode!=System.Net.HttpStatusCode.TooManyRequests)return;
+        var delay=response.Headers.RetryAfter?.Delta??(response.Headers.RetryAfter?.Date is { } date?date-DateTimeOffset.UtcNow:TimeSpan.FromMinutes(5));
+        if(delay<TimeSpan.FromSeconds(1))delay=TimeSpan.FromSeconds(1);
+        var until=DateTimeOffset.UtcNow+delay;Db.SaveSyncState(0,SuzRetryScope(config),until.ToString("O"),"","","SUZ Retry-After");
+        throw new SuzQuotaException($"SUZ giới hạn tốc độ. Chờ đến {until.ToLocalTime():HH:mm:ss}; order/checkpoint đã được giữ.");
+    }
+
+    private sealed class SuzOrderRejectedException(string message):Exception(message);
+
     private async Task<string> GetSuzTokenAsync(ZnakConfig config, CancellationToken ct)
     {
         const string baseUrl = "https://markirovka.crpt.ru/api/v3/true-api";
         using var challengeRes = await znakHttp.GetAsync(baseUrl + "/auth/key", ct);
+        CheckSuzQuota(config,challengeRes);
         var challengeText = await challengeRes.Content.ReadAsStringAsync(ct);
         if (!challengeRes.IsSuccessStatusCode)
             throw new InvalidOperationException($"Znack auth/key HTTP {(int)challengeRes.StatusCode}: {TrimDiagnostic(challengeText)}");
@@ -290,6 +313,7 @@ public sealed partial class AppServices
         };
         signIn.Headers.TryAddWithoutValidation("Accept", "application/json");
         using var res = await znakHttp.SendAsync(signIn, ct);
+        CheckSuzQuota(config,res);
         var text = await res.Content.ReadAsStringAsync(ct);
         if (!res.IsSuccessStatusCode)
             throw new InvalidOperationException($"Znack signIn HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
@@ -341,9 +365,14 @@ public sealed partial class AppServices
         req.Headers.TryAddWithoutValidation("X-Signature", signature);
 
         using var res = await znakHttp.SendAsync(req, ct);
+        CheckSuzQuota(config,res);
         var text = await res.Content.ReadAsStringAsync(ct);
         if (!res.IsSuccessStatusCode)
+        {
+            if(res.StatusCode is System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden or System.Net.HttpStatusCode.UnprocessableEntity)
+                throw new SuzOrderRejectedException($"SUZ từ chối order HTTP {(int)res.StatusCode}. Kiểm tra cấu hình trước khi thử lại.");
             throw new InvalidOperationException($"SUZ tạo order HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
+        }
 
         var root = JsonNode.Parse(text);
         var orderId = root?["orderId"]?.ToString() ?? root?["id"]?.ToString() ?? "";
@@ -367,12 +396,8 @@ public sealed partial class AppServices
             req.Headers.TryAddWithoutValidation("Accept", "application/json");
             req.Headers.TryAddWithoutValidation("clientToken", token);
             using var res = await znakHttp.SendAsync(req, ct);
+            CheckSuzQuota(config,res);
             var text = await res.Content.ReadAsStringAsync(ct);
-            if ((int)res.StatusCode == 429)
-            {
-                await Task.Delay(TimeSpan.FromSeconds(2), ct);
-                continue;
-            }
             if (!res.IsSuccessStatusCode)
                 return (false, $"SUZ status HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}",false);
 
@@ -416,6 +441,7 @@ public sealed partial class AppServices
         req.Headers.TryAddWithoutValidation("Accept", "application/json");
         req.Headers.TryAddWithoutValidation("clientToken", token);
         using var res = await znakHttp.SendAsync(req, ct);
+        CheckSuzQuota(config,res);
         var text = await res.Content.ReadAsStringAsync(ct);
         if (!res.IsSuccessStatusCode)
             throw new InvalidOperationException($"SUZ codes HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
@@ -444,6 +470,7 @@ public sealed partial class AppServices
             using var request=new HttpRequestMessage(HttpMethod.Get,"https://suzgrid.crpt.ru/api/v3/order/codes/"+path);
             request.Headers.TryAddWithoutValidation("clientToken",token);request.Headers.TryAddWithoutValidation("Accept","application/json");
             using var response=await znakHttp.SendAsync(request,ct).ConfigureAwait(false);
+            CheckSuzQuota(config,response);
             if(!response.IsSuccessStatusCode)throw new InvalidDataException($"SUZ phục hồi block HTTP {(int)response.StatusCode}. Giữ order để tiếp tục.");
             return JsonNode.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
         }
@@ -507,6 +534,8 @@ public sealed partial class AppServices
 
             using var process = Process.Start(psi)
                 ?? throw new InvalidOperationException("Không khởi động được cryptcp.");
+            var stdoutTask=process.StandardOutput.ReadToEndAsync();
+            var stderrTask=process.StandardError.ReadToEndAsync();
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(ct);
             timeout.CancelAfter(TimeSpan.FromSeconds(60));
             try
@@ -516,11 +545,13 @@ public sealed partial class AppServices
             catch (OperationCanceledException)
             {
                 try { if (!process.HasExited) process.Kill(true); } catch { }
+                await Task.WhenAll(stdoutTask,stderrTask);
+                if(ct.IsCancellationRequested)throw new OperationCanceledException(ct);
                 throw new TimeoutException("CryptoPro ký dữ liệu quá 60 giây.");
             }
 
-            var stdout = await process.StandardOutput.ReadToEndAsync();
-            var stderr = await process.StandardError.ReadToEndAsync();
+            var stdout = await stdoutTask;
+            var stderr = await stderrTask;
             if (process.ExitCode != 0)
                 throw new InvalidOperationException($"CryptoPro ký thất bại ({process.ExitCode}): {TrimDiagnostic(stderr + " " + stdout)}");
             if (!File.Exists(output) || new FileInfo(output).Length == 0)

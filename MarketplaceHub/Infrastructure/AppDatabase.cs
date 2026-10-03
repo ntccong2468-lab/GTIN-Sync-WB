@@ -146,6 +146,7 @@ CREATE TABLE IF NOT EXISTS znak_pipeline(
         EnsureProductCatalogTables(c);
         EnsureFboPreparationTables(c);
         EnsureGtinMappingTables(c);
+        EnsureZnakPreparationTable(c);
     }
 
     private static void EnsureZnakColumns(SqliteConnection c)
@@ -676,7 +677,7 @@ ON CONFLICT(store_id,sku) DO UPDATE SET gtin=$g,stage=$st,external_order_id=$o,d
         using(var batches=c.CreateCommand()) {
             batches.Transaction=tx;batches.CommandText="DELETE FROM marketplace_fbs_batch_orders WHERE batch_id IN(SELECT id FROM marketplace_fbs_batches WHERE store_id=$id)";batches.Parameters.AddWithValue("$id",id);batches.ExecuteNonQuery();
         }
-        foreach (var table in new[] { "marketplace_fbs_batches", "marketplace_fbs_actions", "marketplace_kiz_reservations", "ozon_label_jobs", "ozon_exemplar_actions", "product_variants", "fbo_preparation_jobs", "gtin_mapping", "gtin_sync_jobs", "product_catalog_checkpoint", "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline", "wb_supply_orders", "wb_supplies", "wb_receive_journal", "wb_kiz_reservations", "order_remote_states" })
+        foreach (var table in new[] { "marketplace_fbs_batches", "marketplace_fbs_actions", "marketplace_kiz_reservations", "ozon_label_jobs", "ozon_exemplar_actions", "product_variants", "fbo_preparation_jobs", "gtin_mapping", "gtin_sync_jobs", "product_catalog_checkpoint", "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline", "znak_registration_preparation", "wb_supply_orders", "wb_supplies", "wb_receive_journal", "wb_kiz_reservations", "order_remote_states" })
         {
             using var extra = c.CreateCommand();
             extra.Transaction = tx;
@@ -729,3 +730,4 @@ internal static class SecretVault
         catch { return ""; }
     }
 }
+

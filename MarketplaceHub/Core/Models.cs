@@ -1,5 +1,10 @@
 namespace MarketplaceHub.Core;
 
+public static class MarketplaceDates
+{
+    public static DateTime MoscowToday(DateTimeOffset now)=>now.ToOffset(TimeSpan.FromHours(3)).Date;
+}
+
 public enum Marketplace { Wildberries, Ozon, Yandex }
 
 public sealed record StoreProfile(

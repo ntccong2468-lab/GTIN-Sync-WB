@@ -112,7 +112,7 @@ public sealed partial class MainForm
         if(orders.Any(x=>x.Quantity<=0))warning="Shipment còn đơn chưa tải được chi tiết sản phẩm. Đã hiển thị đủ mã đơn; đồng bộ lại trước khi gắn KIZ hoặc xuất nhãn.\n"+warning;
         var back=IconButton("←");back.Left=0;back.Top=0;back.Click+=(_,_)=>ShowFbsPacking();work.Controls.Add(back);
         var title=Title("Supply "+supply.Id+" · "+orders.Count+" đơn");title.Left=55;title.AutoSize=false;title.AutoEllipsis=true;title.Height=45;work.Controls.Add(title);
-        var export=ActionButton("↓ Xuất nhãn dán",180,true);var deliver=ActionButton("Chuyển sang giao hàng",225,true);
+        var export=ActionButton("↓ Xuất nhãn dán",180,true);export.BackColor=C.Green;export.BorderColor=C.Green;var deliver=ActionButton("Chuyển sang giao hàng",225,true);
         export.Top=0;deliver.Top=0;work.Controls.Add(export);work.Controls.Add(deliver);export.Enabled=orders.Count>0;deliver.Enabled=!supply.Done && orders.Count>0;
         var options=new FlowLayoutPanel{Left=0,Top=55,Height=40,Width=650,BackColor=C.Main,WrapContents=false};
         var fields=new Dictionary<string,CheckBox>();
@@ -199,3 +199,4 @@ public sealed partial class MainForm
         refreshActivePage=null;
     }
 }
+

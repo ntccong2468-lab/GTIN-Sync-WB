@@ -60,7 +60,7 @@ public sealed partial class MainForm
         var back=IconButton("←");back.Click+=(_,_)=>ShowFbsPacking();work.Controls.Add(back);
         var title=Title(store.Marketplace+" · lượt đóng hàng");title.Left=55;work.Controls.Add(title);
         var retry=ActionButton("Chuẩn bị KIZ + đóng gói",240,true);retry.Left=0;retry.Top=55;work.Controls.Add(retry);
-        var export=ActionButton("↓ Xuất nhãn sàn + KIZ",245,true);export.Left=250;export.Top=55;work.Controls.Add(export);
+        var export=ActionButton("↓ Xuất nhãn sàn + KIZ",245,true);export.BackColor=C.Green;export.BorderColor=C.Green;export.Left=250;export.Top=55;work.Controls.Add(export);
         var state=new Label{Left=0,Top=108,Height=55,ForeColor=C.Muted,AutoEllipsis=true,Text=message??"Đọc lại trạng thái và từng KIZ trước khi xuất nhãn. Nhãn sàn giữ nguyên PDF chính thức."};work.Controls.Add(state);
         var card=CardPanel();card.Left=0;card.Top=180;work.Controls.Add(card);var grid=DarkGrid();grid.Name="marketplaceBatchOrders";grid.Dock=DockStyle.Fill;grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;grid.DefaultCellStyle.WrapMode=DataGridViewTriState.True;
         grid.Columns.Add(new DataGridViewTextBoxColumn{Name="order",HeaderText="Posting / đơn",Width=190});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="items",HeaderText="Toàn bộ hàng trong đơn",MinimumWidth=220,AutoSizeMode=DataGridViewAutoSizeColumnMode.Fill});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="state",HeaderText="Đóng gói / KIZ",Width=260});grid.Columns.Add(new DataGridViewTextBoxColumn{Name="error",HeaderText="Cần xử lý",Width=240});card.Controls.Add(grid);
@@ -105,6 +105,16 @@ public sealed partial class MainForm
         if(!await fbsOperations.WaitAsync(0,lifetimeCts.Token))return;
         try{await ExportMarketplaceBatchCoreAsync(store,batchId,token,reprint);}finally{fbsOperations.Release();}
     }
+    private WbPrintOrder BuildMarketplacePickingOrder(StoreProfile store,MarketplaceFbsSnapshot snapshot,MarketplaceFbsItem item)
+    {
+        var row=new FbsOrderRow(store.Id,store.Marketplace,snapshot.OrderId,item.Offer,item.Name,item.Quantity,snapshot.Status,item.RequiresKiz,item.Raw.ToJsonString());
+        var product=ProductCatalog.ResolveOrder(store,row,app.Db.Products(store.Id));
+        var meta=product is null?new ProductMetaValue("","","","","","",item.Offer,""):ProductMeta(product);
+        byte[]? thumbnail=null;if(product is not null)imageCache.TryGetValue(ProductImageUrl(product),out thumbnail);
+        return new(snapshot.OrderId,item.Name,item.Offer,meta.Color,meta.Size,meta.Brand,meta.Barcode,item.Quantity,item.RequiresKiz,
+            Array.Empty<string>(),new(true,"Phiếu nhặt"),thumbnail);
+    }
+
     private async Task ExportMarketplaceBatchCoreAsync(StoreProfile store,string batchId,CancellationToken token,bool reprint=false)
     {
         try {
@@ -120,12 +130,9 @@ public sealed partial class MainForm
                 var snapshot=await app.ReadFreshMarketplaceFbsAsync(store,member.Id,token);
                 foreach(var item in snapshot.Items) {
                     var marks=app.Db.MarketplaceKizReservations(store,member.Id).Where(x=>x.ItemId==item.Id).OrderBy(x=>x.Unit).ToArray();
-                    var row=snapshot.Rows.Single(x=>x.Sku==item.Offer);
-                    var product=ProductCatalog.ResolveOrder(store,row,app.Db.Products(store.Id));
-                    var meta=product is null?new ProductMetaValue("","","","","","",item.Offer,""):ProductMeta(product);
-                    byte[]? thumbnail=null;if(product is not null)imageCache.TryGetValue(ProductImageUrl(product),out thumbnail);
-                    pickingInput.Add(new(member.Id,item.Name,item.Offer,meta.Color,meta.Size,meta.Brand,meta.Barcode,item.Quantity,item.RequiresKiz,
-                        Array.Empty<string>(),new(true,"Phiếu nhặt"),thumbnail));
+                    var picking=BuildMarketplacePickingOrder(store,snapshot,item);pickingInput.Add(picking);
+                    var meta=new ProductMetaValue("",picking.Color,picking.Size,picking.Barcode,"","",picking.Article,picking.Brand);
+                    var thumbnail=picking.Thumbnail;
                     if(item.RequiresKiz)kizInput.Add(new(member.Id+"/"+item.Id,item.Name,item.Offer,meta.Color,meta.Size,meta.Brand,ResolveMarketplaceGtin(store,item),
                         item.Quantity,true,marks.Select(x=>x.Code).ToArray(),new(true,"KIZ xác nhận"),thumbnail));
                 }

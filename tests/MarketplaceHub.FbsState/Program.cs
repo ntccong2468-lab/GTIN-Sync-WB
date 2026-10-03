@@ -22,7 +22,7 @@ File.Copy(Path.Combine(AppContext.BaseDirectory,"MarketplaceHub.FbsState.exe"),P
 var originalPath=Environment.GetEnvironmentVariable("PATH");Environment.SetEnvironmentVariable("PATH",signingFolder+Path.PathSeparator+originalPath);
 AppServices SuzApp(StoreProfile store,Func<HttpRequestMessage,HttpResponseMessage> respond){
     var target=new AppServices(app.Db,new MarketplaceGateway(),LicenseAccessService.CreateDefault());
-    target.Db.SaveZnakConfig(new("fixture-inn","Production","fixture-cert","fixture","Tự động",true,"fixture-oms","fixture-connection",false));
+    target.Db.SaveZnakConfig(new("fixture-inn","Production","fixture-cert","fixture","Tự động",true,"fixture-oms-"+store.Id,"fixture-connection",false));
     typeof(AppServices).GetField("znakHttp",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(target,new HttpClient(new FixtureHttp(respond)));
     return target;
 }

@@ -471,11 +471,12 @@ public sealed partial class MainForm : Form
         }
 
         var quick = new FlowLayoutPanel { Left = 4, Top = 56, Width = 600, Height = 46, BackColor = C.Main, WrapContents = false };
+        var marketToday=MarketplaceDates.MoscowToday(DateTimeOffset.UtcNow);
         var b7 = ActionButton("7 ngày", 88, true);
         var b30 = ActionButton("30 ngày", 96);
         var b90 = ActionButton("45 ngày", 96);
-        var from = new DateTimePicker { Width = 130, Format = DateTimePickerFormat.Short, Value = DateTime.Today.AddDays(-6) };
-        var to = new DateTimePicker { Width = 130, Format = DateTimePickerFormat.Short, Value = DateTime.Today };
+        var from = new DateTimePicker { Width = 130, Format = DateTimePickerFormat.Short, Value = marketToday.AddDays(-6), MaxDate=marketToday };
+        var to = new DateTimePicker { Width = 130, Format = DateTimePickerFormat.Short, Value = marketToday, MaxDate=marketToday };
         quick.Controls.Add(b7); quick.Controls.Add(b30); quick.Controls.Add(b90); quick.Controls.Add(from); quick.Controls.Add(to);
         work.Controls.Add(quick);
 
@@ -568,8 +569,9 @@ public sealed partial class MainForm : Form
         to.ValueChanged += (_, _) => RefreshSnapshot();
 
         financeCard.Controls.Add(new Label { Text = "Tài chính & trạng thái", Left = 18, Top = 14, AutoSize = true, ForeColor = C.Text, Font = new Font("Segoe UI", 11, FontStyle.Bold) });
-        var financeStatus = new Label
+        var financeStatus = new TextBox
         {
+            Name="financeReportStatus",Multiline=true,ReadOnly=true,ScrollBars=ScrollBars.Vertical,BorderStyle=BorderStyle.None,BackColor=C.Card,
             Left = 18, Top = 48, Width = financeCard.Width - 36, Height = 185,
             ForeColor = C.Muted, Anchor = AnchorStyles.Top | AnchorStyles.Left | AnchorStyles.Right,
             Text = store.Marketplace == Marketplace.Wildberries
@@ -640,8 +642,8 @@ public sealed partial class MainForm : Form
 
         void SetDays(int days)
         {
-            from.Value = DateTime.Today.AddDays(-(days - 1));
-            to.Value = DateTime.Today;
+            from.Value = marketToday.AddDays(-(days - 1));
+            to.Value = marketToday;
             StyleTab(b7, days == 7); StyleTab(b30, days == 30); StyleTab(b90, days == 45);
         }
 
@@ -1123,7 +1125,7 @@ public sealed partial class MainForm : Form
     private void ShowZnakRegistration()
     {
         ClearWork();
-        work.Controls.Add(Title("Đăng ký thẻ Znack cho WB"));
+        work.Controls.Add(Title("Chuẩn bị thẻ Znack cho WB"));
 
         var docs = ActionButton("Cấu hình giấy tờ", 175); docs.Anchor = AnchorStyles.Top | AnchorStyles.Right; docs.Top = 0; docs.Click += (_, _) => ShowZnakSettings(); work.Controls.Add(docs);
         var sync = ActionButton("Đồng bộ Znack", 165); sync.Anchor = AnchorStyles.Top | AnchorStyles.Right; sync.Top = 0; work.Controls.Add(sync);
@@ -1176,8 +1178,8 @@ public sealed partial class MainForm : Form
                 "SENT" => "Đã xuất bản",
                 "ERROR" => "Lỗi",
                 "QUEUED" => "Xếp hàng",
-                "READY" => "Chờ gửi",
-                _ => !string.IsNullOrWhiteSpace(meta.Barcode) ? "Đã có GTIN" : "Chưa tạo"
+                "READY" => "Chuẩn bị cục bộ",
+                _ => !string.IsNullOrWhiteSpace(meta.Barcode) ? "Có barcode" : "Chưa tạo"
             };
         }
 
@@ -1185,8 +1187,8 @@ public sealed partial class MainForm : Form
         {
             return status.SelectedItem?.ToString() switch
             {
-                "Hoàn tất" => value is "Đã xuất bản" or "Đã có GTIN",
-                "Cần xử lý" => value is "Chưa tạo" or "Xếp hàng" or "Chờ gửi",
+                "Hoàn tất" => value is "Đã xuất bản",
+                "Cần xử lý" => value is "Chưa tạo" or "Xếp hàng" or "Chuẩn bị cục bộ" or "Có barcode",
                 "Lỗi" => value == "Lỗi",
                 _ => true
             };
@@ -1212,7 +1214,7 @@ public sealed partial class MainForm : Form
             grid.Rows.Clear();
             var store = CurrentStore(); if (store is null) return;
             var products = app.Db.Products(store.Id);
-            var pipelines = app.Db.ZnakPipelines(store.Id).ToDictionary(x => x.Sku, StringComparer.OrdinalIgnoreCase);
+            var pipelines = app.Db.ZnakRegistrationPreparations(store.Id).ToDictionary(x => x.Sku, StringComparer.OrdinalIgnoreCase);
             var q = search.Text.Trim();
             var selectedCategory = category.SelectedIndex > 0 ? category.SelectedItem?.ToString() ?? "" : "";
 
@@ -1240,7 +1242,7 @@ public sealed partial class MainForm : Form
                 pipelines.TryGetValue(p.Sku, out var pipe);
                 var state = DisplayStatus(p, pipe, meta);
                 var article = string.IsNullOrWhiteSpace(meta.Article) ? p.Sku : meta.Article;
-                var gtin = !string.IsNullOrWhiteSpace(pipe?.Gtin) ? pipe!.Gtin : meta.Barcode;
+                var gtin = !string.IsNullOrWhiteSpace(pipe?.Gtin) ? pipe!.Gtin : GtinCode.Normalize(meta.Barcode);
                 var barcodeText = string.IsNullOrWhiteSpace(gtin) ? meta.Barcode : $"{meta.Barcode}\nGTIN: {gtin}";
                 var nameText = p.Name;
                 if (!string.IsNullOrWhiteSpace(meta.Category)) nameText += $"\n{p.Sku} · {meta.Category}";
@@ -1262,8 +1264,8 @@ public sealed partial class MainForm : Form
             var queued = allPipes.Count(x => x.Stage == "QUEUED");
             var ready = allPipes.Count(x => x.Stage == "READY");
             var sent = allPipes.Count(x => x.Stage == "SENT");
-            summary.Text = $"{store.Name}: {products.Count} thẻ · lỗi {errors} · hoàn tất {sent}. Hàng đợi tiếp tục chạy theo trạng thái đã lưu.";
-            footerStats.Text = $"Xếp hàng {queued} · chờ gửi {ready} · đã xuất bản {sent} · lỗi {errors}";
+            summary.Text = $"{store.Name}: {products.Count} thẻ · lỗi {errors} · hoàn tất {sent}. Trạng thái chuẩn bị cục bộ; kiểm tra đăng ký thật trong KIZ Mapping.";
+            footerStats.Text = $"Xếp hàng {queued} · chuẩn bị cục bộ {ready} · đã xuất bản {sent} · lỗi {errors}";
         }
 
         sync.Click += async (_, _) =>
@@ -1333,60 +1335,11 @@ public sealed partial class MainForm : Form
 
     private async Task QueueZnakRegistrationAsync(IReadOnlyList<ProductRow> products)
     {
-        var z = app.Db.GetZnakConfig();
-        if (!z.Enabled || string.IsNullOrWhiteSpace(z.OmsId) || string.IsNullOrWhiteSpace(z.OmsConnection))
-        {
-            ShowInfo("Hãy hoàn tất omsId, omsConnection và lưu Cấu hình Znack trước.");
-            return;
-        }
-        if (string.IsNullOrWhiteSpace(z.CertificateThumbprint))
-        {
-            ShowInfo("Hãy chọn chứng thư số có private key trước khi đăng ký.");
-            return;
-        }
-
-        znakQueuePaused = false;
-        foreach (var p in products)
-        {
-            znakQueueStatus[p.Sku] = "Đã xếp hàng";
-            var meta = ProductMeta(p);
-            app.Db.UpsertZnakPipeline(CurrentStore()?.Id ?? p.StoreId, p.Sku, meta.Barcode, "QUEUED", "", "Đang chờ worker");
-            app.Db.Audit("Đăng ký Znack", "Đã xếp hàng", $"{p.Sku}:{meta.Barcode}");
-        }
-
-        var tasks = products.Select(async p =>
-        {
-            await znakWorkers.WaitAsync();
-            try
-            {
-                var meta = ProductMeta(p);
-                if (string.IsNullOrWhiteSpace(meta.Barcode))
-                    throw new InvalidOperationException("Sản phẩm chưa có Barcode WB / GTIN.");
-
-                // Hàng đợi 2 worker được chuẩn bị theo hành vi WCode 1.1.57.
-                // Gửi thật sang True API cần endpoint/tài khoản OMS hợp lệ trên máy seller.
-                znakQueueStatus[p.Sku] = "Sẵn sàng gửi";
-                app.Db.UpsertZnakPipeline(CurrentStore()?.Id ?? p.StoreId, p.Sku, meta.Barcode, "READY", "", "Đã kiểm tra cấu hình/GTIN; chờ True API");
-                app.Db.Audit("Đăng ký Znack", "Sẵn sàng gửi", $"{p.Sku}:{meta.Barcode}");
-                await Task.Yield();
-            }
-            catch (Exception ex)
-            {
-                znakQueueStatus[p.Sku] = "Lỗi";
-                znakQueuePaused = true;
-                app.Db.UpsertZnakPipeline(CurrentStore()?.Id ?? p.StoreId, p.Sku, ProductMeta(p).Barcode, "ERROR", "", ex.Message);
-                app.Db.Audit("Đăng ký Znack", "Lỗi", $"{p.Sku}:{ex.Message}");
-            }
-            finally
-            {
-                znakWorkers.Release();
-            }
-        }).ToArray();
-
-        await Task.WhenAll(tasks);
-        ShowInfo(znakQueuePaused
-            ? "Hàng đợi đã tạm dừng vì có lỗi. Nút Tiếp tục hàng đợi sẽ xuất hiện."
-            : $"Đã chuẩn bị {products.Count} sản phẩm bằng hàng đợi tối đa 2 worker. Gửi thật cần True API/CryptoPro hợp lệ.");
+        var store=CurrentStore();if(store is null)return;
+        var result=await app.PrepareZnakRegistrationAsync(store,products,pageCts.Token);
+        znakQueuePaused=!result.Success;
+        foreach(var product in products)znakQueueStatus[product.Sku]=result.Success?"Chuẩn bị cục bộ":"Cần kiểm tra GTIN";
+        ShowInfo(result.Message);
     }
 
     private DataGridView ZnakGrid()
@@ -1405,7 +1358,7 @@ public sealed partial class MainForm : Form
         g.Columns.Add(new DataGridViewTextBoxColumn { Width = 75, HeaderText = "Size", ReadOnly = true });
         g.Columns.Add(new DataGridViewTextBoxColumn { Width = 210, HeaderText = "Barcode WB / GTIN", ReadOnly = true });
         g.Columns.Add(new DataGridViewTextBoxColumn { Width = 135, HeaderText = "Trạng thái", ReadOnly = true });
-        g.Columns.Add(new DataGridViewButtonColumn { Width = 110, HeaderText = "Thao tác", Text = "Đăng ký", UseColumnTextForButtonValue = false, FlatStyle = FlatStyle.Flat, ReadOnly = true });
+        g.Columns.Add(new DataGridViewButtonColumn { Width = 110, HeaderText = "Thao tác", Text = "Chuẩn bị", UseColumnTextForButtonValue = false, FlatStyle = FlatStyle.Flat, ReadOnly = true });
         g.CurrentCellDirtyStateChanged += (_, _) =>
         {
             if (g.IsCurrentCellDirty && g.CurrentCell is DataGridViewCheckBoxCell)
