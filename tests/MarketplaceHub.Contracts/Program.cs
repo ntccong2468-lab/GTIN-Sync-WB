@@ -25,6 +25,27 @@ MarketplaceGateway Api(Func<HttpRequestMessage, HttpResponseMessage> respond,
 HttpResponseMessage Json(string json, HttpStatusCode status = HttpStatusCode.OK) =>
     new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
+await Check("WB finance keeps unavailable fields unknown and preserves signed decimal amounts",async()=>{
+    var api=Api(_=>Json("[{\"reportId\":1,\"dateFrom\":\"2026-09-01\",\"dateTo\":\"2026-09-01\",\"currency\":\"RUB\",\"reportType\":1,\"retailAmountSum\":\"100.01\",\"forPaySum\":\"80.02\",\"deductionSum\":\"-1.25\"}]"),(_,_)=>Task.CompletedTask);
+    var result=await api.ReadFinanceAsync(Store(Marketplace.Wildberries),new(2026,9,1),new(2026,9,1));
+    Expect(result.Revenue==100.01m&&result.Payout==80.02m&&result.Deductions==-1.25m&&(object?)result.Delivery is null,"Missing settlement field became zero or signed amount was changed.");
+});
+await Check("WB finance rejects malformed, duplicate and mixed-currency settlement data",async()=>{
+    foreach(var body in new[]{"{\"error\":\"missing array\"}","[{\"reportId\":1,\"dateFrom\":\"2026-09-01\",\"dateTo\":\"2026-09-01\",\"currency\":\"USD\",\"reportType\":1}]","[{\"reportId\":1,\"dateFrom\":\"2026-09-01\",\"dateTo\":\"2026-09-01\",\"currency\":\"RUB\",\"reportType\":1},{\"reportId\":1,\"dateFrom\":\"2026-09-01\",\"dateTo\":\"2026-09-01\",\"currency\":\"RUB\",\"reportType\":1}]"}){
+        var rejected=false;try{await Api(_=>Json(body),(_,_)=>Task.CompletedTask).ReadFinanceAsync(Store(Marketplace.Wildberries),new(2026,9,1),new(2026,9,1));}catch(InvalidDataException){rejected=true;}
+        Expect(rejected,"Invalid settlement was presented as a successful RUB report: "+body);
+    }
+});
+await Check("WB finance excludes reports that cross the selected reporting period",async()=>{
+    var api=Api(_=>Json("[{\"reportId\":1,\"dateFrom\":\"2026-08-31\",\"dateTo\":\"2026-09-01\",\"currency\":\"RUB\",\"reportType\":1,\"retailAmountSum\":\"999.00\"},{\"reportId\":2,\"dateFrom\":\"2026-09-01\",\"dateTo\":\"2026-09-01\",\"currency\":\"RUB\",\"reportType\":1,\"retailAmountSum\":\"10.25\"}]"),(_,_)=>Task.CompletedTask);
+    var result=await api.ReadFinanceAsync(Store(Marketplace.Wildberries),new(2026,9,1),new(2026,9,1));Expect(result.ReportCount==1&&result.Revenue==10.25m,"Settlement outside the selected period was counted.");
+});
+await Check("WB finance refuses reversed or oversized periods before making requests",async()=>{
+    var calls=0;var api=Api(_=>{calls++;return Json("[]");},(_,_)=>Task.CompletedTask);
+    foreach(var to in new[]{new DateTime(2026,8,31),new DateTime(2026,10,20)}){var blocked=false;try{await api.ReadFinanceAsync(Store(Marketplace.Wildberries),new(2026,9,1),to);}catch(ArgumentException){blocked=true;}Expect(blocked,"Invalid finance period was sent.");}
+    Expect(calls==0,"Finance validation happened after the API request.");
+});
+
 await Check("WB status failure never turns cached orders into new orders", async () =>
 {
     var api = Api(r => r.RequestUri!.AbsolutePath switch
@@ -456,3 +477,4 @@ sealed class FixtureHttp(Func<HttpRequestMessage, HttpResponseMessage> respond) 
         return Task.FromResult(respond(request));
     }
 }
+

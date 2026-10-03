@@ -25,6 +25,28 @@ MarketplaceGateway Api(Func<HttpRequestMessage, HttpResponseMessage> respond)
 HttpResponseMessage Json(string json, HttpStatusCode status = HttpStatusCode.OK) =>
     new(status) { Content = new StringContent(json, Encoding.UTF8, "application/json") };
 
+await Check("Ozon catalog resolves manufacturer size from named category attributes",async()=>{
+    var paths=new List<string>();var api=Api(r=>{
+        var path=r.RequestUri!.AbsolutePath;paths.Add(path);
+        return path switch{
+            "/v3/product/list"=>Json("{\"result\":{\"items\":[{\"product_id\":10,\"offer_id\":\"A\"}],\"last_id\":\"10\",\"total\":1}}"),
+            "/v3/product/info/list"=>Json("{\"items\":[{\"id\":10,\"offer_id\":\"A\",\"name\":\"Áo\",\"description_category_id\":100,\"type_id\":200,\"barcodes\":[\"4601234567893\"]}]}"),
+            "/v4/product/info/attributes"=>Json("{\"result\":[{\"id\":10,\"offer_id\":\"A\",\"description_category_id\":100,\"type_id\":200,\"attributes\":[{\"id\":1,\"values\":[{\"value\":\"52\"}]},{\"id\":2,\"values\":[{\"value\":\"XXL\"}]},{\"id\":3,\"values\":[{\"value\":\"Черный\"}]}]}]}"),
+            "/v1/description-category/attribute"=>Json("{\"result\":[{\"id\":1,\"name\":\"Российский размер\"},{\"id\":2,\"name\":\"Размер производителя\"},{\"id\":3,\"name\":\"Цвет товара\"}]}"),
+            _=>throw new Exception("Unexpected catalog request: "+path)};
+    });
+    var result=await api.ReadProductCatalogPageAsync(Store(Marketplace.Ozon));var entry=result.Entries.Single();
+    Expect(entry.Variants.Single().Size=="XXL"&&entry.Product.Sku=="A"&&paths.Contains("/v4/product/info/attributes"),"Ozon used the Russian size or did not load manufacturer metadata.");
+});
+await Check("Ozon catalog refuses foreign attribute cards before publishing the page",async()=>{
+    var api=Api(r=>r.RequestUri!.AbsolutePath switch{
+        "/v3/product/list"=>Json("{\"result\":{\"items\":[{\"product_id\":10,\"offer_id\":\"A\"}],\"last_id\":\"10\",\"total\":1}}"),
+        "/v3/product/info/list"=>Json("{\"items\":[{\"id\":10,\"offer_id\":\"A\",\"description_category_id\":100,\"type_id\":200}]}"),
+        "/v4/product/info/attributes"=>Json("{\"result\":[{\"id\":99,\"offer_id\":\"OTHER\",\"description_category_id\":100,\"type_id\":200,\"attributes\":[]}]}"),
+        _=>Json("{\"result\":[]}")});
+    var blocked=false;try{await api.ReadProductCatalogPageAsync(Store(Marketplace.Ozon));}catch(InvalidDataException){blocked=true;}Expect(blocked,"Foreign product attributes were accepted or the required metadata read was skipped.");
+});
+
 await Check("WB GTIN writeback retains every size and existing barcode",()=>{
     var type=typeof(ProductCatalog).Assembly.GetType("MarketplaceHub.Services.WbGtinPayloads");
     var method=type?.GetMethod("BuildWbGtinCard");Expect(method is not null,"Full-size WB GTIN writeback builder is missing.");
@@ -104,3 +126,4 @@ sealed class FixtureHttp(Func<HttpRequestMessage, HttpResponseMessage> respond) 
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken ct)
     { ct.ThrowIfCancellationRequested(); return Task.FromResult(respond(request)); }
 }
+

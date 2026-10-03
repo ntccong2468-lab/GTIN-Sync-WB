@@ -149,5 +149,12 @@ Check("Ozon and Yandex KIZ PDFs retain one page per unit and reject duplicates",
         var rejected=false;try{MarketplaceKizPdfService.Write(market,new[]{order with{Quantity=2,KizCodes=new[]{code,code}}},folder);}catch(InvalidOperationException){rejected=true;}Expect(rejected,"Duplicate unit codes were printed.");
     }
 });
+Check("Marketplace picking PDF includes products without KIZ and groups exact variants",()=>{
+    var method=typeof(WbPrintBundleService).GetMethod("WritePickingList");Expect(method is not null,"Ozon/Yandex shipment export has no standalone picking list.");
+    var items=new[]{order with{OrderId="P1",NeedsKiz=false,KizCodes=Array.Empty<string>(),Quantity=2,Size="XL"},order with{OrderId="P2",NeedsKiz=false,KizCodes=Array.Empty<string>(),Quantity=3,Size="XL"},order with{OrderId="P2",NeedsKiz=false,KizCodes=Array.Empty<string>(),Quantity=1,Size="XXL"}};
+    var path=(string)method!.Invoke(null,new object[]{"Ozon","fixture",items,output,CancellationToken.None})!;
+    var groups=WbPrintBundleService.GroupVariants(items);Expect(groups.Count==2&&groups[0].Quantity==5&&groups[1].Quantity==1&&File.ReadAllText(path).StartsWith("%PDF-"),"Non-KIZ products or size quantities were omitted from picking PDF.");
+});
 Console.WriteLine($"{checks-failures.Count}/{checks} print regressions passed");
 Environment.ExitCode = failures.Count == 0 ? 0 : 1;
+

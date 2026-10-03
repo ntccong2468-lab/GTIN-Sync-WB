@@ -6,6 +6,9 @@ using System.Reflection;
 using System.Text;
 using System.Text.Json.Nodes;
 
+// Test-only signing executable: exercises the real process boundary without a certificate or network.
+if(args.Length>0 && args[0]=="-sign"){File.WriteAllBytes(args[^1],new byte[]{1,2,3,4});return;}
+
 var app=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-state-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());var failures=new List<string>();var checks=0;var stores=new List<StoreProfile>();
 async Task Check(string name,Func<Task> run){checks++;try{await run();Console.WriteLine("PASS "+name);}catch(Exception ex){failures.Add(name);Console.WriteLine("FAIL "+name+": "+ex.GetBaseException().Message);}}
 void Expect(bool ok,string message){if(!ok)throw new Exception(message);}
@@ -13,7 +16,61 @@ StoreProfile Store(Marketplace m){var store=app.Db.SaveStore(new(0,m,"STATE-FIXT
 HttpResponseMessage Json(string body)=>new(HttpStatusCode.OK){Content=new StringContent(body,Encoding.UTF8,"application/json")};
 void Http(Func<HttpRequestMessage,HttpResponseMessage> response){typeof(MarketplaceGateway).GetField("http",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,new HttpClient(new FixtureHttp(response)));typeof(MarketplaceGateway).GetField("wbLabelDelay",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(app.Api,(Func<TimeSpan,CancellationToken,Task>)((_,ct)=>{ct.ThrowIfCancellationRequested();return Task.CompletedTask;}));}
 string Posting(string status="awaiting_packaging",bool required=false)=>System.Text.Json.JsonSerializer.Serialize(new{result=new{posting_number="P",status,requirements=new{products_requiring_mandatory_mark=required?new[]{100}:Array.Empty<int>()},products=new[]{new{sku=100,offer_id="A",quantity=2,name="A"},new{sku=200,offer_id="B",quantity=1,name="B"}}}});
+var signingFolder=Path.Combine(Path.GetTempPath(),"MarketplaceHub-fake-sign-"+Guid.NewGuid().ToString("N"));Directory.CreateDirectory(signingFolder);
+foreach(var file in Directory.GetFiles(AppContext.BaseDirectory))File.Copy(file,Path.Combine(signingFolder,Path.GetFileName(file)),true);
+File.Copy(Path.Combine(AppContext.BaseDirectory,"MarketplaceHub.FbsState.exe"),Path.Combine(signingFolder,"cryptcp.exe"),true);
+var originalPath=Environment.GetEnvironmentVariable("PATH");Environment.SetEnvironmentVariable("PATH",signingFolder+Path.PathSeparator+originalPath);
+AppServices SuzApp(StoreProfile store,Func<HttpRequestMessage,HttpResponseMessage> respond){
+    var target=new AppServices(app.Db,new MarketplaceGateway(),LicenseAccessService.CreateDefault());
+    target.Db.SaveZnakConfig(new("fixture-inn","Production","fixture-cert","fixture","Tự động",true,"fixture-oms","fixture-connection",false));
+    typeof(AppServices).GetField("znakHttp",BindingFlags.Instance|BindingFlags.NonPublic)!.SetValue(target,new HttpClient(new FixtureHttp(respond)));
+    return target;
+}
+HttpResponseMessage SuzAuth(HttpRequestMessage r)=>r.RequestUri!.AbsolutePath.EndsWith("/auth/key")?Json("{\"uuid\":\"challenge\",\"data\":\"fixture\"}"):Json("{\"clientToken\":\"fixture-token\"}");
 try {
+await Check("KIZ acquisition rejects malformed GTIN before using the local pool",async()=>{
+    var store=Store(Marketplace.Ozon);app.Db.UpsertKiz("invalid-pool-fixture","04601234567894","AVAILABLE");
+    var result=await app.EnsureKizQuantityAsync(store.Id,"A","04601234567894",1);Expect(!result.Ok&&AppServices.NormalizeGtin14("prefix04601234567893")=="","Invalid checksum or arbitrary text became a GTIN.");
+});
+await Check("SUZ resumes a known order after download failure without buying another",async()=>{
+    var store=Store(Marketplace.Ozon);const string gtin="04601234567893";var code="01"+gtin+"21retry-"+Guid.NewGuid().ToString("N");var creates=0;
+    app.Db.UpsertZnakPipeline(store.Id,"RETRY",gtin,"ERROR","KNOWN-ORDER","download interrupted");
+    var target=SuzApp(store,r=>{
+        var path=r.RequestUri!.AbsolutePath;if(path.Contains("/auth/"))return SuzAuth(r);
+        if(path=="/api/v3/order"){creates++;return new(HttpStatusCode.ServiceUnavailable){Content=new StringContent("{}")};}
+        Expect(r.RequestUri!.Query.Contains("KNOWN-ORDER"),"Recovery switched order ID.");
+        return path.EndsWith("/status")?Json("[{\"gtin\":\"04601234567893\",\"bufferStatus\":\"ACTIVE\",\"availableCodes\":1}]"):Json(System.Text.Json.JsonSerializer.Serialize(new{codes=new[]{code}}));
+    });
+    var result=await target.EnsureKizQuantityAsync(store.Id,"RETRY",gtin,1);Expect(result.Ok&&creates==0&&app.Db.Kiz().Any(x=>x.Code==code),"Known SUZ order was abandoned and a duplicate purchase attempted.");
+    using var c=new SqliteConnection("Data Source="+app.Db.DbPath);c.Open();using var clean=c.CreateCommand();clean.CommandText="DELETE FROM kiz_pool WHERE code=$code";clean.Parameters.AddWithValue("$code",code);clean.ExecuteNonQuery();
+});
+await Check("SUZ expired buffer recovers issued blocks and keeps assigned KIZ owned",async()=>{
+    var store=Store(Marketplace.Ozon);const string gtin="04601234567893";var suffix=Guid.NewGuid().ToString("N");var held="01"+gtin+"21owned-"+suffix;var recovered="01"+gtin+"21issued-"+suffix;var creates=0;
+    app.Db.UpsertKiz(held,gtin,"ASSIGNED","seller-existing-order");app.Db.UpsertZnakPipeline(store.Id,"EXPIRED",gtin,"POLLING","EXPIRED-ORDER","");
+    var target=SuzApp(store,r=>{
+        var path=r.RequestUri!.AbsolutePath;if(path.Contains("/auth/"))return SuzAuth(r);
+        if(path=="/api/v3/order"){creates++;throw new Exception("Expired purchase cannot be repeated");}
+        return path switch{
+            "/api/v3/order/status"=>Json("[{\"gtin\":\"04601234567893\",\"bufferStatus\":\"EXPIRED\",\"availableCodes\":0}]"),
+            "/api/v3/order/codes/blocks"=>Json("{\"blocks\":[{\"blockId\":\"ISSUED-BLOCK\"}]}"),
+            "/api/v3/order/codes/retry"=>Json(System.Text.Json.JsonSerializer.Serialize(new{blockId="ISSUED-BLOCK",codes=new[]{held,recovered}})),
+            _=>throw new Exception("Unexpected SUZ recovery: "+path)};
+    });
+    using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(8));var result=await target.EnsureKizQuantityAsync(store.Id,"EXPIRED",gtin,1,stop.Token);
+    Expect(result.Ok&&creates==0&&result.Codes.SequenceEqual(new[]{recovered})&&app.Db.Kiz().Single(x=>x.Code==held).Assigned=="seller-existing-order","Issued code recovery failed, bought again or released an assigned code.");
+    using var c=new SqliteConnection("Data Source="+app.Db.DbPath);c.Open();using var clean=c.CreateCommand();clean.CommandText="DELETE FROM kiz_pool WHERE code IN($a,$b)";clean.Parameters.AddWithValue("$a",held);clean.Parameters.AddWithValue("$b",recovered);clean.ExecuteNonQuery();
+});
+await Check("SUZ authentication outage preserves a known purchase checkpoint",async()=>{
+    var store=Store(Marketplace.Ozon);app.Db.UpsertZnakPipeline(store.Id,"AUTH-ERROR","04601234567893","POLLING","KEEP-ORDER","");
+    var target=SuzApp(store,_=>new(HttpStatusCode.ServiceUnavailable){Content=new StringContent("{}")});var result=await target.EnsureKizQuantityAsync(store.Id,"AUTH-ERROR","04601234567893",1);
+    Expect(!result.Ok&&app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId=="KEEP-ORDER","Authentication failure erased the remote order checkpoint.");
+});
+await Check("SUZ refuses wrong-GTIN downloaded codes without losing the order",async()=>{
+    var store=Store(Marketplace.Ozon);var code="010460123456788621wrong-"+Guid.NewGuid().ToString("N");app.Db.UpsertZnakPipeline(store.Id,"WRONG","04601234567893","POLLING","WRONG-ORDER","");
+    var target=SuzApp(store,r=>r.RequestUri!.AbsolutePath.Contains("/auth/")?SuzAuth(r):r.RequestUri!.AbsolutePath.EndsWith("/status")?Json("[{\"gtin\":\"04601234567893\",\"bufferStatus\":\"ACTIVE\",\"availableCodes\":1}]"):Json(System.Text.Json.JsonSerializer.Serialize(new{codes=new[]{code}})));
+    var result=await target.EnsureKizQuantityAsync(store.Id,"WRONG","04601234567893",1);Expect(!result.Ok&&!app.Db.Kiz().Any(x=>x.Code==code)&&app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId=="WRONG-ORDER","Wrong-GTIN code entered the pool or order checkpoint was erased.");
+});
+
 await Check("Consecutive marketplace sync reconciles disappeared orders and invalidates failed refresh",async()=>{
     foreach(var marketplace in new[]{Marketplace.Wildberries,Marketplace.Ozon,Marketplace.Yandex}){
         var store=Store(marketplace);var id=marketplace==Marketplace.Ozon?"P":"201";
@@ -341,7 +398,8 @@ await Check("Ozon rejected preflight does not lock exemplar retry",async()=>{
     var result=await (Task<PriceUpdateResult>)method.Invoke(app,new object[]{oz,snapshot,new Dictionary<string,IReadOnlyList<string>>{{"100",new[]{"code-a"}}},CancellationToken.None})!;
     Expect(!result.Success&&app.Db.OzonExemplarMutation(oz,"P-REJECT") is null,"Known preflight rejection permanently locked the posting.");
 });
-}finally{foreach(var store in stores)app.Db.DeleteStore(store.Id);}
+}finally{Environment.SetEnvironmentVariable("PATH",originalPath);foreach(var store in stores)app.Db.DeleteStore(store.Id);Directory.Delete(signingFolder,true);}
 Console.WriteLine($"{checks-failures.Count}/{checks} persistence and FBS workflow checks passed");return failures.Count==0?0:1;
 sealed class FixtureHttp(Func<HttpRequestMessage,HttpResponseMessage> response):HttpMessageHandler
 {protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct){ct.ThrowIfCancellationRequested();return Task.FromResult(response(request));}}
+

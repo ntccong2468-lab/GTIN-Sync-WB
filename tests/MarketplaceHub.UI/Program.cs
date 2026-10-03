@@ -275,6 +275,27 @@ internal static class Program
                         "KIZ must start with FNC1 and preserve the full AI/GS data without duplicating scanner prefixes.");
                 }
             });
+            Check("WB product label keeps marketplace barcode separate from seller GTIN",()=>{
+                var wb=app.Db.SaveStore(new(0,Marketplace.Wildberries,"BARCODE-FIXTURE","","","","","fixture",true));
+                try{
+                    var product=new ProductRow(wb.Id,wb.Marketplace,"100","TECH","Áo",null,"","{\"nmID\":100,\"sizes\":[{\"chrtID\":10,\"techSize\":\"XL\",\"wbSize\":\"50\",\"skus\":[\"123456789000\"]}]}");
+                    var scope=ProductCatalog.Scope(wb);app.Db.BeginProductCatalog(wb,scope);app.Db.ApplyProductCatalogPage(wb,"",scope,new(new[]{ProductCatalog.Entry(product)},"",true));app.Db.UpsertSellerGtinMapping(wb,"TECH","10","04601234567893");
+                    var order=new FbsOrderRow(wb.Id,wb.Marketplace,"101","TECH","Áo",1,"confirm",false,"{\"chrtId\":10,\"skus\":[\"123456789000\"]}");
+                    var printed=(WbPrintOrder)typeof(MainForm).GetMethod("BuildWbPrintOrder",instance)!.Invoke(form,new object[]{order,product,new LabelResult(true,"fixture",null,"official","1","2"),Array.Empty<string>(),true})!;
+                    Expect(printed.Barcode=="123456789000"&&printed.Size=="XL","Seller GTIN replaced the WB barcode or Russian size replaced seller size.");
+                }finally{app.Db.DeleteStore(wb.Id);}
+            });
+            Check("WB technical barcode can be printed without claiming a registered GTIN",()=>{
+                var product=new ProductRow(store.Id,Marketplace.Wildberries,"100","TECH","Áo",null,"","{\"sizes\":[{\"chrtID\":10,\"techSize\":\"XL\",\"skus\":[\"123456789000\"]}]}");
+                var order=new FbsOrderRow(store.Id,Marketplace.Wildberries,"101","TECH","Áo",1,"confirm",false,"{\"chrtId\":10,\"skus\":[\"123456789000\"]}");
+                var printed=(WbPrintOrder)typeof(MainForm).GetMethod("BuildWbPrintOrder",instance)!.Invoke(form,new object[]{order,product,new LabelResult(true,"fixture",null,"official","1","2"),Array.Empty<string>(),true})!;
+                Expect(printed.Barcode=="123456789000","Printing a technical barcode incorrectly requires GTIN proof.");
+            });
+            Check("FBS list remains responsive after its parent installs the tab layout",()=>{
+                Page(form,"ShowFbs");var grid=All(form).OfType<DataGridView>().Single(x=>x.Name=="fbsNewOrders");var before=grid.Parent!.Width;
+                var size=form.ClientSize;form.ClientSize=new(size.Width+120,size.Height+50);Application.DoEvents();Expect(grid.Parent.Width>before,"FBS page replaced its child resize handler; table no longer follows the viewport.");form.ClientSize=size;
+            });
+
             Check("WB print uses the selected size instead of the card's first size", () =>
             {
                 var order = new FbsOrderRow(store.Id,Marketplace.Wildberries,"101","SKU","fixture",1,"confirm",false,"{\"chrtId\":2,\"skus\":[\"4601234567886\"]}");
@@ -511,3 +532,4 @@ sealed class AsyncFixtureHttp(Func<HttpRequestMessage, CancellationToken, Task<H
 {
     protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request, CancellationToken cancellationToken) => respond(request, cancellationToken);
 }
+

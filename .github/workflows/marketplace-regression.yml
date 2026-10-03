@@ -14,14 +14,19 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with: { dotnet-version: "8.0.x" }
       - name: API contracts
+        if: always()
         run: dotnet run --project tests/MarketplaceHub.Contracts -c Release
       - name: Ozon and Yandex FBS contracts
+        if: always()
         run: dotnet run --project tests/MarketplaceHub.Fbs -c Release
       - name: Product and GTIN synchronization contracts
+        if: always()
         run: dotnet run --project tests/MarketplaceHub.ProductSync -c Release
       - name: Persistent FBS recovery
+        if: always()
         run: dotnet run --project tests/MarketplaceHub.FbsState -c Release
       - name: License add-store gates
+        if: always()
         run: dotnet run --project tests/MarketplaceHub.License -c Release
       - name: Stateful Ozon and Yandex mock API
         if: always()
@@ -41,3 +46,4 @@ jobs:
         with:
           name: MarketplaceHub-UI-screenshots
           path: screenshots/*.png
+
