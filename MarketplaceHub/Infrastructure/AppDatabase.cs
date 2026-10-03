@@ -5,18 +5,14 @@ using System.Text;
 
 namespace MarketplaceHub.Infrastructure;
 
-public sealed class AppDatabase
+public sealed partial class AppDatabase
 {
     public string DbPath { get; }
     private string ConnectionString => $"Data Source={DbPath}";
 
-    public AppDatabase()
-    {
-        var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "MarketplaceHub");
-        Directory.CreateDirectory(dir);
-        DbPath = Path.Combine(dir, "marketplacehub.db");
-        Initialize();
-    }
+    public AppDatabase() : this(Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "MarketplaceHub", "marketplacehub.db")) { }
 
     private void Initialize()
     {
@@ -143,6 +139,14 @@ CREATE TABLE IF NOT EXISTS znak_pipeline(
 );";
         cmd.ExecuteNonQuery();
         EnsureZnakColumns(c);
+        InitializeWbShipmentTables(c);
+        InitializeMarketplaceFbsTables(c);
+        InitializeOrderTruthTables(c);
+        InitializeKizIdentityIndexes(c);
+        EnsureProductCatalogTables(c);
+        EnsureFboPreparationTables(c);
+        EnsureGtinMappingTables(c);
+        EnsureZnakPreparationTable(c);
     }
 
     private static void EnsureZnakColumns(SqliteConnection c)
@@ -349,11 +353,21 @@ ON CONFLICT(store_id,external_order_id,sku) DO UPDATE SET
 
     public void UpsertKiz(string code, string gtin, string status, string assignedOrder = "")
     {
+        code = MarketplaceHub.Services.MarketplaceFbsPayloads.NormalizeCode(code);
         using var c = new SqliteConnection(ConnectionString);
         c.Open();
+        using(var alias=c.CreateCommand()) {
+            alias.CommandText="SELECT code FROM kiz_pool WHERE "+CanonicalKizCodeSql+"=$canonical";
+            alias.Parameters.AddWithValue("$canonical",code.TrimStart('\u001d'));using var row=alias.ExecuteReader();var existing=new List<string>();while(row.Read())existing.Add(row.GetString(0));
+            if(existing.Count>1)throw new InvalidOperationException("Kho chứa nhiều cách viết của cùng một KIZ. Đối soát mã trùng trước khi nhập lại.");
+            if(existing.Count==1)code=existing[0];
+        }
+        GuardKizAliasOwnership(c,null,code);
         using var cmd = c.CreateCommand();
-        cmd.CommandText = @"INSERT INTO kiz_pool(code,gtin,status,assigned_order,updated_at) VALUES($c,$g,$s,$o,$at)
-ON CONFLICT(code) DO UPDATE SET gtin=$g,status=$s,assigned_order=$o,updated_at=$at";
+        cmd.CommandText = @"INSERT INTO kiz_pool(code,gtin,status,assigned_order,updated_at) VALUES($c,$g,COALESCE((SELECT status FROM wb_kiz_reservations WHERE code=$c),(SELECT status FROM marketplace_kiz_reservations WHERE code=$c),$s),COALESCE((SELECT order_id FROM wb_kiz_reservations WHERE code=$c),(SELECT marketplace||':'||store_id||':'||order_id||':'||item_id||':'||unit_index FROM marketplace_kiz_reservations WHERE code=$c),$o),$at)
+ON CONFLICT(code) DO UPDATE SET gtin=CASE WHEN kiz_pool.status IN('RESERVED','ASSIGNED') THEN kiz_pool.gtin ELSE excluded.gtin END,
+status=CASE WHEN kiz_pool.status IN('RESERVED','ASSIGNED') THEN kiz_pool.status ELSE excluded.status END,
+assigned_order=CASE WHEN kiz_pool.status IN('RESERVED','ASSIGNED') THEN kiz_pool.assigned_order ELSE excluded.assigned_order END,updated_at=$at";
         cmd.Parameters.AddWithValue("$c", code);
         cmd.Parameters.AddWithValue("$g", gtin);
         cmd.Parameters.AddWithValue("$s", status);
@@ -656,7 +670,14 @@ ON CONFLICT(store_id,sku) DO UPDATE SET gtin=$g,stage=$st,external_order_id=$o,d
             h.Parameters.AddWithValue("$id", id);
             h.ExecuteNonQuery();
         }
-        foreach (var table in new[] { "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline" })
+        using(var owned=c.CreateCommand()) {
+            owned.Transaction=tx;owned.CommandText="DELETE FROM kiz_pool WHERE code IN(SELECT code FROM wb_kiz_reservations WHERE store_id=$id UNION SELECT code FROM marketplace_kiz_reservations WHERE store_id=$id)";
+            owned.Parameters.AddWithValue("$id",id);owned.ExecuteNonQuery();
+        }
+        using(var batches=c.CreateCommand()) {
+            batches.Transaction=tx;batches.CommandText="DELETE FROM marketplace_fbs_batch_orders WHERE batch_id IN(SELECT id FROM marketplace_fbs_batches WHERE store_id=$id)";batches.Parameters.AddWithValue("$id",id);batches.ExecuteNonQuery();
+        }
+        foreach (var table in new[] { "marketplace_fbs_batches", "marketplace_fbs_actions", "marketplace_kiz_reservations", "ozon_label_jobs", "ozon_exemplar_actions", "product_variants", "fbo_preparation_jobs", "gtin_mapping", "gtin_sync_jobs", "product_catalog_checkpoint", "sync_state", "sync_runs", "fbo_supply_orders", "znak_pipeline", "znak_registration_preparation", "wb_supply_orders", "wb_supplies", "wb_receive_journal", "wb_kiz_reservations", "order_remote_states" })
         {
             using var extra = c.CreateCommand();
             extra.Transaction = tx;
@@ -709,3 +730,4 @@ internal static class SecretVault
         catch { return ""; }
     }
 }
+

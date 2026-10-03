@@ -1,14 +1,24 @@
 name: Build Marketplace Hub Windows
 on:
   push:
-    branches: [ "marketplace-hub-v2" ]
+    branches: [ "marketplace-hub-v2", "fix/dashboard-fbs-stability" ]
     paths:
       - "MarketplaceHub/**"
+      - "tests/MarketplaceHub.*/**"
       - ".github/workflows/build-marketplace-hub.yml"
       - "!MarketplaceHub/dist/**"
   workflow_dispatch:
+    inputs:
+      build_installer:
+        description: "Publish and build the Windows installer after live validation"
+        required: false
+        type: boolean
+        default: false
 permissions:
   contents: write
+env:
+  # This validation milestone cannot build an installer, including manual dispatch.
+  BUILD_INSTALLER: 'false'
 jobs:
   build:
     runs-on: windows-latest
@@ -22,9 +32,49 @@ jobs:
         run: dotnet restore .\MarketplaceHub\MarketplaceHub.csproj
       - name: Build
         run: dotnet build .\MarketplaceHub\MarketplaceHub.csproj -c Release --no-restore
+      - name: API contract regressions
+        run: dotnet run --project tests/MarketplaceHub.Contracts -c Release
+      - name: Ozon and Yandex FBS contracts
+        run: dotnet run --project tests/MarketplaceHub.Fbs -c Release
+      - name: Product synchronization contracts
+        run: dotnet run --project tests/MarketplaceHub.ProductSync -c Release
+      - name: Persistent FBS and catalog recovery
+        run: dotnet run --project tests/MarketplaceHub.FbsState -c Release
+      - name: License add-store gates
+        run: dotnet run --project tests/MarketplaceHub.License -c Release
+      - name: Ozon and Yandex stateful mock API end-to-end
+        run: dotnet run --project tests/MarketplaceHub.MockApi -c Release
+      - name: WB label and picking PDF regressions
+        env:
+          MARKETPLACE_PRINT_SAMPLES: ${{ github.workspace }}/print-samples
+        run: dotnet run --project tests/MarketplaceHub.Print -c Release
+      - name: Upload print regression samples
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarketplaceHub-print-regressions
+          path: print-samples
+      - name: UI navigation and layout regressions
+        env:
+          MARKETPLACE_SCREENSHOTS: ${{ github.workspace }}/screenshots
+        run: dotnet run --project tests/MarketplaceHub.UI -c Release
+      - name: Upload UI screenshots
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarketplaceHub-release-screenshots
+          path: screenshots/*.png
+      - name: Publish validation preview
+        run: dotnet publish .\MarketplaceHub\MarketplaceHub.csproj -c Release -r win-x64 --self-contained true -o validation-preview /p:PublishSingleFile=true /p:PublishTrimmed=false
+      - name: Upload validation preview
+        uses: actions/upload-artifact@v4
+        with:
+          name: MarketplaceHub-validation-preview-win-x64
+          path: validation-preview
+          if-no-files-found: error
       - name: Publish self-contained
+        if: env.BUILD_INSTALLER == 'true'
         run: dotnet publish .\MarketplaceHub\MarketplaceHub.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true /p:EnableCompressionInSingleFile=true /p:PublishTrimmed=false
       - name: Functional self-test
+        if: env.BUILD_INSTALLER == 'true'
         shell: powershell
         run: |
           $exe = Resolve-Path ".\MarketplaceHub\bin\Release\net8.0-windows\win-x64\publish\MarketplaceHub.exe"
@@ -33,6 +83,7 @@ jobs:
           if (Test-Path $report) { Get-Content $report }
           if ($p.ExitCode -ne 0) { throw "Self-test failed: $($p.ExitCode)" }
       - name: GUI smoke launch
+        if: env.BUILD_INSTALLER == 'true'
         shell: powershell
         run: |
           $exe = Resolve-Path ".\MarketplaceHub\bin\Release\net8.0-windows\win-x64\publish\MarketplaceHub.exe"
@@ -45,16 +96,19 @@ jobs:
           }
           Stop-Process -Id $p.Id -Force
       - name: Install Inno Setup
+        if: env.BUILD_INSTALLER == 'true'
         run: choco install innosetup -y --no-progress
       - name: Build installer
+        if: env.BUILD_INSTALLER == 'true'
         shell: powershell
         run: |
           & "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" ".\MarketplaceHub\installer\MarketplaceHub.iss"
-          Get-FileHash ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.7.0-win-x64.exe" -Algorithm SHA256
+          Get-FileHash ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.7.4-win-x64.exe" -Algorithm SHA256
       - name: Silent install test
+        if: env.BUILD_INSTALLER == 'true'
         shell: powershell
         run: |
-          $setup = Resolve-Path ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.7.0-win-x64.exe"
+          $setup = Resolve-Path ".\MarketplaceHub\dist\MarketplaceHub-Setup-0.7.4-win-x64.exe"
           $p = Start-Process $setup -ArgumentList "/VERYSILENT","/NORESTART" -Wait -PassThru
           if ($p.ExitCode -ne 0) { throw "Installer failed" }
           $installed = Join-Path $env:LOCALAPPDATA "Programs\MarketplaceHub\MarketplaceHub.exe"
@@ -72,21 +126,23 @@ jobs:
           }
           Stop-Process -Id $app.Id -Force
       - name: Upload installer artifact
+        if: env.BUILD_INSTALLER == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: MarketplaceHub-Setup-0.7.0-win-x64
-          path: MarketplaceHub/dist/MarketplaceHub-Setup-0.7.0-win-x64.exe
+          name: MarketplaceHub-Setup-0.7.4-win-x64
+          path: MarketplaceHub/dist/MarketplaceHub-Setup-0.7.4-win-x64.exe
           if-no-files-found: error
       - name: Commit verified installer
+        if: env.BUILD_INSTALLER == 'true' && (github.ref == 'refs/heads/marketplace-hub-v2' || github.ref == 'refs/heads/fix/dashboard-fbs-stability')
         shell: powershell
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f MarketplaceHub/dist/MarketplaceHub-Setup-0.7.0-win-x64.exe
+          git add -f MarketplaceHub/dist/MarketplaceHub-Setup-0.7.4-win-x64.exe
           git diff --cached --quiet
           if ($LASTEXITCODE -ne 0) {
-            git commit -m "Add verified Marketplace Hub 0.7.0 installer"
-            git fetch origin marketplace-hub-v2
-            git rebase origin/marketplace-hub-v2
-            git push origin HEAD:marketplace-hub-v2
+            git commit -m "Add verified Marketplace Hub 0.7.4 installer"
+            git fetch origin $env:GITHUB_REF_NAME
+            git rebase "origin/$env:GITHUB_REF_NAME"
+            git push origin "HEAD:$env:GITHUB_REF_NAME"
           }

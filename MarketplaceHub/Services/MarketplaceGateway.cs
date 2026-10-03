@@ -5,9 +5,9 @@ using System.Text.Json.Nodes;
 
 namespace MarketplaceHub.Services;
 
-public sealed class MarketplaceGateway
+public sealed partial class MarketplaceGateway
 {
-    private readonly HttpClient http = new() { Timeout = TimeSpan.FromSeconds(60) };
+    private readonly HttpClient http = new(new HttpClientHandler { AllowAutoRedirect = false }) { Timeout = TimeSpan.FromSeconds(60) };
 
     public async Task<ApiTestResult> TestAsync(StoreProfile s, CancellationToken ct = default)
     {
@@ -24,20 +24,16 @@ public sealed class MarketplaceGateway
             var body = await res.Content.ReadAsStringAsync(ct);
             return new ApiTestResult(
                 res.IsSuccessStatusCode,
-                res.IsSuccessStatusCode ? "Kết nối API thành công." : $"HTTP {(int)res.StatusCode}: {Short(body)}");
+                res.IsSuccessStatusCode ? "Kết nối API thành công." : s.Marketplace==Marketplace.Ozon
+                    ? SafeOzonHttpMessage(res.StatusCode,res.Headers.RetryAfter?.ToString())
+                    : $"HTTP {(int)res.StatusCode}: {Short(body)}");
         }
         catch (Exception ex) { return new ApiTestResult(false, ex.Message); }
     }
 
     public async Task<IReadOnlyList<ProductRow>> SyncProductsAsync(StoreProfile s, CancellationToken ct = default)
     {
-        return s.Marketplace switch
-        {
-            Marketplace.Wildberries => await WbProducts(s, ct),
-            Marketplace.Ozon => await OzonProducts(s, ct),
-            Marketplace.Yandex => await YandexProducts(s, ct),
-            _ => Array.Empty<ProductRow>()
-        };
+        return await ReadAllCatalogProductsAsync(s,ct);
     }
 
     private async Task<IReadOnlyList<ProductRow>> WbProducts(StoreProfile s, CancellationToken ct)
@@ -205,12 +201,12 @@ public sealed class MarketplaceGateway
                 result.Add(new ProductRow(
                     s.Id,
                     s.Marketplace,
-                    x["mapping"]?["marketSku"]?.ToString() ?? sku,
+                    x?["mapping"]?["marketSku"]?.ToString() ?? sku,
                     sku,
                     offer?["name"]?.ToString() ?? sku,
                     price,
                     FirstImageUrl(offer?["pictures"] ?? x?["mediaFiles"]?["pictures"]),
-                    x.ToJsonString()));
+                    x!.ToJsonString()));
             }
 
             var next = root?["result"]?["paging"]?["nextPageToken"]?.ToString()
@@ -348,7 +344,7 @@ public sealed class MarketplaceGateway
                     "https://marketplace-api.wildberries.ru/api/v3/orders/status", s,
                     JsonSerializer.Serialize(new { orders = batch })), ct);
                 var text = await res.Content.ReadAsStringAsync(ct);
-                if (!res.IsSuccessStatusCode) continue;
+                Ensure(res, text);
                 foreach (var st in JsonNode.Parse(text)?["orders"]?.AsArray() ?? new JsonArray())
                 {
                     var id = st?["id"]?.ToString() ?? "";
@@ -365,7 +361,9 @@ public sealed class MarketplaceGateway
                 var sku = x?["article"]?.ToString()
                           ?? x?["skus"]?.AsArray()?.FirstOrDefault()?.ToString()
                           ?? "";
-                var status = statusById.TryGetValue(kv.Key, out var st) && !string.IsNullOrWhiteSpace(st) ? st : "new";
+                if (!statusById.TryGetValue(kv.Key, out var st) || string.IsNullOrWhiteSpace(st))
+                    throw new InvalidOperationException($"WB chưa trả trạng thái cho đơn {kv.Key}. Giữ dữ liệu trước đó và đồng bộ lại.");
+                var status = st;
                 var needsKiz = x?["requiredMeta"]?.AsArray()?.Any(m =>
                     string.Equals(m?.ToString(), "sgtin", StringComparison.OrdinalIgnoreCase)) ?? false;
                 return new FbsOrderRow(
@@ -408,7 +406,7 @@ public sealed class MarketplaceGateway
                     if (string.IsNullOrWhiteSpace(number)) continue;
                     var rows = new List<FbsOrderRow>();
                     var requirementIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                    foreach (var reqName in new[] { "products_requiring_mandatory_mark", "products_requiring_optional_mark", "products_requiring_mark", "products_requiring_gtd", "products_requiring_country", "products_requiring_jw_uin" })
+                    foreach (var reqName in new[] { "products_requiring_mandatory_mark", "products_requiring_mark" })
                         foreach (var id in post?["requirements"]?[reqName]?.AsArray() ?? new JsonArray())
                             if (id is not null) requirementIds.Add(id.ToString());
 
@@ -468,7 +466,7 @@ public sealed class MarketplaceGateway
                 foreach (var item in order?["items"]?.AsArray() ?? new JsonArray())
                 {
                     var instances = item?["instances"]?.AsArray() ?? new JsonArray();
-                    var requiresMark = instances.Count > 0 ||
+                    var requiresMark = item?["hasCis"]?.GetValue<bool?>() == true || instances.Count > 0 ||
                         item?["requiredMeta"]?.AsArray()?.Any(x =>
                             string.Equals(x?.ToString(), "CIS", StringComparison.OrdinalIgnoreCase) ||
                             string.Equals(x?.ToString(), "SGTIN", StringComparison.OrdinalIgnoreCase)) == true;
@@ -607,83 +605,82 @@ public sealed class MarketplaceGateway
     public async Task<FinanceSnapshot> ReadFinanceAsync(StoreProfile s, DateTime from, DateTime to, CancellationToken ct = default)
     {
         if (s.Marketplace != Marketplace.Wildberries)
-            throw new NotSupportedException("Bản 0.6.0 chỉ đọc quyết toán tài chính trực tiếp cho Wildberries.");
-
-        decimal revenue = 0, payout = 0, delivery = 0, storage = 0, acceptance = 0;
-        decimal deductions = 0, penalties = 0, additional = 0, cashback = 0;
-        var count = 0;
-        var fromText = from.ToString("yyyy-MM-dd");
-        var toText = to.ToString("yyyy-MM-dd");
-
-        for (var offset = 0; offset < 50000; offset += 1000)
+            throw new NotSupportedException("Quyết toán tài chính trực tiếp hiện chỉ hỗ trợ Wildberries.");
+        from=from.Date;to=to.Date;
+        var today=MarketplaceDates.MoscowToday(DateTimeOffset.UtcNow);
+        if(from>to || (to-from).Days>=45 || from<new DateTime(2025,1,1) || to>today)
+            throw new ArgumentException("Chọn kỳ quyết toán từ 1 đến 45 ngày, từ năm 2025 đến hôm nay (Moscow).");
+        var fields=new[]{"retailAmountSum","forPaySum","deliveryServiceSum","paidStorageSum","paidAcceptanceSum",
+            "deductionSum","penaltySum","additionalPaymentSum","cashbackAmountSum","bankPaymentSum"};
+        var totals=fields.ToDictionary(x=>x,_=>(decimal?)0m,StringComparer.Ordinal);
+        var count=0;var excluded=0;var complete=false;var seen=new HashSet<string>(StringComparer.Ordinal);
+        var fromText=from.ToString("yyyy-MM-dd");var toText=to.ToString("yyyy-MM-dd");
+        for(var offset=0;offset<50000;offset+=1000)
         {
-            var body = JsonSerializer.Serialize(new
+            ct.ThrowIfCancellationRequested();
+            if(offset>0)await wbLabelDelay(TimeSpan.FromSeconds(61),ct).ConfigureAwait(false);
+            var body=JsonSerializer.Serialize(new{dateFrom=fromText+"T00:00:00+03:00",dateTo=toText+"T23:59:59+03:00",period="daily",limit=1000,offset});
+            using var req=RequestWbRawAuth(HttpMethod.Post,"https://finance-api.wildberries.ru/api/finance/v1/sales-reports/list",s,body);
+            using var res=await http.SendAsync(req,ct).ConfigureAwait(false);
+            if((int)res.StatusCode==204){complete=true;break;}
+            var text=await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);Ensure(res,text);
+            JsonArray rows;
+            try{rows=JsonNode.Parse(text) as JsonArray??throw new InvalidDataException("WB trả quyết toán không đúng mảng báo cáo.");}
+            catch(JsonException ex){throw new InvalidDataException("WB trả JSON quyết toán không hợp lệ.",ex);}
+            if(rows.Count>1000)throw new InvalidDataException("WB trả quyết toán vượt kích thước trang.");
+            foreach(var node in rows)
             {
-                dateFrom = fromText + "T00:00:00+03:00",
-                dateTo = toText + "T23:59:59+03:00",
-                period = "daily",
-                limit = 1000,
-                offset
-            });
-            using var req = RequestWbRawAuth(HttpMethod.Post,
-                "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/list", s, body);
-            using var res = await http.SendAsync(req, ct);
-            if ((int)res.StatusCode == 204) break;
-            var text = await res.Content.ReadAsStringAsync(ct);
-            Ensure(res, text);
-            var arr = JsonNode.Parse(text) as JsonArray ?? new JsonArray();
-            foreach (var x in arr)
-            {
-                revenue += ParseDecimal(x?["retailAmountSum"]?.ToString()) ?? 0;
-                payout += ParseDecimal(x?["forPaySum"]?.ToString()) ?? 0;
-                delivery += ParseDecimal(x?["deliveryServiceSum"]?.ToString()) ?? 0;
-                storage += ParseDecimal(x?["paidStorageSum"]?.ToString()) ?? 0;
-                acceptance += ParseDecimal(x?["paidAcceptanceSum"]?.ToString()) ?? 0;
-                deductions += ParseDecimal(x?["deductionSum"]?.ToString()) ?? 0;
-                penalties += ParseDecimal(x?["penaltySum"]?.ToString()) ?? 0;
-                additional += ParseDecimal(x?["additionalPaymentSum"]?.ToString()) ?? 0;
-                cashback += ParseDecimal(x?["cashbackAmountSum"]?.ToString()) ?? 0;
+                if(node is not JsonObject row)throw new InvalidDataException("Dòng quyết toán WB không hợp lệ.");
+                var id=row["reportId"]?.ToString()??"";
+                if(id.Length==0 || id.Any(c=>c is < '0' or > '9') || id.All(c=>c=='0') || !seen.Add(id))
+                    throw new InvalidDataException("Quyết toán thiếu hoặc trùng report ID. Chưa công bố tổng.");
+                if(row["currency"]?.ToString()!="RUB" || !int.TryParse(row["reportType"]?.ToString(),out _))
+                    throw new InvalidDataException("Quyết toán thiếu loại báo cáo hoặc không phải RUB. Chưa cộng chung tiền tệ.");
+                var reportFrom=FinanceDay(row["dateFrom"]);var reportTo=FinanceDay(row["dateTo"]);
+                if(reportFrom>reportTo)throw new InvalidDataException("Kỳ báo cáo WB không hợp lệ.");
+                var amounts=fields.ToDictionary(x=>x,x=>FinanceMoney(row[x]),StringComparer.Ordinal);
+                if(reportFrom<from || reportTo>to){excluded++;continue;}
+                try{foreach(var field in fields)totals[field]=checked(totals[field]+amounts[field]);}
+                catch(OverflowException ex){throw new InvalidDataException("Tổng quyết toán vượt giới hạn decimal.",ex);}
                 count++;
             }
-            if (arr.Count < 1000) break;
+            if(rows.Count<1000){complete=true;break;}
         }
+        if(!complete)throw new InvalidDataException("Chưa đọc hết quyết toán WB. Không công bố tổng một phần.");
+        decimal? Sum(string field)=>count==0?null:totals[field];
+        return new("RUB",Sum(fields[0]),Sum(fields[1]),Sum(fields[2]),Sum(fields[3]),Sum(fields[4]),
+            Sum(fields[5]),Sum(fields[6]),Sum(fields[7]),Sum(fields[8]),count,fromText,toText,excluded,Sum(fields[9]));
+    }
 
-        return new FinanceSnapshot("RUB", revenue, payout, delivery, storage, acceptance,
-            deductions, penalties, additional, cashback, count, fromText, toText);
+    private static DateTime FinanceDay(JsonNode? value)
+    {
+        if(value is not JsonValue || !DateTime.TryParseExact(value.ToString(),"yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None,out var date))throw new InvalidDataException("Ngày quyết toán WB không hợp lệ.");
+        return date;
+    }
+    private static decimal? FinanceMoney(JsonNode? value)
+    {
+        if(value is null)return null;
+        var text=value.ToString();
+        if(value is not JsonValue || !System.Text.RegularExpressions.Regex.IsMatch(text,@"^-?\d+(\.\d{1,2})?$",System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+            || !decimal.TryParse(text,System.Globalization.NumberStyles.AllowLeadingSign|System.Globalization.NumberStyles.AllowDecimalPoint,
+                System.Globalization.CultureInfo.InvariantCulture,out var amount))throw new InvalidDataException("Số tiền quyết toán WB không hợp lệ.");
+        return amount;
     }
 
     public async Task<LabelResult> DownloadLabelAsync(StoreProfile s, string orderId, CancellationToken ct = default)
     {
+        if (s.Marketplace == Marketplace.Wildberries)
+            return (await DownloadLabelsAsync(s, new[] { orderId }, ct))[orderId];
         try
         {
             byte[] fileBytes;
             string ext;
 
-            if (s.Marketplace == Marketplace.Wildberries)
+            if (s.Marketplace == Marketplace.Ozon)
             {
-                using var req = Request(HttpMethod.Post,
-                    "https://marketplace-api.wildberries.ru/api/v3/orders/stickers?type=png&width=58&height=40",
-                    s,
-                    JsonSerializer.Serialize(new { orders = new[] { long.Parse(orderId) } }));
-                using var res = await http.SendAsync(req, ct);
-                var text = await res.Content.ReadAsStringAsync(ct);
-                if (!res.IsSuccessStatusCode) return new LabelResult(false, $"HTTP {(int)res.StatusCode}: {Short(text)}");
-
-                var base64 = JsonNode.Parse(text)?["stickers"]?.AsArray()?.FirstOrDefault()?["file"]?.ToString();
-                if (string.IsNullOrWhiteSpace(base64)) return new LabelResult(false, "WB không trả file sticker.");
-                fileBytes = Convert.FromBase64String(base64);
-                ext = ".png";
-            }
-            else if (s.Marketplace == Marketplace.Ozon)
-            {
-                using var req = Request(HttpMethod.Post,
-                    "https://api-seller.ozon.ru/v2/posting/fbs/package-label",
-                    s,
-                    JsonSerializer.Serialize(new { posting_number = new[] { orderId } }));
-                using var res = await http.SendAsync(req, ct);
-                fileBytes = await res.Content.ReadAsByteArrayAsync(ct);
-                if (!res.IsSuccessStatusCode) return new LabelResult(false, $"HTTP {(int)res.StatusCode}: {Short(Encoding.UTF8.GetString(fileBytes))}");
-                ext = ".pdf";
+                var taskId=await CreateOzonLabelTaskAsync(s,new[]{orderId},ct).ConfigureAwait(false);
+                return await DownloadOzonLabelTaskAsync(s,orderId,taskId,ct).ConfigureAwait(false);
             }
             else
             {
@@ -696,6 +693,11 @@ public sealed class MarketplaceGateway
                 if (!res.IsSuccessStatusCode) return new LabelResult(false, $"HTTP {(int)res.StatusCode}: {Short(Encoding.UTF8.GetString(fileBytes))}");
                 ext = ".pdf";
             }
+
+            if (ext == ".pdf" && (fileBytes.Length < 5 || Encoding.ASCII.GetString(fileBytes, 0, 5) != "%PDF-"))
+                return new LabelResult(false, "Sàn chưa trả nhãn PDF hợp lệ. Hãy đồng bộ trạng thái đóng gói rồi tải nhãn lại.");
+            if (ext == ".png" && (fileBytes.Length < 8 || !fileBytes.AsSpan(0, 8).SequenceEqual(new byte[] { 137, 80, 78, 71, 13, 10, 26, 10 })))
+                return new LabelResult(false, "WB chưa trả sticker PNG hợp lệ.");
 
             var dir = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments), "MarketplaceHub", "Labels");
             Directory.CreateDirectory(dir);
@@ -1163,6 +1165,7 @@ public sealed class MarketplaceGateway
 
     private static string AuthFriendly(StoreProfile store, System.Net.HttpStatusCode status, string body)
     {
+        if(store.Marketplace==Marketplace.Ozon)return SafeOzonHttpMessage(status,null);
         if ((int)status == 401 || (int)status == 403)
             return $"{store.Marketplace} từ chối thông tin API (HTTP {(int)status}). " +
                    "Hãy kiểm tra token/API key của đúng cửa hàng đích và quyền quản lý sản phẩm. " +
@@ -1339,7 +1342,7 @@ public sealed class MarketplaceGateway
                     using var picRes = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v1/product/pictures/import", dst, picturesBody), ct);
                     var picText = await picRes.Content.ReadAsStringAsync(ct);
                     if (!picRes.IsSuccessStatusCode)
-                        return new PriceUpdateResult(false, $"Sản phẩm Ozon đã tạo nhưng tải ảnh thất bại. HTTP {(int)picRes.StatusCode}: {Short(picText)}");
+                        return new PriceUpdateResult(false, "Sản phẩm Ozon đã tạo nhưng tải ảnh thất bại. "+SafeOzonHttpMessage(picRes.StatusCode,picRes.Headers.RetryAfter?.ToString()));
 
                     var verified = await VerifyOzonMediaAsync(dst, destinationProductId.Value, ct);
                     return new PriceUpdateResult(
@@ -1471,7 +1474,8 @@ public sealed class MarketplaceGateway
         StoreProfile store,
         string postingNumber,
         IReadOnlyDictionary<string, IReadOnlyList<string>> codesByOffer,
-        CancellationToken ct = default)
+        CancellationToken ct = default,
+        Func<bool>? beforeSet = null)
     {
         try
         {
@@ -1487,12 +1491,12 @@ public sealed class MarketplaceGateway
                 })), ct);
             var detailText = await detailRes.Content.ReadAsStringAsync(ct);
             if (!detailRes.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"Ozon posting detail HTTP {(int)detailRes.StatusCode}: {Short(detailText)}");
+                return new PriceUpdateResult(false, SafeOzonHttpMessage(detailRes.StatusCode, detailRes.Headers.RetryAfter?.ToString()));
 
             var posting = JsonNode.Parse(detailText)?["result"] ?? JsonNode.Parse(detailText);
             var requirements = posting?["requirements"];
             var requiredIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-            foreach (var name in new[] { "products_requiring_mandatory_mark", "products_requiring_optional_mark", "products_requiring_mark" })
+            foreach (var name in new[] { "products_requiring_mandatory_mark", "products_requiring_mark" })
                 foreach (var id in requirements?[name]?.AsArray() ?? new JsonArray())
                     if (id is not null) requiredIds.Add(id.ToString());
 
@@ -1520,7 +1524,7 @@ public sealed class MarketplaceGateway
                 JsonSerializer.Serialize(new { posting_number = postingNumber })), ct);
             var createText = await createRes.Content.ReadAsStringAsync(ct);
             if (!createRes.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"Ozon create exemplar HTTP {(int)createRes.StatusCode}: {Short(createText)}");
+                return new PriceUpdateResult(false, SafeOzonHttpMessage(createRes.StatusCode, createRes.Headers.RetryAfter?.ToString()));
 
             var idsByProduct = CollectOzonExemplarIdsByProduct(JsonNode.Parse(createText));
             var validateProducts = new JsonArray();
@@ -1570,7 +1574,7 @@ public sealed class MarketplaceGateway
                 "https://api-seller.ozon.ru/v5/fbs/posting/product/exemplar/validate", store, validateBody), ct);
             var validateText = await validateRes.Content.ReadAsStringAsync(ct);
             if (!validateRes.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"Ozon validate KIZ HTTP {(int)validateRes.StatusCode}: {Short(validateText)}");
+                return new PriceUpdateResult(false, SafeOzonHttpMessage(validateRes.StatusCode, validateRes.Headers.RetryAfter?.ToString()));
             if (OzonHasRejectedExemplar(JsonNode.Parse(validateText)))
                 return new PriceUpdateResult(false, "Ozon từ chối ít nhất một KIZ/exemplar. Không chuyển đơn sang giao hàng.");
 
@@ -1579,11 +1583,13 @@ public sealed class MarketplaceGateway
                 ["posting_number"] = postingNumber,
                 ["products"] = setProducts
             }.ToJsonString();
+            if(beforeSet is not null&&!beforeSet())
+                return new PriceUpdateResult(false,"Một luồng khác đã bắt đầu gửi KIZ/exemplar cho posting này.");
             using var setRes = await http.SendAsync(Request(HttpMethod.Post,
                 "https://api-seller.ozon.ru/v6/fbs/posting/product/exemplar/set", store, setBody), ct);
             var setText = await setRes.Content.ReadAsStringAsync(ct);
             if (!setRes.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"Ozon set KIZ HTTP {(int)setRes.StatusCode}: {Short(setText)}");
+                return new PriceUpdateResult(false, SafeOzonHttpMessage(setRes.StatusCode, setRes.Headers.RetryAfter?.ToString()));
 
             for (var attempt = 0; attempt < 12; attempt++)
             {
@@ -1592,12 +1598,12 @@ public sealed class MarketplaceGateway
                     JsonSerializer.Serialize(new { posting_number = postingNumber })), ct);
                 var statusText = await statusRes.Content.ReadAsStringAsync(ct);
                 if (!statusRes.IsSuccessStatusCode)
-                    return new PriceUpdateResult(false, $"Ozon KIZ status HTTP {(int)statusRes.StatusCode}: {Short(statusText)}");
+                    return new PriceUpdateResult(false, SafeOzonHttpMessage(statusRes.StatusCode, statusRes.Headers.RetryAfter?.ToString()));
 
                 var statusNode = JsonNode.Parse(statusText);
                 if (OzonHasRejectedExemplar(statusNode))
                     return new PriceUpdateResult(false, "Ozon trả trạng thái KIZ/exemplar bị từ chối.");
-                if (OzonExemplarAccepted(statusNode))
+                if (OzonExemplarAccepted(statusNode, setProducts))
                     return new PriceUpdateResult(true, "Ozon đã xác thực và nhận KIZ/exemplar.", postingNumber);
 
                 await Task.Delay(1000, ct);
@@ -1747,15 +1753,37 @@ public sealed class MarketplaceGateway
         return CollectBooleanValues(node, "valid").Any(x => !x);
     }
 
-    private static bool OzonExemplarAccepted(JsonNode? node)
+    private static bool OzonExemplarAccepted(JsonNode? node, JsonArray expectedProducts)
     {
-        var statuses = CollectStringValues(node, "status")
-            .Concat(CollectStringValues(node, "check_status"))
-            .Concat(CollectStringValues(node, "mark_status"))
-            .ToArray();
-        return statuses.Any(x => x.Equals("accepted", StringComparison.OrdinalIgnoreCase) ||
-                                 x.Equals("passed", StringComparison.OrdinalIgnoreCase) ||
-                                 x.Equals("success", StringComparison.OrdinalIgnoreCase));
+        var confirmed = new HashSet<(string Product, string Exemplar)>();
+        void Walk(JsonNode? current)
+        {
+            if (current is JsonObject obj)
+            {
+                var productId = obj["product_id"]?.ToString() ?? "";
+                if (productId.Length > 0 && obj["exemplars"] is JsonArray exemplars)
+                    foreach (var exemplar in exemplars)
+                    {
+                        var id = exemplar?["exemplar_id"]?.ToString() ?? "";
+                        var statuses = CollectStringValues(exemplar, "status")
+                            .Concat(CollectStringValues(exemplar, "check_status"))
+                            .Concat(CollectStringValues(exemplar, "mark_status")).ToArray();
+                        if (id.Length > 0 && statuses.Length > 0 && statuses.All(x =>
+                                x.Equals("accepted", StringComparison.OrdinalIgnoreCase) ||
+                                x.Equals("passed", StringComparison.OrdinalIgnoreCase) ||
+                                x.Equals("success", StringComparison.OrdinalIgnoreCase) || x.Equals("valid",StringComparison.OrdinalIgnoreCase)))
+                            confirmed.Add((productId, id));
+                    }
+                foreach (var pair in obj) Walk(pair.Value);
+            }
+            else if (current is JsonArray array)
+                foreach (var child in array) Walk(child);
+        }
+        Walk(node);
+        var expected = expectedProducts.SelectMany(product =>
+            (product?["exemplars"]?.AsArray() ?? new JsonArray()).Select(exemplar =>
+                (Product: product?["product_id"]?.ToString() ?? "", Exemplar: exemplar?["exemplar_id"]?.ToString() ?? ""))).ToArray();
+        return expected.Length > 0 && expected.All(confirmed.Contains);
     }
 
     private static IReadOnlyList<string> CollectStringValues(JsonNode? node, string key)
@@ -1848,20 +1876,19 @@ public sealed class MarketplaceGateway
                 using var ship = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v4/posting/fbs/ship", s, body), ct);
                 var shipText = await ship.Content.ReadAsStringAsync(ct);
                 if (!ship.IsSuccessStatusCode)
-                    return new PriceUpdateResult(false, $"Ozon ship HTTP {(int)ship.StatusCode}: {Short(shipText)}");
+                    return new PriceUpdateResult(false, SafeOzonHttpMessage(ship.StatusCode,ship.Headers.RetryAfter?.ToString()));
 
                 await Task.Delay(1200, ct);
                 using var verify = await http.SendAsync(Request(HttpMethod.Post, "https://api-seller.ozon.ru/v3/posting/fbs/get", s,
                     JsonSerializer.Serialize(new { posting_number = order.ExternalOrderId, with = new { analytics_data = false, financial_data = false } })), ct);
                 var verifyText = await verify.Content.ReadAsStringAsync(ct);
                 if (!verify.IsSuccessStatusCode)
-                    return new PriceUpdateResult(false, $"Ozon verify HTTP {(int)verify.StatusCode}: {Short(verifyText)}");
+                    return new PriceUpdateResult(false, SafeOzonHttpMessage(verify.StatusCode,verify.Headers.RetryAfter?.ToString()));
 
                 var status = JsonNode.Parse(verifyText)?["result"]?["status"]?.ToString() ?? "";
                 var substatus = JsonNode.Parse(verifyText)?["result"]?["substatus"]?.ToString() ?? "";
-                if (!status.Equals("awaiting_deliver", StringComparison.OrdinalIgnoreCase) &&
-                    substatus.Equals("ship_failed", StringComparison.OrdinalIgnoreCase))
-                    return new PriceUpdateResult(false, "Ozon trả ship_failed sau khi gửi lệnh đóng hàng.");
+                if (!new[] { "awaiting_deliver", "delivering", "delivered" }.Contains(status, StringComparer.OrdinalIgnoreCase))
+                    return new PriceUpdateResult(false, $"Ozon chưa xác nhận đóng hàng: {status}/{substatus}. Đồng bộ lại trạng thái trước khi gửi lệnh tiếp theo.");
 
                 return new PriceUpdateResult(true, $"Ozon đã tiếp nhận đóng hàng. Status: {status}/{substatus}");
             }
@@ -1887,7 +1914,7 @@ public sealed class MarketplaceGateway
     public async Task<PriceUpdateResult> CreateShipmentAsync(
         StoreProfile store,
         IReadOnlyList<FbsOrderRow> orders,
-        CancellationToken ct = default)
+        CancellationToken ct = default, string? existingSupplyId = null, string? name = null, IProgress<string>? progress = null)
     {
         try
         {
@@ -1906,40 +1933,7 @@ public sealed class MarketplaceGateway
                 return new PriceUpdateResult(true, string.Join(Environment.NewLine, messages));
             }
 
-            var ids = orders
-                .Select(x => long.TryParse(x.ExternalOrderId, out var id) ? id : 0)
-                .Where(x => x > 0)
-                .Distinct()
-                .ToArray();
-            if (ids.Length == 0) return new PriceUpdateResult(false, "Không có WB order ID hợp lệ.");
-            if (ids.Length > 100) return new PriceUpdateResult(false, "WB chỉ cho thêm tối đa 100 đơn vào supply trong một request.");
-
-            using var create = await http.SendAsync(
-                Request(HttpMethod.Post, "https://marketplace-api.wildberries.ru/api/v3/supplies", store,
-                    JsonSerializer.Serialize(new { name = "MarketplaceHub " + DateTime.Now.ToString("yyyy-MM-dd HH:mm:ss") })), ct);
-            var createText = await create.Content.ReadAsStringAsync(ct);
-            Ensure(create, createText);
-
-            var supplyId = JsonNode.Parse(createText)?["id"]?.ToString()
-                           ?? JsonNode.Parse(createText)?["supplyId"]?.ToString();
-            if (string.IsNullOrWhiteSpace(supplyId))
-                return new PriceUpdateResult(false, "WB đã tạo supply nhưng không trả supplyId.");
-
-            using var add = await http.SendAsync(
-                Request(new HttpMethod("PATCH"),
-                    $"https://marketplace-api.wildberries.ru/api/marketplace/v3/supplies/{Uri.EscapeDataString(supplyId)}/orders",
-                    store,
-                    JsonSerializer.Serialize(new { orders = ids })), ct);
-            var addText = await add.Content.ReadAsStringAsync(ct);
-            if (!add.IsSuccessStatusCode)
-                return new PriceUpdateResult(false,
-                    $"Đã tạo supply {supplyId} nhưng không thêm được đơn. HTTP {(int)add.StatusCode}: {Short(addText)}",
-                    supplyId);
-
-            return new PriceUpdateResult(
-                true,
-                $"Đã tạo shipment {supplyId} và thêm {ids.Length} đơn. Các đơn đã chuyển sang confirm.",
-                supplyId);
+            return await CreateWbShipmentAsync(store, orders, existingSupplyId, name, ct, progress);
         }
         catch (Exception ex)
         {
@@ -1962,14 +1956,11 @@ public sealed class MarketplaceGateway
             if (string.IsNullOrWhiteSpace(code))
                 return new PriceUpdateResult(false, "Mã KIZ/SGTIN trống.");
 
-            using var res = await http.SendAsync(
-                Request(HttpMethod.Put,
-                    $"https://marketplace-api.wildberries.ru/api/v3/orders/{parsedId}/meta/sgtin",
-                    store,
-                    JsonSerializer.Serialize(new { sgtins = new[] { code.Trim() } })), ct);
-            var text = await res.Content.ReadAsStringAsync(ct);
-            if (!res.IsSuccessStatusCode)
-                return new PriceUpdateResult(false, $"WB SGTIN HTTP {(int)res.StatusCode}: {Short(text)}");
+            await wbLabelGate.WaitAsync(ct).ConfigureAwait(false);
+            try {
+                await WbMarketplaceRequestAsync(store,HttpMethod.Put,$"/api/v3/orders/{parsedId}/meta/sgtin",
+                    JsonSerializer.Serialize(new {sgtins=new[]{code.Trim()}}),ct,null).ConfigureAwait(false);
+            } finally {wbLabelGate.Release();}
             return new PriceUpdateResult(true, "WB đã nhận mã KIZ/SGTIN cho đơn.", orderId);
         }
         catch (Exception ex)
@@ -2092,8 +2083,16 @@ public sealed class MarketplaceGateway
 
     private static void Ensure(HttpResponseMessage r, string body)
     {
-        if (!r.IsSuccessStatusCode) throw new HttpRequestException($"HTTP {(int)r.StatusCode}: {Short(body)}");
+        if (!r.IsSuccessStatusCode)
+        {
+            var host=r.RequestMessage?.RequestUri?.Host??"";
+            if(host.Equals("ozon.ru",StringComparison.OrdinalIgnoreCase)||host.EndsWith(".ozon.ru",StringComparison.OrdinalIgnoreCase)
+                ||host.Equals("ozone.ru",StringComparison.OrdinalIgnoreCase)||host.EndsWith(".ozone.ru",StringComparison.OrdinalIgnoreCase))
+                throw new HttpRequestException(SafeOzonHttpMessage(r.StatusCode,r.Headers.RetryAfter?.ToString()));
+            throw new HttpRequestException($"HTTP {(int)r.StatusCode}: {Short(body)}");
+        }
     }
 
     private static string Short(string s) => s.Length > 500 ? s[..500] : s;
 }
+

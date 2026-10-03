@@ -1,5 +1,10 @@
 namespace MarketplaceHub.Core;
 
+public static class MarketplaceDates
+{
+    public static DateTime MoscowToday(DateTimeOffset now)=>now.ToOffset(TimeSpan.FromHours(3)).Date;
+}
+
 public enum Marketplace { Wildberries, Ozon, Yandex }
 
 public sealed record StoreProfile(
@@ -10,13 +15,41 @@ public sealed record ProductRow(
     long StoreId, Marketplace Marketplace, string ExternalId, string Sku, string Name,
     decimal? Price, string ImageUrl, string RawJson);
 
+public sealed record FboPreparationRow(string VariantId,string Sku,string Name,string Color,string Size,
+    string Brand,string Barcode,int Quantity,bool NeedsKiz,IReadOnlyList<string> KizCodes);
+public sealed record NationalCatalogAccess(string ApiKey,string Token,bool Sandbox);
+public sealed record GtinSyncTarget(string Sku,string VariantId,string ExternalId,string Size,string Gtin);
+
+public static class GtinCode
+{
+    public static string Normalize(string? value)
+    {
+        var text=(value??"").Trim();
+        if(text.Length is not (8 or 12 or 13 or 14)||text.Any(c=>c is < '0' or > '9'))return "";
+        var sum=0;var weight=3;
+        for(var i=text.Length-2;i>=0;i--){sum+=(text[i]-'0')*weight;weight=weight==3?1:3;}
+        return (10-sum%10)%10==text[^1]-'0'?text.PadLeft(14,'0'):"";
+    }
+}
+
 public sealed record FbsOrderRow(
     long StoreId, Marketplace Marketplace, string ExternalOrderId, string Sku,
     string Name, int Quantity, string Status, bool NeedsKiz, string RawJson);
 
 public sealed record PriceUpdateResult(bool Success, string Message, string? ExternalTaskId = null);
 public sealed record ApiTestResult(bool Success, string Message);
-public sealed record LabelResult(bool Success, string Message, string? FilePath = null);
+public sealed record OzonDiagnosticStep(
+    string Stage, string Endpoint, bool Success, int HttpStatus, long ElapsedMs,
+    string Code, string Message, string NextAction);
+public sealed record OzonDiagnosticReport(IReadOnlyList<OzonDiagnosticStep> Steps)
+{
+    public bool Success => Steps.Count > 0 && Steps.All(x => x.Success);
+    public string SafeText => string.Join(Environment.NewLine, Steps.Select(x =>
+        $"{x.Stage} | {x.Endpoint} | {(x.Success ? "OK" : "LỖI")} | HTTP {x.HttpStatus} | {x.ElapsedMs} ms | {x.Code} | {x.Message} | {x.NextAction}"));
+}
+public sealed record LabelResult(bool Success, string Message, string? FilePath = null,
+    string? Barcode = null, string? PartA = null, string? PartB = null);
+public sealed record WbPrintKizMetadata(bool Required,IReadOnlyList<string> Codes);
 
 public sealed record ZnakConfig(
     string Inn,
@@ -62,18 +95,20 @@ public sealed record FboSupplyRow(
 
 public sealed record FinanceSnapshot(
     string Currency,
-    decimal Revenue,
-    decimal Payout,
-    decimal Delivery,
-    decimal Storage,
-    decimal Acceptance,
-    decimal Deductions,
-    decimal Penalties,
-    decimal AdditionalPayments,
-    decimal Cashback,
+    decimal? Revenue,
+    decimal? Payout,
+    decimal? Delivery,
+    decimal? Storage,
+    decimal? Acceptance,
+    decimal? Deductions,
+    decimal? Penalties,
+    decimal? AdditionalPayments,
+    decimal? Cashback,
     int ReportCount,
     string From,
-    string To);
+    string To,
+    int ExcludedReports=0,
+    decimal? BankPayment=null);
 
 public sealed record ZnakPipelineRow(
     long Id,
@@ -86,3 +121,28 @@ public sealed record ZnakPipelineRow(
     DateTimeOffset UpdatedAt);
 
 public sealed record AuditRow(DateTimeOffset At, string Module, string Action, string Detail);
+
+public sealed record WbSupply(string Id, string Name, DateTimeOffset CreatedAt, bool Done)
+{
+    public override string ToString() => Id + " · " + Name + " · " + CreatedAt.ToOffset(TimeSpan.FromHours(3)).ToString("HH:mm");
+}
+public sealed record WbOrderStatus(string SupplierStatus, string WbStatus);
+public sealed record WbShipmentChoice(string? SupplyId, string Name);
+public enum WbReceiveDisposition { EligibleNew, AlreadyMember, Cancelled, Rejected }
+public sealed record WbReceiveOrderResult(
+    string OrderId,
+    WbReceiveDisposition Disposition,
+    bool Verified,
+    string Message,
+    WbOrderStatus? RemoteStatus = null);
+public sealed record WbReceiveResult(
+    bool Success,
+    string? SupplyId,
+    bool Created,
+    int VerifiedMemberCount,
+    IReadOnlyList<WbReceiveOrderResult> Orders,
+    string Message,
+    DateTimeOffset? RetryAt = null,
+    string RetryEndpoint = "");
+public sealed record WbReceiveCheckpoint(string? SupplyId, string State, IReadOnlyList<string> MemberIds);
+
