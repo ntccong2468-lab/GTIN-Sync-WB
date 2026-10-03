@@ -7,7 +7,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 
 // Test-only signing executable: exercises the real process boundary without a certificate or network.
-if(args.Length>0 && args[0]=="-sign"){File.WriteAllBytes(args[^1],new byte[]{1,2,3,4});return 0;}
+if(args.Length>0 && args[0]=="-sign"){if(Environment.GetEnvironmentVariable("MARKETPLACE_FAKE_SIGNER_VERBOSE")=="1"){Console.Out.Write(new string('x',128*1024));Console.Error.Write(new string('y',128*1024));}File.WriteAllBytes(args[^1],new byte[]{1,2,3,4});return 0;}
 
 var app=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-state-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());var failures=new List<string>();var checks=0;var stores=new List<StoreProfile>();
 async Task Check(string name,Func<Task> run){checks++;try{await run();Console.WriteLine("PASS "+name);}catch(Exception ex){failures.Add(name);Console.WriteLine("FAIL "+name+": "+ex.GetBaseException().Message);}finally{if(name.StartsWith("SUZ ",StringComparison.Ordinal)||name.StartsWith("KIZ acquisition",StringComparison.Ordinal)){using var clean=new SqliteConnection("Data Source="+app.Db.DbPath);clean.Open();using var cmd=clean.CreateCommand();cmd.CommandText="DELETE FROM kiz_pool";cmd.ExecuteNonQuery();}}}
@@ -100,6 +100,19 @@ await Check("SUZ concurrent application instances create at most one paid order"
     var one=SuzApp(store,Respond);var two=SuzApp(store,Respond);
     var results=await Task.WhenAll(Task.Run(()=>one.EnsureKizQuantityAsync(store.Id,"CONCURRENT","04601234567893",1)),Task.Run(()=>two.EnsureKizQuantityAsync(store.Id,"CONCURRENT","04601234567893",1)));
     Expect(creates==1&&results.Any(x=>x.Ok)&&app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId=="CONCURRENT-ORDER","Concurrent app instances bought two orders or lost the checkpoint.");
+});
+await Check("SUZ Retry-After survives restart without further authentication or status calls",async()=>{
+    var store=Store(Marketplace.Ozon);app.Db.UpsertZnakPipeline(store.Id,"QUOTA","04601234567893","POLLING","QUOTA-ORDER","");var statusCalls=0;
+    var target=SuzApp(store,r=>{if(r.RequestUri!.AbsolutePath.Contains("/auth/"))return SuzAuth(r);statusCalls++;var limited=new HttpResponseMessage(HttpStatusCode.TooManyRequests){Content=new StringContent("{}")};limited.Headers.TryAddWithoutValidation("Retry-After","3600");return limited;});
+    using(var stop=new CancellationTokenSource(TimeSpan.FromSeconds(3)))await target.EnsureKizQuantityAsync(store.Id,"QUOTA","04601234567893",1,stop.Token);
+    var laterCalls=0;var restarted=SuzApp(store,_=>{laterCalls++;throw new Exception("Retry deadline bypassed");});await restarted.EnsureKizQuantityAsync(store.Id,"QUOTA","04601234567893",1);
+    Expect(statusCalls==1&&laterCalls==0&&app.Db.ZnakPipelines(store.Id).Single().ExternalOrderId=="QUOTA-ORDER","SUZ ignored durable Retry-After or erased the known order.");
+});
+await Check("SUZ CryptoPro drains verbose signer output before waiting for exit",async()=>{
+    var store=Store(Marketplace.Ozon);app.Db.UpsertZnakPipeline(store.Id,"VERBOSE","04601234567893","POLLING","VERBOSE-ORDER","");
+    var target=SuzApp(store,r=>r.RequestUri!.AbsolutePath.Contains("/auth/")?SuzAuth(r):r.RequestUri!.AbsolutePath.EndsWith("/status")?Json("[{\"gtin\":\"04601234567893\",\"bufferStatus\":\"ACTIVE\",\"availableCodes\":1}]"):Json("{\"codes\":[\"010460123456789321verbose-fixture\"]}"));
+    var previous=Environment.GetEnvironmentVariable("MARKETPLACE_FAKE_SIGNER_VERBOSE");Environment.SetEnvironmentVariable("MARKETPLACE_FAKE_SIGNER_VERBOSE","1");
+    try{using var stop=new CancellationTokenSource(TimeSpan.FromSeconds(3));var result=await target.EnsureKizQuantityAsync(store.Id,"VERBOSE","04601234567893",1,stop.Token);Expect(result.Ok,"Verbose CryptoPro filled its output pipe and blocked signing.");}finally{Environment.SetEnvironmentVariable("MARKETPLACE_FAKE_SIGNER_VERBOSE",previous);}
 });
 await Check("Znack registration preparation cannot erase a pending SUZ purchase",async()=>{
     var store=Store(Marketplace.Wildberries);app.Db.UpsertZnakPipeline(store.Id,"PREP","04601234567893","ERROR","PENDING-ORDER","network interrupted");

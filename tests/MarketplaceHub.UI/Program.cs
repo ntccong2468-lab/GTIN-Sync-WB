@@ -69,6 +69,12 @@ internal static class Program
                 var rows=items.Select(item=>(WbPrintOrder)method!.Invoke(form,new object[]{store,snapshot,item})!).ToArray();
                 Expect(rows.Select(x=>x.Quantity).SequenceEqual(new[]{1,2})&&rows.All(x=>x.OrderId=="REPEATED")&&rows.Sum(x=>x.Quantity)==3,"Repeated offer lost an item or quantity in picking export.");
             });
+            Check("Report uses Moscow calendar and scrolls long settlement details",()=>{
+                var dates=typeof(StoreProfile).Assembly.GetType("MarketplaceHub.Core.MarketplaceDates");var method=dates?.GetMethod("MoscowToday");Expect(method is not null,"Marketplace reporting calendar helper is missing.");
+                var day=(DateTime)method!.Invoke(null,new object[]{DateTimeOffset.Parse("2026-10-03T17:30:00Z")})!;Expect(day==new DateTime(2026,10,3),"Vietnam midnight advanced the marketplace date.");
+                Page(form,"ShowReport");var status=All(form).OfType<TextBox>().SingleOrDefault(x=>x.Name=="financeReportStatus");
+                Expect(status is {Multiline:true,ReadOnly:true}&&status.ScrollBars is ScrollBars.Vertical or ScrollBars.Both,"Long settlement details have no visible scrolling control.");
+            });
             Check("WB mixed receive dialog shows retained supply and one outcome per order",()=>{
                 var type=typeof(MainForm).Assembly.GetType("MarketplaceHub.UI.WbReceiveResultDialog");
                 Expect(type is not null,"WB per-order outcome dialog is missing.");
@@ -311,7 +317,7 @@ internal static class Program
             });
             Check("FBS list remains responsive after its parent installs the tab layout",()=>{
                 Page(form,"ShowFbs");var grid=All(form).OfType<DataGridView>().Single(x=>x.Name=="fbsNewOrders");var before=grid.Parent!.Width;
-                var size=form.ClientSize;form.ClientSize=new(size.Width+120,size.Height+50);Application.DoEvents();Expect(grid.Parent.Width>before,"FBS page replaced its child resize handler; table no longer follows the viewport.");form.ClientSize=size;
+                var size=form.ClientSize;form.ClientSize=new(size.Width+120,size.Height+50);Application.DoEvents();try{Expect(grid.Parent.Width>before,$"FBS table did not resize: before={before}, after={grid.Parent.Width}, form={form.ClientSize}, work={grid.Parent.Parent!.ClientSize}, window={form.WindowState}.");}finally{form.ClientSize=size;}
             });
 
             Check("WB print uses the selected size instead of the card's first size", () =>
@@ -400,7 +406,7 @@ internal static class Program
             Check("WB uncertain KIZ PUT resumes by reading metadata without assigning a new code", () =>
             {
                 var wb=app.Db.SaveStore(new StoreProfile(0,Marketplace.Wildberries,marker+"-retry","","","","","fixture",true));
-                const string gtin="04608888888888";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");
+                const string gtin="04608888888884";var code="01"+gtin+"21"+Guid.NewGuid().ToString("N");
                 var row=new FbsOrderRow(wb.Id,Marketplace.Wildberries,"777","SKU","fixture",1,"confirm",true,"{}");
                 var httpField=typeof(MarketplaceGateway).GetField("http",instance)!;var old=httpField.GetValue(app.Api);
                 var applied=false;var puts=0;
