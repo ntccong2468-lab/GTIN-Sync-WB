@@ -52,6 +52,17 @@ internal static class LabelJobUiTests
                 Expect(!Application.OpenForms.Cast<Form>().Any(x=>x.GetType().Name=="FbsLabelJobDialog"),"Page observer did not unsubscribe");
             }finally{release.TrySetResult();http.SetValue(app.Api,previous);app.Db.DeleteStore(s.Id);}
         });
+        check("yandex_export_preserves_confirmed_box_layout_before_job",()=>{
+            var s=app.Db.SaveStore(new(0,Marketplace.Yandex,"layout route","","fixture-api","456","789","fixture",true));var batch=app.Db.CreateMarketplaceFbsBatch(s,new[]{"11"});var opened=false;var writes=0;
+            var http=typeof(MarketplaceGateway).GetField("http",Hidden)!;var previous=http.GetValue(app.Api);
+            http.SetValue(app.Api,new HttpClient(new FixtureHttp(()=>Task.FromResult(new HttpResponseMessage(HttpStatusCode.OK){Content=new StringContent("{\"order\":{\"id\":11,\"status\":\"PROCESSING\",\"substatus\":\"STARTED\",\"items\":[{\"id\":2,\"offerId\":\"A\",\"count\":1}],\"delivery\":{\"shipments\":[{\"boxes\":[{\"id\":99}]}]}}}",Encoding.UTF8,"application/json")}))));
+            using var timer=new System.Windows.Forms.Timer{Interval=10};timer.Tick+=(_,_)=>{var layout=Application.OpenForms.Cast<Form>().FirstOrDefault(x=>x.GetType().Name=="MarketplaceLayoutDialog");if(layout is not null){opened=true;layout.DialogResult=DialogResult.OK;layout.Close();}};timer.Start();
+            try{
+                Pump((Task)typeof(MainForm).GetMethod("ExportMarketplaceBatchCoreAsync",Hidden)!.Invoke(form,new object[]{s,batch.Id,CancellationToken.None,false})!);
+                var saved=app.Db.MarketplaceFbsBatchOrders(s,batch.Id).Single();var json=saved.Layout.Length==0?null:System.Text.Json.Nodes.JsonNode.Parse(saved.Layout);
+                Expect(opened&&json?["fingerprint"]?.ToString().Length>0&&json?["boxes"]?[0]?["items"]?[0]?["fullCount"]?.GetValue<int>()==1&&writes==0,"Yandex export skipped or lost seller-confirmed full box allocation");
+            }finally{timer.Stop();app.PauseStoreFbsJobs(s.Id);foreach(var d in Application.OpenForms.Cast<Form>().Where(x=>x.GetType().Name=="FbsLabelJobDialog").ToArray())d.Close();http.SetValue(app.Api,previous);app.Db.DeleteStore(s.Id);}
+        });
     }
     private sealed class FixtureHttp(Func<Task<HttpResponseMessage>> response):HttpMessageHandler{protected override Task<HttpResponseMessage> SendAsync(HttpRequestMessage request,CancellationToken ct)=>response();}
 }
