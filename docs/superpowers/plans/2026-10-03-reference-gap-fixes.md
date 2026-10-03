@@ -32,9 +32,9 @@ Files: `MarketplaceHub/Services/AppServices.cs`, `tests/MarketplaceHub.FbsState/
 Interfaces: giữ `EnsureKizQuantityAsync(long,string,string,int,CancellationToken)` và tuple result; `NormalizeGtin14` dùng validator GTIN chung. Helpers nội bộ đọc `/order/codes/blocks` và `/order/codes/retry` qua clientToken.
 
 - [x] Thêm ca checksum, ERROR có order, expired block, auth lỗi và sai GTIN.
-- [ ] Quan sát RED trên Windows: ca retry/expired/checkpoint hiện thất bại.
-- [ ] Sửa: tái sử dụng external ID ở stage chưa hoàn tất; giữ ID trong catch; kiểm tra toàn bộ mã trước khi UPSERT; đọc lại pool AVAILABLE không có owner.
-- [ ] GREEN suite FbsState và commit.
+- [x] Quan sát RED trên Windows: ca retry/expired/checkpoint hiện thất bại.
+- [x] Sửa: tái sử dụng external ID ở stage chưa hoàn tất; giữ ID trong catch; kiểm tra toàn bộ mã trước khi UPSERT; đọc lại pool AVAILABLE không có owner.
+- [x] GREEN suite FbsState 44/44 tại 09704bc và commit.
 
 ## Task 2: Danh tính, size và barcode sản phẩm
 
@@ -42,9 +42,9 @@ Files: `MarketplaceHub/Services/MarketplaceProductSync.cs`, `MarketplaceHub/UI/M
 Interfaces: giữ `ProductCatalogEntry`; lưu metadata được giải theo tên category vào JSON card; `BuildWbPrintOrder` giữ barcode variant/order độc lập với GTIN.
 
 - [x] Thêm ca Ozon manufacturer XXL so với Russian 52, attributes foreign; WB mapping khác barcode và barcode kỹ thuật chưa đăng ký GTIN.
-- [ ] Quan sát RED.
-- [ ] Đọc attributes đúng product + offer, category definitions theo category/type, ưu tiên manufacturer; builder WB giữ techSize và barcode sàn.
-- [ ] GREEN suites ProductSync/UI và commit.
+- [x] Quan sát RED.
+- [x] Đọc attributes đúng product + offer, category definitions theo category/type, ưu tiên manufacturer; builder WB giữ techSize và barcode sàn.
+- [x] GREEN ProductSync 11/11, UI 41/41 tại 09704bc và commit.
 
 ## Task 3: Phiếu nhặt và resize FBS
 
@@ -52,9 +52,9 @@ Files: `MarketplaceHub/Services/WbPrintBundleService.cs`, `MarketplaceHub/UI/Mai
 Interfaces: `public static string WritePickingList(string marketplace,string shop,IReadOnlyList<WbPrintOrder> orders,string folder,CancellationToken ct=default)`; exporter truyền tất cả item, KIZ PDF chỉ nhận item yêu cầu KIZ.
 
 - [x] Thêm ca phiếu A4 Ozon gom XL 2+3 thành 5 và XXL 1; resize tăng rộng bảng.
-- [ ] Quan sát RED.
-- [ ] Xuất PDF tạm rồi move; giữ mỗi posting/item đúng identity; đếm đơn distinct; compose handler tabs với handler child.
-- [ ] GREEN suites Print/UI và commit.
+- [x] Quan sát RED.
+- [x] Xuất PDF tạm rồi move; giữ mỗi posting/item đúng identity; đếm đơn distinct; compose handler tabs với handler child.
+- [x] GREEN Print 14/14, UI 41/41 tại 09704bc và commit.
 
 ## Task 4: Báo cáo đúng dữ liệu và nghiệm thu
 
@@ -62,7 +62,7 @@ Files: `MarketplaceHub/Core/Models.cs`, `MarketplaceHub/Services/MarketplaceGate
 Interfaces: trường tiền `FinanceSnapshot` nullable decimal; trả count excluded; giới hạn đọc 1–45 ngày từ 2025 đến hôm nay Moscow; chỉ report daily, RUB.
 
 - [x] Thêm ca field thiếu, signed decimal, duplicate/currency/malformed, period ngoài phạm vi và report vượt kỳ.
-- [ ] Quan sát RED.
-- [ ] Validator chặt, không công bố trang chưa hoàn tất, không lấy missing thành 0; UI trình bày khoản báo cáo riêng, bỏ ròng tự tính.
-- [ ] Chạy cả 8 suites Windows và build portable; rà soát độc lập diff cuối, lưu số ca/log/artifact trong audit.
-- [ ] Cập nhật preview và hướng dẫn kiểm tra API thật; không xuất bộ cài chính thức.
+- [x] Quan sát RED.
+- [x] Validator chặt, không công bố trang chưa hoàn tất, không lấy missing thành 0; UI trình bày khoản báo cáo riêng, bỏ ròng tự tính.
+- [x] Chạy cả 8 suites Windows (222/222) và build portable (37092774111); rà soát độc lập diff cuối, lưu số ca/log/artifact trong audit.
+- [x] Cập nhật preview 11263182438 và hướng dẫn kiểm tra API thật; không xuất bộ cài chính thức.

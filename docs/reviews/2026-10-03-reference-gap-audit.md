@@ -37,3 +37,51 @@ Các luồng đã có được giữ và chạy lại kiểm thử: nhận đơn
 Đợt này bắt đầu bằng các ca tái hiện mới trên Windows. Chưa coi các sửa đổi mới là đạt kiểm thử trước khi có kết quả CI. Mốc trước: 196/196 ca trên Windows ở commit `92220145cae66d79242e60dffb263d984a71c584`; không dùng kết quả đó để chứng minh bản sửa mới.
 
 Không xóa cửa hàng, đơn, mapping, KIZ đã gán hoặc lịch sử in. Chỉ cập nhật nhánh `fix/dashboard-fbs-stability`, chưa merge nhánh chính. Bản cài chính thức vẫn chờ kiểm tra API thật; trước đó cung cấp bản portable để kiểm thử.
+
+## Rà soát độc lập và lượt sửa bổ sung
+
+Đã rà soát độc lập, không dùng API thật. Các ca RED tiếp tục xác nhận:
+
+- Chuẩn bị đăng ký Znack dùng chung nhật ký mua và xóa external order: tách bảng `znak_registration_preparation` bổ sung, giữ nhật ký mua nguyên vẹn. Trạng thái chuẩn bị không có nghĩa đã đăng ký thật.
+- Hai instance có thể mua đồng thời: claim bằng SQLite atomic statement và so sánh đúng generation `updated_at` đã đọc; đọc lại pool sau xác thực. Build từng bắt được race khi instance thứ hai xác thực sau khi instance thứ nhất đã hoàn tất; điều kiện generation sửa tình huống này.
+- SUZ từ chối HTTP400: giữ lỗi xác định có thể sửa cấu hình và retry; timeout/5xx/missing order ID vẫn chặn mua lại.
+- SUZ429: lưu deadline theo tài khoản OMS, chặn cả sau khởi động lại; đọc Retry-After ở auth, order, status, codes và phục hồi block.
+- CryptoPro verbose: đọc cả stdout/stderr trước khi chờ exit; tránh pipe deadlock, vẫn kill khi hủy/timeout.
+- Yandex hai item cùng offer: phiếu nhặt chiếu từng item ID/số lượng, không dùng Single theo SKU.
+- Barcode WB nhiều lựa chọn: không chọn mã đầu tiên khi đơn không xác định được đúng barcode.
+- Báo cáo dùng cùng ngày Moscow cho kỳ mặc định, nút nhanh và validator; trường quyết toán dài có vùng cuộn.
+- Resize test dùng viewport thật, tránh giới hạn kích thước desktop của Windows runner; đã quan sát RED khi handler bảng bị thay.
+
+Rulings: sửa trong phạm vi thiết kế và quyền push đã được xác nhận; giữ source WCode 1.1.67 chưa truy cập là giới hạn đối chiếu; chưa thực hiện đăng ký thẻ National Catalog mới hoặc thử API thật; giữ nhánh/PR hiện tại và không merge; chưa xây installer. Fixture WB retry được sửa checksum GTIN hợp lệ (04608888888886), giữ nguyên kiểm tra PUT bị mất response và đọc lại KIZ.
+
+Bản 847abd7 có một runner đạt 222/222 nhưng build runner bắt được race nói trên. Chỉ dùng kết quả của commit cuối sau sửa generation để nghiệm thu.
+
+## Kết quả cuối
+
+Commit code được nghiệm thu: `09704bcac282d366b4342dc3c76ad17e4e6ac77d`.
+
+| Suite Windows | Kết quả |
+|---|---:|
+| API Contracts | 41/41 |
+| Ozon/Yandex FBS | 22/22 |
+| ProductSync | 11/11 |
+| FbsState / SUZ / SQLite | 44/44 |
+| License | 14/14 |
+| Mock API end-to-end | 35/35 |
+| UI | 41/41 |
+| Print/PDF | 14/14 |
+| Tổng | 222/222 |
+
+Build Windows `37092774111`, regression push `37092774168` và regression PR `37092778781` đều thành công. Build/publish self-contained win-x64 thành công, zero test failures; các bước installer đều skipped. Chưa thử API thật. Không gọi bộ kiểm thử bằng dữ liệu giả là kiểm chứng kết nối thật với sàn.
+
+Preview: https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/37092774111/artifacts/11263182438
+
+ZIP preview 75,808,110 byte; SHA-256 artifact archive `1be25d1e2749d1fab45342a2670c7cb747671c478959a7a354a250c037ad2437`.
+
+Ảnh UI: artifact `11263237128`; mẫu PDF: artifact `11262926699` cùng run. Nhật ký RED cho các lỗi gốc: `37090824647`, `37091049526`; review RED: `37091917875`; viewport RED: `37092225070`.
+
+Đã giải nén artifact cuối và xem ảnh màn hình Windows cùng PDF đã render: shipment WB có nút xuất xanh, KIZ Mapping tách Barcode sàn/GTIN và giữ phân trang, Báo cáo có vùng cuộn cho quyết toán. Phiếu nhặt Ozon A4 có hai dòng XL=5, XXL=1, tổng 6 sản phẩm của 2 đơn; mẫu WB giữ size seller 48. Không thấy chữ chồng hoặc bảng vượt trang ở những mẫu đã kiểm tra. Ảnh sản phẩm trống trong fixture không chứng minh ảnh SKU thật; máy in vật lý và độ giống WCode từng pixel chưa được kiểm chứng.
+
+Cách thử thật: giải nén preview, mở `MarketplaceHub.exe`, chọn cửa hàng, mở Kiểm tra tích hợp (WB/National Catalog) hoặc kiểm tra Ozon chuyên sâu từ form cửa hàng. Nhập khóa ở ô che, chạy chỉ đọc trước, gửi báo cáo đã che. Sau xác minh, thử đúng một đơn/biến thể; cần cả kết quả đóng gói, readback KIZ và PDF chính thức. Không gửi API secret vào hội thoại. Đăng ký thẻ Znack mới chưa được triển khai như một remote mutation; trang chuẩn bị ghi rõ giới hạn này.
+
+Trạng thái bàn giao: các sửa lỗi đã xác nhận và phần kiểm thử giả lập của kế hoạch đã hoàn tất; PR #2 được cập nhật, nhánh/workspace được giữ để tiếp tục sửa từ báo cáo API thật. Không merge hoặc tạo installer trong đợt này. Nhật ký thực thi được lưu tại `2026-10-03-reference-gap-execution-ledger.md` cùng thư mục.

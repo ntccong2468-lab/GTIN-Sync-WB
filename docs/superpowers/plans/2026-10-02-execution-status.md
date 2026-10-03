@@ -85,3 +85,13 @@ Gói bàn giao là Windows portable của build `36967354995`, không phải ins
 Windows build `36967354995` đã thành công: 196/196 test, zero failure trong log, publish self-contained win-x64 và upload preview 75.792.073 byte. Artifact `11209962932`: https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/36967354995/artifacts/11209962932 . Tất cả bước installer đều skipped. PR regression `36967360641` cũng success.
 
 Bàn giao: giải nén ZIP, mở MarketplaceHub.exe → chọn cửa hàng → KIZ Mapping → Kiểm tra / đồng bộ Znack (hoặc Kiểm tra tích hợp ở menu). Seller nhập token WB và API key National Catalog trong ô che, chạy Kiểm tra chỉ đọc, gửi báo cáo đã che. Đây là ranh giới cần dữ liệu thật, không yêu cầu dán secret vào chat. Nhiệm vụ 7 hoàn tất phần đã có thể kiểm chứng bằng mock; kiểm tra API thật và installer còn chờ seller.
+
+## Mốc mới thay thế preview ngày 02/10 — 03/10/2026
+
+Đối chiếu thêm các kho người dùng gửi và sửa các thiếu sót theo kế hoạch `2026-10-03-reference-gap-fixes.md`. Ba ảnh tham chiếu đã được khôi phục và xem. Release WCode chính thức mới được xác minh là 1.1.67; source công khai tham khảo vẫn là 1.1.32, chưa truy cập được source mới nhất.
+
+Code cuối `09704bcac282d366b4342dc3c76ad17e4e6ac77d` đạt **222/222** trên Windows: Contracts 41, FBS 22, ProductSync 11, FbsState 44, License 14, MockApi 35, UI 41, Print 14. Build `37092774111` và hai regression `37092774168`/`37092778781` đều success. Đã xem ảnh UI và render phiếu nhặt PDF từ artifact cuối.
+
+Preview hiện hành: https://github.com/ntccong2468-lab/GTIN-Sync-WB/actions/runs/37092774111/artifacts/11263182438 . Đây là ZIP portable, 75.808.110 byte, SHA-256 `1be25d1e2749d1fab45342a2670c7cb747671c478959a7a354a250c037ad2437`; mọi bước installer đều skipped. Không dùng preview/installer cũ làm bản nghiệm thu đợt này.
+
+Chi tiết lỗi, bằng chứng RED→GREEN, giới hạn nguồn và hướng dẫn API thật ở `docs/reviews/2026-10-03-reference-gap-audit.md`. Các lỗi xác nhận trong phạm vi đã sửa; đăng ký thẻ Znack mới vẫn chỉ là chuẩn bị cục bộ và không hiển thị đã xuất bản. Tiếp tục giữ PR #2 mở, không merge. Nhập API thật trong form che khóa và gửi báo cáo đã che trước mốc xây installer.
