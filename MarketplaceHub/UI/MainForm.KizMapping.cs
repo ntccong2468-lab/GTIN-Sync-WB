@@ -26,7 +26,7 @@ public sealed partial class MainForm
         var check=ActionButton("Kiểm tra / đồng bộ Znack",245);check.Left=662;check.Top=86;check.Click+=(_,_)=>ShowIntegrationTestCenter();work.Controls.Add(check);
         var card=CardPanel();card.Left=4;card.Top=145;work.Controls.Add(card);
         var grid=DarkGrid();grid.Name="gtinMappingGrid";grid.Dock=DockStyle.Fill;grid.AutoSizeColumnsMode=DataGridViewAutoSizeColumnsMode.None;
-        foreach(var column in new[]{("gtin","GTIN",155),("name","Sản phẩm",210),("variant","SKU / Size / Biến thể",170),("mapping","Mapping",100),
+        foreach(var column in new[]{("marketplaceBarcode","Barcode sàn",155),("gtin","GTIN đăng ký",155),("name","Sản phẩm",210),("variant","SKU / Size / Biến thể",170),("mapping","Mapping",100),
             ("total","Tổng KIZ",80),("available","Sẵn sàng",80),("reserved","Đã giữ",75),("assigned","Đã gán",75),("stage","Znack / WB",155),("error","Lỗi gần nhất",230)})
             grid.Columns.Add(new DataGridViewTextBoxColumn{Name=column.Item1,HeaderText=column.Item2,Width=column.Item3});
         foreach(var action in new[]{("edit","Sửa GTIN"),("export","Xuất KIZ"),("add","Thêm KIZ"),("archive","Lưu trữ")})
@@ -37,7 +37,7 @@ public sealed partial class MainForm
             var result=app.Db.GetGtinMappingPage(store,state.Offset,50,search.Text.Trim(),filters[filter.SelectedIndex]);
             if(state.Offset>=result.Total&&state.Offset>0){state.Offset=Math.Max(0,(result.Total-1)/50*50);result=app.Db.GetGtinMappingPage(store,state.Offset,50,search.Text.Trim(),filters[filter.SelectedIndex]);}
             state.Query=search.Text.Trim();state.Filter=filters[filter.SelectedIndex];mappingView[store.Id]=state;grid.Rows.Clear();
-            foreach(var item in result.Rows){var index=grid.Rows.Add(item.Gtin.Length>0?item.Gtin:"Chưa rõ GTIN",item.Name,$"{item.Sku}\nSize {item.Size} · {item.VariantId}",
+            foreach(var item in result.Rows){var index=grid.Rows.Add(item.MarketplaceBarcodes,item.Gtin.Length>0?item.Gtin:"Chưa rõ GTIN",item.Name,$"{item.Sku}\nSize {item.Size} · {item.VariantId}",
                 item.Confirmed?item.Source=="seller"?"Seller xác nhận":"Đã xác nhận":"Chưa xác nhận",item.TotalKiz,item.AvailableKiz,item.ReservedKiz,item.AssignedKiz,
                 $"{item.ZnackStage}\n{item.WbStage}",item.LastError);grid.Rows[index].Tag=item;grid.Rows[index].Height=74;}
             summary.Text=$"{result.MappingRuleCount:N0} rule mapping · {result.TotalKiz:N0} KIZ · {result.AvailableKiz:N0} sẵn sàng · {result.ReservedKiz:N0} đã giữ · {result.AssignedKiz:N0} đã gán";
@@ -80,3 +80,4 @@ public sealed partial class MainForm
         refreshActivePage=Load;SetWorkResize((_,_)=>LayoutMapping());LayoutMapping();Load();
     }
 }
+

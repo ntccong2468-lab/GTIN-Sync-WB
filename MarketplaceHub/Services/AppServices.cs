@@ -193,117 +193,67 @@ public sealed partial class AppServices
         return result;
     }
 
-    public static string NormalizeGtin14(string value)
-    {
-        if (string.IsNullOrWhiteSpace(value)) return "";
-        var digits = new string(value.Where(char.IsDigit).ToArray());
-        if (digits.Length == 13) return "0" + digits;
-        return digits.Length == 14 ? digits : "";
-    }
+    public static string NormalizeGtin14(string value) => GtinCode.Normalize(value);
 
     public async Task<(bool Ok, string Message, IReadOnlyList<string> Codes)> EnsureKizQuantityAsync(
-        long storeId,
-        string sku,
-        string gtin,
-        int quantity,
-        CancellationToken ct = default)
+        long storeId,string sku,string gtin,int quantity,CancellationToken ct=default)
     {
-        gtin = NormalizeGtin14(gtin);
-        if (string.IsNullOrWhiteSpace(gtin))
-            return (false, "Barcode/GTIN của sản phẩm không thể chuẩn hóa thành GTIN-14.", Array.Empty<string>());
-
-        quantity = Math.Max(1, quantity);
-        var available = Db.Kiz()
-            .Where(x => x.Gtin == gtin && x.Status == "AVAILABLE")
-            .Select(x => x.Code)
-            .Take(quantity)
-            .ToList();
-        if (available.Count >= quantity)
-            return (true, $"Kho KIZ đã có {available.Count} mã sẵn sàng.", available);
-
-        var missing = quantity - available.Count;
-        var config = Db.GetZnakConfig();
-        if (!config.Enabled)
-            return (false, $"Thiếu {missing} KIZ và chức năng Znack chưa được bật.", available);
-        if (string.IsNullOrWhiteSpace(config.OmsId) || string.IsNullOrWhiteSpace(config.OmsConnection))
-            return (false, $"Thiếu {missing} KIZ. Hãy cấu hình omsId và omsConnection.", available);
-        if (string.IsNullOrWhiteSpace(config.CertificateThumbprint))
-            return (false, $"Thiếu {missing} KIZ. Hãy chọn chứng thư số CryptoPro có private key.", available);
-
-        var persisted = Db.ZnakPipelines(storeId)
-            .FirstOrDefault(x => x.Sku.Equals(sku, StringComparison.OrdinalIgnoreCase)
-                              && x.Gtin.Equals(gtin, StringComparison.OrdinalIgnoreCase));
-        if (persisted is not null &&
-            (persisted.Stage == "BUYING" || persisted.Stage == "CREATE_AMBIGUOUS") &&
-            string.IsNullOrWhiteSpace(persisted.ExternalOrderId))
-        {
-            return (false,
-                "Yêu cầu mua KIZ trước có kết quả không chắc chắn. Ứng dụng chặn tự động mua lại để tránh trừ tiền hai lần. Hãy đối soát SUZ trước.",
-                available);
-        }
-
+        gtin=NormalizeGtin14(gtin);
+        if(gtin.Length==0)return (false,"GTIN phải có 8/12/13/14 chữ số và checksum hợp lệ.",Array.Empty<string>());
+        quantity=Math.Max(1,quantity);
+        List<string> Available()=>Db.Kiz().Where(x=>x.Gtin==gtin&&x.Status=="AVAILABLE"&&x.Assigned.Length==0)
+            .Select(x=>x.Code).Distinct(StringComparer.Ordinal).Take(quantity).ToList();
+        var available=Available();if(available.Count>=quantity)return (true,$"Kho KIZ có {available.Count} mã sẵn sàng.",available);
+        var missing=quantity-available.Count;var config=Db.GetZnakConfig();
+        if(!config.Enabled)return (false,$"Thiếu {missing} KIZ và Znack chưa bật.",available);
+        if(string.IsNullOrWhiteSpace(config.OmsId)||string.IsNullOrWhiteSpace(config.OmsConnection)||string.IsNullOrWhiteSpace(config.CertificateThumbprint))
+            return (false,$"Thiếu {missing} KIZ. Cấu hình omsId, omsConnection và chứng thư CryptoPro trước.",available);
+        var persisted=Db.ZnakPipelines(storeId).FirstOrDefault(x=>x.Sku.Equals(sku,StringComparison.OrdinalIgnoreCase));
+        var pending=persisted is not null&&persisted.Stage!="CODES_DOWNLOADED";
+        if(pending&&persisted!.Gtin!=gtin)
+            return (false,"SKU này còn order SUZ của GTIN khác chưa hoàn tất. Đối soát trước khi mua cho biến thể mới.",available);
+        if(pending&&(persisted!.Stage is "BUYING" or "CREATE_AMBIGUOUS")&&string.IsNullOrWhiteSpace(persisted.ExternalOrderId))
+            return (false,"Lệnh mua KIZ trước chưa rõ kết quả. Chưa mua lại để tránh trừ tiền hai lần; hãy đối soát SUZ.",available);
+        var orderId=pending?persisted!.ExternalOrderId:"";
         try
         {
-            var token = await GetSuzTokenAsync(config, ct);
-            var orderId = persisted is not null && persisted.Stage == "POLLING" &&
-                          !string.IsNullOrWhiteSpace(persisted.ExternalOrderId)
-                ? persisted.ExternalOrderId
-                : "";
-
-            if (string.IsNullOrWhiteSpace(orderId))
+            var token=await GetSuzTokenAsync(config,ct).ConfigureAwait(false);
+            if(orderId.Length==0)
             {
-                Db.UpsertZnakPipeline(storeId, sku, gtin, "BUYING", "", $"Tự động mua {missing} KIZ");
-                try
+                Db.UpsertZnakPipeline(storeId,sku,gtin,"BUYING","",$"Mua {missing} KIZ");
+                try{orderId=await CreateSuzOrderAsync(config,token,gtin,missing,ct).ConfigureAwait(false);}
+                catch(Exception ex)
                 {
-                    orderId = await CreateSuzOrderAsync(config, token, gtin, missing, ct);
+                    // A missing ID or interrupted response cannot prove a paid POST was rejected.
+                    Db.UpsertZnakPipeline(storeId,sku,gtin,"CREATE_AMBIGUOUS","",ex.Message);
+                    return (false,"Chưa xác định được kết quả tạo order SUZ. Đối soát trước; ứng dụng không tự mua lại.",available);
                 }
-                catch (Exception ex) when (
-                    ex is HttpRequestException ||
-                    ex is TaskCanceledException ||
-                    ex is TimeoutException ||
-                    ex.Message.Contains("HTTP 5", StringComparison.OrdinalIgnoreCase))
-                {
-                    Db.UpsertZnakPipeline(storeId, sku, gtin, "CREATE_AMBIGUOUS", "", ex.Message);
-                    Db.Audit("Znack", "Mua KIZ chưa xác định", $"{gtin}:{ex.Message}");
-                    return (false,
-                        "Kết quả tạo order SUZ chưa xác định do lỗi mạng/server. Ứng dụng không tự tạo lại để tránh mua trùng. Hãy đối soát SUZ.",
-                        available);
-                }
-                Db.UpsertZnakPipeline(storeId, sku, gtin, "POLLING", orderId, "Đang chờ SUZ cấp mã");
+                Db.UpsertZnakPipeline(storeId,sku,gtin,"POLLING",orderId,"Chờ SUZ cấp mã");
             }
-
-            var ready = await WaitSuzCodesReadyAsync(config, token, orderId, ct);
-            if (!ready.Ok)
+            var ready=await WaitSuzCodesReadyAsync(config,token,orderId,gtin,ct).ConfigureAwait(false);
+            if(!ready.Ok){Db.UpsertZnakPipeline(storeId,sku,gtin,"ERROR",orderId,ready.Message);return (false,ready.Message,available);}
+            var downloaded=ready.RecoverIssued
+                ?await RecoverSuzIssuedCodesAsync(config,token,orderId,gtin,ct).ConfigureAwait(false)
+                :await DownloadSuzCodesAsync(config,token,orderId,gtin,missing,ct).ConfigureAwait(false);
+            if(downloaded.Count==0)throw new InvalidDataException("SUZ chưa trả mã đã cấp. Giữ order để đối soát; không mua lại.");
+            foreach(var code in downloaded)
             {
-                Db.UpsertZnakPipeline(storeId, sku, gtin, "ERROR", orderId, ready.Message);
-                return (false, ready.Message, available);
+                var parsed=ParseKiz(code);var normalized=MarketplaceFbsPayloads.NormalizeCode(code);
+                if(!parsed.Ok||parsed.Gtin!=gtin||!normalized.StartsWith("01"+gtin+"21",StringComparison.Ordinal)||normalized.Length<=18)
+                    throw new InvalidDataException("SUZ trả KIZ sai GTIN hoặc thiếu AI(01)/AI(21). Chưa nhập mã vào kho.");
             }
-
-            var downloaded = await DownloadSuzCodesAsync(config, token, orderId, gtin, missing, ct);
-            if (downloaded.Count == 0)
-            {
-                const string message = "SUZ báo sẵn sàng nhưng không trả mã KIZ.";
-                Db.UpsertZnakPipeline(storeId, sku, gtin, "ERROR", orderId, message);
-                return (false, message, available);
-            }
-
-            foreach (var code in downloaded)
-                Db.UpsertKiz(code, gtin, "AVAILABLE");
-
-            available.AddRange(downloaded);
-            Db.UpsertZnakPipeline(storeId, sku, gtin, "CODES_DOWNLOADED", orderId, $"Đã tải {downloaded.Count} mã KIZ");
-            Db.Audit("Znack", "Tự động mua KIZ", $"{gtin}:{downloaded.Count}:{orderId}");
-            return (available.Count >= quantity,
-                available.Count >= quantity
-                    ? $"Đã tự động mua và tải {downloaded.Count} KIZ."
-                    : $"Đã tải {downloaded.Count} KIZ nhưng vẫn chưa đủ số lượng cần dùng.",
-                available.Take(quantity).ToList());
+            foreach(var code in downloaded)Db.UpsertKiz(code,gtin,"AVAILABLE");
+            // Replayed blocks may contain KIZ already reserved/assigned. UPSERT preserves ownership.
+            available=Available();var enough=available.Count>=quantity;
+            Db.UpsertZnakPipeline(storeId,sku,gtin,enough?"CODES_DOWNLOADED":"ERROR",orderId,
+                enough?$"Đã tải/phục hồi {downloaded.Count} mã": "Order chưa đủ mã khả dụng; giữ checkpoint để tiếp tục.");
+            Db.Audit("Znack","Tải/phục hồi KIZ",$"{gtin}:{downloaded.Count}:{orderId}");
+            return (enough,enough?$"Đã có {available.Count} KIZ sẵn sàng.":"Order cũ chưa đủ KIZ khả dụng. Đối soát SUZ trước khi mua thêm.",available);
         }
-        catch (Exception ex)
+        catch(Exception ex)
         {
-            Db.UpsertZnakPipeline(storeId, sku, gtin, "ERROR", "", ex.Message);
-            Db.Audit("Znack", "Lỗi mua KIZ", $"{gtin}:{ex.Message}");
-            return (false, ex.Message, available);
+            Db.UpsertZnakPipeline(storeId,sku,gtin,"ERROR",orderId,ex is OperationCanceledException?"Đã tạm dừng; giữ order SUZ.":ex.Message);
+            return (false,ex is OperationCanceledException?"Đã tạm dừng; order SUZ và mã đã tải được giữ lại.":ex.Message,available);
         }
     }
 
@@ -402,10 +352,11 @@ public sealed partial class AppServices
         return orderId;
     }
 
-    private async Task<(bool Ok, string Message)> WaitSuzCodesReadyAsync(
+    private async Task<(bool Ok, string Message, bool RecoverIssued)> WaitSuzCodesReadyAsync(
         ZnakConfig config,
         string token,
         string orderId,
+        string gtin,
         CancellationToken ct)
     {
         const string suzBase = "https://suzgrid.crpt.ru";
@@ -423,12 +374,14 @@ public sealed partial class AppServices
                 continue;
             }
             if (!res.IsSuccessStatusCode)
-                return (false, $"SUZ status HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
+                return (false, $"SUZ status HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}",false);
 
             var node = JsonNode.Parse(text);
-            var entries = node as JsonArray ?? new JsonArray(node);
+            var entries = node as JsonArray ?? new JsonArray(node?.DeepClone());
             foreach (var entry in entries)
             {
+                var entryGtin=entry?["gtin"]?.ToString();
+                if(!string.IsNullOrEmpty(entryGtin)&&GtinCode.Normalize(entryGtin)!=gtin)continue;
                 var state = entry?["bufferStatus"]?.ToString()
                             ?? entry?["status"]?.ToString()
                             ?? "";
@@ -436,16 +389,17 @@ public sealed partial class AppServices
                     state.Equals("DECLINED", StringComparison.OrdinalIgnoreCase))
                 {
                     var reason = entry?["rejectionReason"]?.ToString() ?? "SUZ từ chối yêu cầu.";
-                    return (false, reason);
+                    return (false, reason,false);
                 }
+                if(state.Equals("EXPIRED",StringComparison.OrdinalIgnoreCase))return (true,"Khôi phục block đã cấp từ buffer hết hạn.",true);
                 var available = int.TryParse(entry?["availableCodes"]?.ToString(), out var n) ? n : 0;
                 if ((state.Equals("ACTIVE", StringComparison.OrdinalIgnoreCase) ||
                      state.Equals("READY", StringComparison.OrdinalIgnoreCase)) && available > 0)
-                    return (true, "KIZ đã sẵn sàng.");
+                    return (true, "KIZ đã sẵn sàng.",false);
             }
             await Task.Delay(TimeSpan.FromSeconds(2), ct);
         }
-        return (false, "Hết thời gian chờ SUZ cấp KIZ. Yêu cầu đã được lưu để kiểm tra lại.");
+        return (false, "Hết thời gian chờ SUZ cấp KIZ. Yêu cầu đã được lưu để kiểm tra lại.",false);
     }
 
     private async Task<IReadOnlyList<string>> DownloadSuzCodesAsync(
@@ -466,17 +420,54 @@ public sealed partial class AppServices
         if (!res.IsSuccessStatusCode)
             throw new InvalidOperationException($"SUZ codes HTTP {(int)res.StatusCode}: {TrimDiagnostic(text)}");
 
-        var root = JsonNode.Parse(text);
-        JsonArray values = root as JsonArray
-                           ?? root?["codes"]?.AsArray()
-                           ?? new JsonArray();
-        var result = new List<string>();
-        foreach (var item in values)
+        return ReadSuzCodes(JsonNode.Parse(text));
+    }
+
+    private static IReadOnlyList<string> ReadSuzCodes(JsonNode? root)
+    {
+        var values=root as JsonArray??root?["codes"] as JsonArray??throw new InvalidDataException("SUZ thiếu mảng codes; giữ checkpoint.");
+        var result=new List<string>();
+        foreach(var item in values)
         {
-            var code = item is JsonValue ? item.ToString() : item?["cis"]?.ToString() ?? "";
-            if (!string.IsNullOrWhiteSpace(code)) result.Add(code);
+            var code=item is JsonValue?item.ToString():item?["cis"]?.ToString()??item?["code"]?.ToString()??"";
+            if(string.IsNullOrWhiteSpace(code))throw new InvalidDataException("SUZ trả mã trống; chưa nhập block.");
+            result.Add(MarketplaceFbsPayloads.NormalizeCode(code));
         }
-        return result.Distinct(StringComparer.Ordinal).ToList();
+        return result.Distinct(StringComparer.Ordinal).ToArray();
+    }
+
+    private async Task<IReadOnlyList<string>> RecoverSuzIssuedCodesAsync(ZnakConfig config,string token,string orderId,string gtin,CancellationToken ct)
+    {
+        var query=$"omsId={Uri.EscapeDataString(config.OmsId.Trim())}&orderId={Uri.EscapeDataString(orderId)}&gtin={Uri.EscapeDataString(gtin)}";
+        async Task<JsonNode?> Read(string path)
+        {
+            using var request=new HttpRequestMessage(HttpMethod.Get,"https://suzgrid.crpt.ru/api/v3/order/codes/"+path);
+            request.Headers.TryAddWithoutValidation("clientToken",token);request.Headers.TryAddWithoutValidation("Accept","application/json");
+            using var response=await znakHttp.SendAsync(request,ct).ConfigureAwait(false);
+            if(!response.IsSuccessStatusCode)throw new InvalidDataException($"SUZ phục hồi block HTTP {(int)response.StatusCode}. Giữ order để tiếp tục.");
+            return JsonNode.Parse(await response.Content.ReadAsStringAsync(ct).ConfigureAwait(false));
+        }
+        var blocks=await Read("blocks?"+query).ConfigureAwait(false);var ids=new HashSet<string>(StringComparer.Ordinal);
+        void Collect(JsonNode? node,bool list=false)
+        {
+            if(node is JsonValue){if(list&&!string.IsNullOrWhiteSpace(node.ToString()))ids.Add(node.ToString());}
+            else if(node is JsonArray array){foreach(var child in array)Collect(child,list);}
+            else if(node is JsonObject obj)
+            {
+                if(obj["blockId"] is JsonValue id&&!string.IsNullOrWhiteSpace(id.ToString()))ids.Add(id.ToString());
+                foreach(var key in new[]{"blocks","blockIds","codeBlocks","packages","result"})if(obj[key] is { } child)Collect(child,key!="result");
+            }
+        }
+        Collect(blocks,blocks is JsonArray);if(ids.Count==0)throw new InvalidDataException("Buffer SUZ hết hạn, chưa tìm được block đã cấp. Không mua lại tự động.");
+        var codes=new List<string>();
+        foreach(var id in ids)
+        {
+            var root=await Read("retry?omsId="+Uri.EscapeDataString(config.OmsId.Trim())+"&blockId="+Uri.EscapeDataString(id)).ConfigureAwait(false);
+            if(root is JsonObject obj&&obj["blockId"] is JsonValue returned&&returned.ToString()!=id)
+                throw new InvalidDataException("SUZ trả block khác checkpoint.");
+            codes.AddRange(ReadSuzCodes(root));
+        }
+        return codes.Distinct(StringComparer.Ordinal).ToArray();
     }
 
     private static async Task<byte[]> SignCryptoProAsync(
@@ -842,3 +833,4 @@ public sealed partial class AppServices
         return allOk;
     }
 }
+

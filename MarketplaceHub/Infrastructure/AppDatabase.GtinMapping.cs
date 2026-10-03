@@ -6,7 +6,7 @@ namespace MarketplaceHub.Infrastructure;
 
 public sealed record GtinMappingRow(long StoreId,Marketplace Marketplace,string Sku,string ExternalId,string VariantId,
     string Name,string Size,string Gtin,string Source,bool Confirmed,string ZnackStage,string WbStage,string LastError,
-    int TotalKiz,int AvailableKiz,int ReservedKiz,int AssignedKiz);
+    int TotalKiz,int AvailableKiz,int ReservedKiz,int AssignedKiz,string MarketplaceBarcodes="");
 public sealed record GtinMappingPage(IReadOnlyList<GtinMappingRow> Rows,int Total,int MappingRuleCount,int Offset,int Limit,
     int TotalKiz,int AvailableKiz,int ReservedKiz,int AssignedKiz);
 public sealed record GtinSyncJob(string Scope,string SnapshotJson,int Cursor,string State,DateTimeOffset? RetryAt,string LastError);
@@ -38,7 +38,7 @@ WITH inventory AS (
  SUM(CASE WHEN status='RESERVED' THEN 1 ELSE 0 END) AS reserved,
  SUM(CASE WHEN status='ASSIGNED' THEN 1 ELSE 0 END) AS assigned FROM kiz_pool GROUP BY gtin),
  variants AS (
- SELECT v.sku,v.external_id,v.variant_id,p.name,v.size,COALESCE(m.gtin,v.gtin) AS gtin,
+ SELECT v.sku,v.external_id,v.variant_id,p.name,v.size,v.barcodes_json,COALESCE(m.gtin,v.gtin) AS gtin,
  COALESCE(m.source,'marketplace') AS source,COALESCE(m.confirmed,0) AS confirmed,
  COALESCE(m.znack_stage,'') AS znack_stage,COALESCE(m.wb_stage,'') AS wb_stage,COALESCE(m.last_error,'') AS last_error,
  CASE WHEN m.sku IS NULL THEN 0 ELSE 1 END AS has_rule
@@ -49,7 +49,7 @@ WITH inventory AS (
  SELECT v.*,COALESCE(i.total,0) AS total,COALESCE(i.available,0) AS available,COALESCE(i.reserved,0) AS reserved,COALESCE(i.assigned,0) AS assigned
  FROM variants v LEFT JOIN inventory i ON i.gtin=v.gtin),
  filtered AS (
- SELECT * FROM rows WHERE ($q='' OR sku LIKE $q ESCAPE '\' OR name LIKE $q ESCAPE '\' OR gtin LIKE $q ESCAPE '\' OR size LIKE $q ESCAPE '\')
+ SELECT * FROM rows WHERE ($q='' OR sku LIKE $q ESCAPE '\' OR name LIKE $q ESCAPE '\' OR gtin LIKE $q ESCAPE '\' OR barcodes_json LIKE $q ESCAPE '\' OR size LIKE $q ESCAPE '\')
  AND ($filter='all' OR ($filter='mapped' AND confirmed=1) OR ($filter='unmapped' AND confirmed=0)
  OR ($filter='available' AND available>0) OR ($filter='error' AND last_error!=''))) ";
 
@@ -71,9 +71,9 @@ WITH inventory AS (
         }
         var rows=new List<GtinMappingRow>();
         using(var cmd=c.CreateCommand()){
-            cmd.CommandText=MappingProjection+@"SELECT sku,external_id,variant_id,name,size,gtin,source,confirmed,znack_stage,wb_stage,last_error,total,available,reserved,assigned
+            cmd.CommandText=MappingProjection+@"SELECT sku,external_id,variant_id,name,size,gtin,source,confirmed,znack_stage,wb_stage,last_error,total,available,reserved,assigned,barcodes_json
  FROM filtered ORDER BY confirmed DESC,sku,size,variant_id LIMIT $limit OFFSET $offset";Parameters(cmd);cmd.Parameters.AddWithValue("$limit",limit);cmd.Parameters.AddWithValue("$offset",offset);
-            using var r=cmd.ExecuteReader();while(r.Read())rows.Add(new(store.Id,store.Marketplace,r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetString(4),r.GetString(5),r.GetString(6),r.GetInt32(7)==1,r.GetString(8),r.GetString(9),r.GetString(10),r.GetInt32(11),r.GetInt32(12),r.GetInt32(13),r.GetInt32(14)));
+            using var r=cmd.ExecuteReader();while(r.Read())rows.Add(new(store.Id,store.Marketplace,r.GetString(0),r.GetString(1),r.GetString(2),r.GetString(3),r.GetString(4),r.GetString(5),r.GetString(6),r.GetInt32(7)==1,r.GetString(8),r.GetString(9),r.GetString(10),r.GetInt32(11),r.GetInt32(12),r.GetInt32(13),r.GetInt32(14),string.Join(", ",Services.ProductCatalog.Strings(JsonNode.Parse(r.GetString(15))))));
         }tx.Commit();return new(rows,total,rules,offset,limit,inventory,available,reserved,assigned);
     }
 
@@ -178,3 +178,4 @@ ON CONFLICT(store_id,marketplace,sku,variant_id) DO UPDATE SET
         if(cmd.ExecuteNonQuery()!=1)throw new InvalidOperationException("Mapping GTIN đã thay đổi hoặc được lưu trữ. Dừng để giữ dữ liệu đã xác nhận.");
     }
 }
+

@@ -605,49 +605,67 @@ public sealed partial class MarketplaceGateway
     public async Task<FinanceSnapshot> ReadFinanceAsync(StoreProfile s, DateTime from, DateTime to, CancellationToken ct = default)
     {
         if (s.Marketplace != Marketplace.Wildberries)
-            throw new NotSupportedException("Bản 0.6.0 chỉ đọc quyết toán tài chính trực tiếp cho Wildberries.");
-
-        decimal revenue = 0, payout = 0, delivery = 0, storage = 0, acceptance = 0;
-        decimal deductions = 0, penalties = 0, additional = 0, cashback = 0;
-        var count = 0;
-        var fromText = from.ToString("yyyy-MM-dd");
-        var toText = to.ToString("yyyy-MM-dd");
-
-        for (var offset = 0; offset < 50000; offset += 1000)
+            throw new NotSupportedException("Quyết toán tài chính trực tiếp hiện chỉ hỗ trợ Wildberries.");
+        from=from.Date;to=to.Date;
+        var today=DateTimeOffset.UtcNow.ToOffset(TimeSpan.FromHours(3)).Date;
+        if(from>to || (to-from).Days>=45 || from<new DateTime(2025,1,1) || to>today)
+            throw new ArgumentException("Chọn kỳ quyết toán từ 1 đến 45 ngày, từ năm 2025 đến hôm nay (Moscow).");
+        var fields=new[]{"retailAmountSum","forPaySum","deliveryServiceSum","paidStorageSum","paidAcceptanceSum",
+            "deductionSum","penaltySum","additionalPaymentSum","cashbackAmountSum","bankPaymentSum"};
+        var totals=fields.ToDictionary(x=>x,_=>(decimal?)0m,StringComparer.Ordinal);
+        var count=0;var excluded=0;var complete=false;var seen=new HashSet<string>(StringComparer.Ordinal);
+        var fromText=from.ToString("yyyy-MM-dd");var toText=to.ToString("yyyy-MM-dd");
+        for(var offset=0;offset<50000;offset+=1000)
         {
-            var body = JsonSerializer.Serialize(new
+            ct.ThrowIfCancellationRequested();
+            if(offset>0)await wbLabelDelay(TimeSpan.FromSeconds(61),ct).ConfigureAwait(false);
+            var body=JsonSerializer.Serialize(new{dateFrom=fromText+"T00:00:00+03:00",dateTo=toText+"T23:59:59+03:00",period="daily",limit=1000,offset});
+            using var req=RequestWbRawAuth(HttpMethod.Post,"https://finance-api.wildberries.ru/api/finance/v1/sales-reports/list",s,body);
+            using var res=await http.SendAsync(req,ct).ConfigureAwait(false);
+            if((int)res.StatusCode==204){complete=true;break;}
+            var text=await res.Content.ReadAsStringAsync(ct).ConfigureAwait(false);Ensure(res,text);
+            JsonArray rows;
+            try{rows=JsonNode.Parse(text) as JsonArray??throw new InvalidDataException("WB trả quyết toán không đúng mảng báo cáo.");}
+            catch(JsonException ex){throw new InvalidDataException("WB trả JSON quyết toán không hợp lệ.",ex);}
+            if(rows.Count>1000)throw new InvalidDataException("WB trả quyết toán vượt kích thước trang.");
+            foreach(var node in rows)
             {
-                dateFrom = fromText + "T00:00:00+03:00",
-                dateTo = toText + "T23:59:59+03:00",
-                period = "daily",
-                limit = 1000,
-                offset
-            });
-            using var req = RequestWbRawAuth(HttpMethod.Post,
-                "https://finance-api.wildberries.ru/api/finance/v1/sales-reports/list", s, body);
-            using var res = await http.SendAsync(req, ct);
-            if ((int)res.StatusCode == 204) break;
-            var text = await res.Content.ReadAsStringAsync(ct);
-            Ensure(res, text);
-            var arr = JsonNode.Parse(text) as JsonArray ?? new JsonArray();
-            foreach (var x in arr)
-            {
-                revenue += ParseDecimal(x?["retailAmountSum"]?.ToString()) ?? 0;
-                payout += ParseDecimal(x?["forPaySum"]?.ToString()) ?? 0;
-                delivery += ParseDecimal(x?["deliveryServiceSum"]?.ToString()) ?? 0;
-                storage += ParseDecimal(x?["paidStorageSum"]?.ToString()) ?? 0;
-                acceptance += ParseDecimal(x?["paidAcceptanceSum"]?.ToString()) ?? 0;
-                deductions += ParseDecimal(x?["deductionSum"]?.ToString()) ?? 0;
-                penalties += ParseDecimal(x?["penaltySum"]?.ToString()) ?? 0;
-                additional += ParseDecimal(x?["additionalPaymentSum"]?.ToString()) ?? 0;
-                cashback += ParseDecimal(x?["cashbackAmountSum"]?.ToString()) ?? 0;
+                if(node is not JsonObject row)throw new InvalidDataException("Dòng quyết toán WB không hợp lệ.");
+                var id=row["reportId"]?.ToString()??"";
+                if(id.Length==0 || id.Any(c=>c is < '0' or > '9') || id.All(c=>c=='0') || !seen.Add(id))
+                    throw new InvalidDataException("Quyết toán thiếu hoặc trùng report ID. Chưa công bố tổng.");
+                if(row["currency"]?.ToString()!="RUB" || !int.TryParse(row["reportType"]?.ToString(),out _))
+                    throw new InvalidDataException("Quyết toán thiếu loại báo cáo hoặc không phải RUB. Chưa cộng chung tiền tệ.");
+                var reportFrom=FinanceDay(row["dateFrom"]);var reportTo=FinanceDay(row["dateTo"]);
+                if(reportFrom>reportTo)throw new InvalidDataException("Kỳ báo cáo WB không hợp lệ.");
+                var amounts=fields.ToDictionary(x=>x,x=>FinanceMoney(row[x]),StringComparer.Ordinal);
+                if(reportFrom<from || reportTo>to){excluded++;continue;}
+                try{foreach(var field in fields)totals[field]=checked(totals[field]+amounts[field]);}
+                catch(OverflowException ex){throw new InvalidDataException("Tổng quyết toán vượt giới hạn decimal.",ex);}
                 count++;
             }
-            if (arr.Count < 1000) break;
+            if(rows.Count<1000){complete=true;break;}
         }
+        if(!complete)throw new InvalidDataException("Chưa đọc hết quyết toán WB. Không công bố tổng một phần.");
+        decimal? Sum(string field)=>count==0?null:totals[field];
+        return new("RUB",Sum(fields[0]),Sum(fields[1]),Sum(fields[2]),Sum(fields[3]),Sum(fields[4]),
+            Sum(fields[5]),Sum(fields[6]),Sum(fields[7]),Sum(fields[8]),count,fromText,toText,excluded,Sum(fields[9]));
+    }
 
-        return new FinanceSnapshot("RUB", revenue, payout, delivery, storage, acceptance,
-            deductions, penalties, additional, cashback, count, fromText, toText);
+    private static DateTime FinanceDay(JsonNode? value)
+    {
+        if(value is not JsonValue || !DateTime.TryParseExact(value.ToString(),"yyyy-MM-dd",System.Globalization.CultureInfo.InvariantCulture,
+            System.Globalization.DateTimeStyles.None,out var date))throw new InvalidDataException("Ngày quyết toán WB không hợp lệ.");
+        return date;
+    }
+    private static decimal? FinanceMoney(JsonNode? value)
+    {
+        if(value is null)return null;
+        var text=value.ToString();
+        if(value is not JsonValue || !System.Text.RegularExpressions.Regex.IsMatch(text,@"^-?\d+(\.\d{1,2})?$",System.Text.RegularExpressions.RegexOptions.CultureInvariant)
+            || !decimal.TryParse(text,System.Globalization.NumberStyles.AllowLeadingSign|System.Globalization.NumberStyles.AllowDecimalPoint,
+                System.Globalization.CultureInfo.InvariantCulture,out var amount))throw new InvalidDataException("Số tiền quyết toán WB không hợp lệ.");
+        return amount;
     }
 
     public async Task<LabelResult> DownloadLabelAsync(StoreProfile s, string orderId, CancellationToken ct = default)
@@ -2077,3 +2095,4 @@ public sealed partial class MarketplaceGateway
 
     private static string Short(string s) => s.Length > 500 ? s[..500] : s;
 }
+

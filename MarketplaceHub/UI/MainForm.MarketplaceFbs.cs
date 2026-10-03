@@ -112,24 +112,31 @@ public sealed partial class MainForm
             members=members.Where(x=>reprint || x.Status!="LABELS_READY").ToArray();
             if(members.Count==0){ShowMarketplaceFbsBatch(store,batchId,"Mọi nhãn của lượt này đã xuất. Bấm Xuất nhãn để xuất/in lại khi cần.");return;}
             var folder=Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.MyDocuments),"MarketplaceHub","Labels",store.Marketplace+"-"+batchId);Directory.CreateDirectory(folder);
-            var files=new List<string>();var kizInput=new List<WbPrintOrder>();
+            var files=new List<string>();var kizInput=new List<WbPrintOrder>();var pickingInput=new List<WbPrintOrder>();
             foreach(var member in members) {
                 var label=await app.ExportVerifiedMarketplaceLabelAsync(store,member.Id,item=>ResolveMarketplaceGtin(store,item),token);
                 if(!label.Success || string.IsNullOrWhiteSpace(label.FilePath))throw new InvalidOperationException(member.Id+": "+label.Message);
                 var target=Path.Combine(folder,store.Marketplace+"-"+string.Concat(member.Id.Select(c=>Path.GetInvalidFileNameChars().Contains(c)?'_':c))+".pdf");File.Copy(label.FilePath,target,true);files.Add(target);
                 var snapshot=await app.ReadFreshMarketplaceFbsAsync(store,member.Id,token);
-                foreach(var item in snapshot.Items.Where(x=>x.RequiresKiz)) {
+                foreach(var item in snapshot.Items) {
                     var marks=app.Db.MarketplaceKizReservations(store,member.Id).Where(x=>x.ItemId==item.Id).OrderBy(x=>x.Unit).ToArray();
-                    var product=app.Db.Products(store.Id).SingleOrDefault(x=>x.Sku==item.Offer);var meta=product is null?new ProductMetaValue("","","","","","",item.Offer,""):ProductMeta(product);
-                    kizInput.Add(new(member.Id+"/"+item.Id,item.Name,item.Offer,meta.Color,meta.Size,meta.Brand,ResolveMarketplaceGtin(store,item),item.Quantity,true,marks.Select(x=>x.Code).ToArray(),new(true,"KIZ xác nhận")));
+                    var row=snapshot.Rows.Single(x=>x.Sku==item.Offer);
+                    var product=ProductCatalog.ResolveOrder(store,row,app.Db.Products(store.Id));
+                    var meta=product is null?new ProductMetaValue("","","","","","",item.Offer,""):ProductMeta(product);
+                    byte[]? thumbnail=null;if(product is not null)imageCache.TryGetValue(ProductImageUrl(product),out thumbnail);
+                    pickingInput.Add(new(member.Id,item.Name,item.Offer,meta.Color,meta.Size,meta.Brand,meta.Barcode,item.Quantity,item.RequiresKiz,
+                        Array.Empty<string>(),new(true,"Phiếu nhặt"),thumbnail));
+                    if(item.RequiresKiz)kizInput.Add(new(member.Id+"/"+item.Id,item.Name,item.Offer,meta.Color,meta.Size,meta.Brand,ResolveMarketplaceGtin(store,item),
+                        item.Quantity,true,marks.Select(x=>x.Code).ToArray(),new(true,"KIZ xác nhận"),thumbnail));
                 }
             }
+            files.Add(await Task.Run(()=>WbPrintBundleService.WritePickingList(store.Marketplace.ToString(),store.Name,pickingInput,folder,token),token));
             if(kizInput.Count>0)files.Add(await Task.Run(()=>MarketplaceKizPdfService.Write(store.Marketplace.ToString(),kizInput,folder,token),token));
             await File.WriteAllTextAsync(Path.Combine(folder,"labels.json"),System.Text.Json.JsonSerializer.Serialize(new{marketplace=store.Marketplace.ToString(),shop=store.Name,batchId,orders=members.Select(x=>x.Id),files}),token);
             foreach(var member in members)app.Db.SaveMarketplaceFbsOrder(store,batchId,member.Id,"LABELS_READY");
             app.Db.Audit("In nhãn "+store.Marketplace,"Đã xuất PDF xác nhận",$"{members.Count} đơn · {folder}");
             if(token.IsCancellationRequested || IsDisposed || CurrentStore()?.Id!=store.Id)return;
-            ShowMarketplaceFbsBatch(store,batchId,$"Đã xuất {members.Count} nhãn sàn và bộ KIZ. Mở PDF để xem/chọn máy in: {folder}");
+            ShowMarketplaceFbsBatch(store,batchId,$"Đã xuất {members.Count} nhãn sàn, phiếu nhặt A4 và KIZ (nếu bắt buộc). Mở PDF để xem/chọn máy in: {folder}");
             var open=ActionButton("Mở thư mục nhãn / in PDF",280);open.Name="openMarketplaceLabels";open.Left=510;open.Top=55;open.Click+=(_,_)=>System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(folder){UseShellExecute=true});work.Controls.Add(open);activeWorkResize?.Invoke(work,EventArgs.Empty);
         }catch(OperationCanceledException){}catch(Exception ex){if(!token.IsCancellationRequested && !IsDisposed){app.Db.Audit("In nhãn "+store.Marketplace,"Chưa xuất đủ",ex.Message);ShowInfo(ex.Message);}}
     }
@@ -157,3 +164,4 @@ internal sealed class MarketplaceLayoutDialog:Form
         var ok=new Button{Left=20,Top=465,Width=300,Text="Xác nhận phân bổ đầy đủ"};ok.Click+=(_,_)=>{try{_=BoxLayout;DialogResult=DialogResult.OK;Close();}catch(Exception ex){MessageBox.Show(this,ex.Message);}};Controls.Add(ok);var cancel=new Button{Left=350,Top=465,Width=100,Text="Hủy",DialogResult=DialogResult.Cancel};Controls.Add(cancel);CancelButton=cancel;
     }
 }
+

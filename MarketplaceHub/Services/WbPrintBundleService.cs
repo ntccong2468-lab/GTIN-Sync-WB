@@ -263,6 +263,15 @@ public sealed class WbPrintBundleService
                 group.Sum(x=>x.Quantity),group.Select(x=>x.OrderId).ToArray(),group.Select(x=>x.Thumbnail).FirstOrDefault(x=>x is not null)))
             .OrderBy(x=>x.Article,StringComparer.Ordinal).ThenBy(x=>x.Color,StringComparer.Ordinal).ThenBy(x=>x.Size,StringComparer.Ordinal).ToArray();
 
+    public static string WritePickingList(string marketplace,string shop,IReadOnlyList<WbPrintOrder> orders,string folder,CancellationToken ct=default)
+    {
+        if(marketplace is not ("Ozon" or "Yandex") || orders.Count==0 || orders.Any(x=>x.Quantity<=0 || string.IsNullOrWhiteSpace(x.OrderId)))
+            throw new InvalidOperationException("Phiếu nhặt cần sàn, đơn và số lượng sản phẩm hợp lệ.");
+        Directory.CreateDirectory(folder);var target=Path.Combine(folder,marketplace+"-picking-A4.pdf");var temporary=target+".tmp";
+        try{WriteDetails(temporary,shop,orders,new(false,false,false,1),ct,marketplace);ct.ThrowIfCancellationRequested();File.Move(temporary,target,true);return target;}
+        catch{File.Delete(temporary);throw;}
+    }
+
     private static void WriteDetails(string path,string shop,IReadOnlyList<WbPrintOrder> orders,WbPrintOptions options,CancellationToken ct,string context="WB")
     {
         using var pdf = SKDocument.CreatePdf(path);
@@ -274,7 +283,7 @@ public sealed class WbPrintBundleService
             var canvas = pdf.BeginPage(595,842);
             Text(canvas,context+" · Phiếu nhặt hàng / Лист подбора",28,34,18,true);
             Text(canvas,shop + " · " + DateTime.UtcNow.ToString("yyyy-MM-dd HH:mm") + " UTC",28,55,10,false,539);
-            Text(canvas,$"Đơn: {orders.Count} · Biến thể: {variants.Count} · Tổng sản phẩm: {orders.Sum(x=>x.Quantity)}",28,73,10);
+            Text(canvas,$"Đơn: {orders.Select(x=>x.OrderId).Distinct(StringComparer.Ordinal).Count()} · Biến thể: {variants.Count} · Tổng sản phẩm: {orders.Sum(x=>x.Quantity)}",28,73,10);
             var columns=new float[]{28,59,108,310,364,497,567};
             using var border=new SKPaint {Color=SKColors.Gray,StrokeWidth=0.5f,Style=SKPaintStyle.Stroke};
             void RowBorder(float y,float height)
@@ -313,3 +322,4 @@ public sealed class WbPrintBundleService
         pdf.Close();
     }
 }
+

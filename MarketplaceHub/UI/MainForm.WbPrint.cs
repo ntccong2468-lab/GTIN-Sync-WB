@@ -87,10 +87,10 @@ public sealed partial class MainForm
                 size=variant?["techSize"]?.ToString()??(sizes.Count>1 ? "" : size);
                 var variantCodes=(variant?["skus"] as JsonArray)?.Select(x=>x?.ToString()??"").ToArray()??Array.Empty<string>();
                 var candidates=(skus.Length>0 ? variantCodes.Where(skus.Contains) : variantCodes).ToArray();
-                var mapped=variant?["chrtID"]?.ToString() is { } variantId&&app.Db.ConfirmedGtinMappings(new StoreProfile(product.StoreId,product.Marketplace,"","","","","","",true)).TryGetValue((product.Sku,variantId),out var sellerGtin)?sellerGtin:"";
-                var gtin=mapped.Length>0?mapped:ProductCatalog.UniqueGtin(candidates);
-                if(requireProduct && gtin.Length==0)throw new InvalidOperationException($"{order.ExternalOrderId}: barcode của biến thể thiếu hoặc có nhiều GTIN khác nhau. Chưa chọn mã để in/gắn KIZ.");
-                barcode=mapped.Length>0?mapped:gtin.Length>0?candidates.First(x=>ProductCatalog.NormalizeGtin(x)==gtin):"";
+                if(requireProduct && candidates.Length==0)
+                    throw new InvalidOperationException($"{order.ExternalOrderId}: biến thể WB thiếu barcode của sàn. Hãy đồng bộ lại catalog.");
+                // Keep the original marketplace barcode; registered GTIN is resolved separately for KIZ.
+                barcode=candidates.FirstOrDefault()??"";
             }
             else if(barcode.Length==0)barcode=meta.Barcode;
         }
@@ -99,3 +99,4 @@ public sealed partial class MainForm
         return new(order.ExternalOrderId,product?.Name??order.Name,meta.Article,meta.Color,size,meta.Brand,barcode,order.Quantity,order.NeedsKiz,kiz,label,thumbnail);
     }
 }
+

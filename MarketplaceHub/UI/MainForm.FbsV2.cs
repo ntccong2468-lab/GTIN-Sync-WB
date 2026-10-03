@@ -27,7 +27,8 @@ public sealed partial class MainForm
         var a=TabButton("Đơn mới",fbsWorkspaceMode=="new",112);a.SetBounds(0,0,112,56);var b=TabButton("Đang đóng gói",fbsWorkspaceMode=="pack",165);b.SetBounds(118,0,165,56);var c=TabButton("Đang giao",fbsWorkspaceMode=="ship",130);c.SetBounds(289,0,130,56);tabs.Controls.AddRange(new Control[]{a,b,c});
         a.Click+=(_,_)=>ShowFbsWorkspace("new");b.Click+=(_,_)=>ShowFbsWorkspace("pack");c.Click+=(_,_)=>ShowFbsWorkspace("ship");
         var store=CurrentStore();if(store is null)return;if(fbsWorkspaceMode=="new")BuildFbsNewOrders(store,token,refresh);else BuildFbsShipments(store,token,refresh,fbsWorkspaceMode=="ship");
-        SetWorkResize((_,_)=>tabs.Width=Math.Max(560,work.ClientSize.Width-55));
+        var childLayout=activeWorkResize;
+        SetWorkResize((sender,args)=>{tabs.Width=Math.Max(560,work.ClientSize.Width-55);childLayout?.Invoke(sender,args);});
     }
 
     private void BuildFbsNewOrders(StoreProfile store,CancellationToken token,Button refresh)
@@ -68,3 +69,4 @@ public sealed partial class MainForm
         if(store.Marketplace==Marketplace.Wildberries)_=Task.Run(async()=>{try{await app.RefreshWbSuppliesAsync(store,token);}catch{}if(!token.IsCancellationRequested&&!IsDisposed)BeginInvoke((Action)(()=>{if(!token.IsCancellationRequested)Load();}));});
     }
 }
+

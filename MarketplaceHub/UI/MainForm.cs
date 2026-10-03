@@ -473,7 +473,7 @@ public sealed partial class MainForm : Form
         var quick = new FlowLayoutPanel { Left = 4, Top = 56, Width = 600, Height = 46, BackColor = C.Main, WrapContents = false };
         var b7 = ActionButton("7 ngày", 88, true);
         var b30 = ActionButton("30 ngày", 96);
-        var b90 = ActionButton("90 ngày", 96);
+        var b90 = ActionButton("45 ngày", 96);
         var from = new DateTimePicker { Width = 130, Format = DateTimePickerFormat.Short, Value = DateTime.Today.AddDays(-6) };
         var to = new DateTimePicker { Width = 130, Format = DateTimePickerFormat.Short, Value = DateTime.Today };
         quick.Controls.Add(b7); quick.Controls.Add(b30); quick.Controls.Add(b90); quick.Controls.Add(from); quick.Controls.Add(to);
@@ -609,15 +609,18 @@ public sealed partial class MainForm : Form
                 if (finance.Ok && finance.Snapshot is not null)
                 {
                     var f = finance.Snapshot;
-                    var totalCosts = f.Delivery + f.Storage + f.Acceptance + f.Deductions + f.Penalties;
-                    var net = f.Payout + f.AdditionalPayments - f.Cashback - totalCosts;
+                    string Amount(decimal? value)=>value is { } amount?$"{amount:N2} ₽":"Chưa có dữ liệu";
                     financeStatus.Text =
-                        $"Doanh thu: {f.Revenue:N0} ₽\n" +
-                        $"Thanh toán: {f.Payout:N0} ₽\n" +
-                        $"Logistics + lưu kho + phí: {totalCosts:N0} ₽\n" +
-                        $"Phạt: {f.Penalties:N0} ₽\n" +
-                        $"Ròng ước tính theo báo cáo: {net:N0} ₽\n\n" +
-                        $"Kỳ {f.From} → {f.To} · {f.ReportCount} dòng báo cáo";
+                        $"Doanh thu: {Amount(f.Revenue)}\n"+
+                        $"Khoản WB forPay: {Amount(f.Payout)}\n"+
+                        $"Chuyển ngân hàng: {Amount(f.BankPayment)}\n"+
+                        $"Logistics: {Amount(f.Delivery)} · Lưu kho: {Amount(f.Storage)}\n"+
+                        $"Tiếp nhận: {Amount(f.Acceptance)} · Khấu trừ: {Amount(f.Deductions)}\n"+
+                        $"Phạt: {Amount(f.Penalties)} · Bổ sung: {Amount(f.AdditionalPayments)}\n"+
+                        $"Cashback: {Amount(f.Cashback)}\n\n"+
+                        $"Kỳ {f.From} → {f.To} · {f.ReportCount} báo cáo"+
+                        (f.ExcludedReports>0?$" · Loại {f.ExcludedReports} báo cáo vượt kỳ":"")+
+                        "\nCác khoản quyết toán được trình bày riêng; chưa có dữ liệu giá vốn để tính lợi nhuận.";
                     financeStatus.ForeColor = C.Text;
                 }
                 else
@@ -639,12 +642,12 @@ public sealed partial class MainForm : Form
         {
             from.Value = DateTime.Today.AddDays(-(days - 1));
             to.Value = DateTime.Today;
-            StyleTab(b7, days == 7); StyleTab(b30, days == 30); StyleTab(b90, days == 90);
+            StyleTab(b7, days == 7); StyleTab(b30, days == 30); StyleTab(b90, days == 45);
         }
 
         b7.Click += (_, _) => SetDays(7);
         b30.Click += (_, _) => SetDays(30);
-        b90.Click += (_, _) => SetDays(90);
+        b90.Click += (_, _) => SetDays(45);
         sync.Click += async (_, _) =>
         {
             try { await RefreshReport(); }
@@ -2110,6 +2113,7 @@ public sealed partial class MainForm : Form
             var root = JsonNode.Parse(p.RawJson);
             var offer = root?["offer"] ?? root;
             var size = root?["sizes"]?.AsArray()?.FirstOrDefault()?["techSize"]?.ToString()
+                       ?? offer?["print_metadata"]?["size"]?.ToString()
                        ?? offer?["size"]?.ToString()
                        ?? "";
             var barcode = root?["sizes"]?.AsArray()?.FirstOrDefault()?["skus"]?.AsArray()?.FirstOrDefault()?.ToString()
@@ -2141,13 +2145,14 @@ public sealed partial class MainForm : Form
                           ?? offer?["offerId"]?.ToString()
                           ?? root?["offer_id"]?.ToString()
                           ?? p.Sku;
-            var brand = root?["brand"]?.ToString()
+            var brand = offer?["print_metadata"]?["brand"]?.ToString()
+                        ?? root?["brand"]?.ToString()
                         ?? offer?["vendor"]?.ToString()
                         ?? "";
             var tnved = Char("ТН ВЭД", "TN VED", "ТНВЭД", "tnved");
             return new ProductMetaValue(
                 Char("Пол", "gender", "Giới tính"),
-                Char("Цвет", "color", "Màu"),
+                offer?["print_metadata"]?["color"]?.ToString() ?? Char("Цвет", "color", "Màu"),
                 size, barcode, category, tnved, article, brand);
         }
         catch
@@ -2566,3 +2571,4 @@ internal sealed class RoundedButton : Button
         TextRenderer.DrawText(pevent.Graphics, Text, Font, rect, Enabled ? ForeColor : Color.FromArgb(150, ForeColor), flags);
     }
 }
+

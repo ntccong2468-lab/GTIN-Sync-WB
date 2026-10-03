@@ -139,7 +139,7 @@ public static class ProductCatalog
             var barcodes = Strings(offer["barcodes"]);
             if (barcodes.Count == 0 && offer["barcode"] is JsonValue barcode) barcodes = new[] { barcode.ToString() };
             variants.Add(new(product.StoreId, product.Marketplace, product.Sku, product.ExternalId, product.ExternalId,
-                offer["size"]?.ToString() ?? "", barcodes,
+                offer["print_metadata"]?["size"]?.ToString() ?? offer["size"]?.ToString() ?? "", barcodes,
                 UniqueGtin(barcodes), product.ImageUrl, root.ToJsonString()));
         }
         if (variants.Select(v => v.VariantId).Distinct(StringComparer.Ordinal).Count() != variants.Count)
@@ -355,13 +355,48 @@ public sealed partial class MarketplaceGateway
             JsonSerializer.Serialize(new { product_id = identities.Select(i => i.Id).ToArray() }), ct, progress).ConfigureAwait(false);
         var info = details["items"] as JsonArray ?? details["result"]?["items"] as JsonArray
             ?? throw new InvalidDataException("Ozon thiếu chi tiết catalog.");
+        var attributesById = new Dictionary<string,JsonObject>(StringComparer.Ordinal);
+        var needed = info.Where(x=>x?["description_category_id"] is not null && x?["type_id"] is not null).ToArray();
+        var neededIds=needed.Select(x=>RequiredCatalogId(x,x?["id"] is not null?"id":"product_id")).ToHashSet(StringComparer.Ordinal);
+        if(neededIds.Count>0)
+        {
+            var attributes=await ReadCatalogJsonAsync(s,"https://api-seller.ozon.ru/v4/product/info/attributes",
+                JsonSerializer.Serialize(new{filter=new{product_id=neededIds.ToArray()},limit=neededIds.Count}),ct,progress).ConfigureAwait(false);
+            var cards=attributes["result"] as JsonArray??throw new InvalidDataException("Ozon thiếu attributes catalog.");
+            foreach(var node in cards)
+            {
+                if(node is not JsonObject card)throw new InvalidDataException("Ozon trả attribute card không hợp lệ.");
+                var id=RequiredCatalogId(card,card["id"] is not null?"id":"product_id");
+                var expected=identities.SingleOrDefault(x=>x.Id==id);
+                if(!neededIds.Contains(id)||expected is null||RequiredCatalogId(card,"offer_id")!=expected.Sku||!attributesById.TryAdd(id,card))
+                    throw new InvalidDataException("Ozon attributes không khớp đúng product/offer hoặc trùng ID. Giữ checkpoint.");
+            }
+            if(attributesById.Count!=neededIds.Count)throw new InvalidDataException("Ozon thiếu attribute card. Không công bố trang thiếu size.");
+        }
+        var definitionsByCategory=new Dictionary<(string Category,string Type),JsonArray>();
         var entries = new List<ProductCatalogEntry>();
         foreach (var identity in identities)
         {
             var matches = info.Where(i => (i?["id"]?.ToString() ?? i?["product_id"]?.ToString()) == identity.Id).ToArray();
             if (matches.Length != 1 || matches[0]?["offer_id"]?.ToString() != identity.Sku)
                 throw new InvalidDataException($"Ozon thiếu/sai chi tiết SKU {identity.Sku}; trang hiện tại chưa được lưu.");
-            var item = matches[0]!;
+            var item = matches[0] as JsonObject??throw new InvalidDataException("Ozon detail card không hợp lệ.");
+            if(attributesById.TryGetValue(identity.Id,out var attributeCard))
+            {
+                var category=RequiredCatalogId(item,"description_category_id");var type=RequiredCatalogId(item,"type_id");
+                if(RequiredCatalogId(attributeCard,"description_category_id")!=category||RequiredCatalogId(attributeCard,"type_id")!=type)
+                    throw new InvalidDataException("Ozon attribute category/type không khớp card.");
+                if(!definitionsByCategory.TryGetValue((category,type),out var definitions))
+                {
+                    if(!long.TryParse(category,out var categoryId)||categoryId<=0||!long.TryParse(type,out var typeId)||typeId<=0)
+                        throw new InvalidDataException("Category/type Ozon không hợp lệ.");
+                    var response=await ReadCatalogJsonAsync(s,"https://api-seller.ozon.ru/v1/description-category/attribute",
+                        JsonSerializer.Serialize(new{description_category_id=categoryId,type_id=typeId,language="DEFAULT"}),ct,progress).ConfigureAwait(false);
+                    definitions=response["result"] as JsonArray??throw new InvalidDataException("Ozon thiếu định nghĩa thuộc tính category.");
+                    definitionsByCategory[(category,type)]=definitions;
+                }
+                item["print_metadata"]=OzonProductMetadata.Resolve(attributeCard,definitions);
+            }
             entries.Add(ProductCatalog.Entry(new(s.Id, s.Marketplace, identity.Id, identity.Sku,
                 item["name"]?.ToString() ?? identity.Sku, ParseDecimal(item["price"]?.ToString()),
                 ProductCatalog.FirstMedia(item["primary_image"], item["images"]), item.ToJsonString())));
@@ -393,4 +428,49 @@ public sealed partial class MarketplaceGateway
 
     private static string RequiredCatalogId(JsonNode? node, string key) => node?[key] is JsonValue value && !string.IsNullOrWhiteSpace(value.ToString())
         ? value.ToString() : throw new InvalidDataException($"Catalog thiếu {key}.");
+}
+
+
+
+// Attribute IDs belong to category/type. Resolve names returned by Ozon instead of guessing IDs.
+internal static class OzonProductMetadata
+{
+    public static JsonObject Resolve(JsonObject card, JsonArray definitions)
+    {
+        var names = new Dictionary<string,string>(StringComparer.Ordinal);
+        foreach (var definition in definitions)
+        {
+            var id = definition?["id"]?.ToString() ?? "";
+            var name = definition?["name"]?.ToString() ?? "";
+            if (id.Length == 0 || name.Length == 0 || !names.TryAdd(id,name.ToLowerInvariant()))
+                throw new InvalidDataException("Ozon trả định nghĩa thuộc tính thiếu hoặc trùng ID.");
+        }
+        var attributes = Flatten(card["attributes"]).Concat(Flatten(card["complex_attributes"]))
+            .Where(x=>names.ContainsKey(x["id"]?.ToString()??""))
+            .Select(x=>(Name:names[x["id"]!.ToString()],Value:Values(x["values"])))
+            .Where(x=>x.Value.Length>0).ToArray();
+        string Select(Func<string,int> score) => attributes.Select(x=>(x.Value,Score:score(x.Name)))
+            .Where(x=>x.Score>0).OrderByDescending(x=>x.Score).Select(x=>x.Value).FirstOrDefault()??"";
+        var size=Select(name=>{
+            if(name.Contains("упаков")||name.Contains("таблиц")||name.Contains("package")||name.Contains("chart"))return 0;
+            if(name.Contains("размер производителя")||name.Contains("manufacturer size")||name.Contains("size of manufacturer"))return 100;
+            if(name.Contains("российский размер")||name.Contains("russian size"))return 80;
+            return name is "размер" or "size"?50:0;
+        });
+        return new JsonObject{["size"]=size,["color"]=Select(n=>n.Contains("цвет товара")?100:n.Contains("цвет")||n=="color"?70:0),
+            ["brand"]=Select(n=>n is "бренд" or "brand"?100:0)};
+    }
+
+    private static IEnumerable<JsonObject> Flatten(JsonNode? node)
+    {
+        if(node is JsonArray array){foreach(var child in array)foreach(var attribute in Flatten(child))yield return attribute;}
+        else if(node is JsonObject obj)
+        {
+            if(obj["id"] is not null && obj["values"] is JsonArray)yield return obj;
+            else foreach(var child in obj)foreach(var attribute in Flatten(child.Value))yield return attribute;
+        }
+    }
+    private static string Values(JsonNode? node) => node is JsonArray array
+        ? string.Join(", ",array.Select(x=>x is JsonValue?x.ToString():x?["value"]?.ToString()??"")
+            .Where(x=>!string.IsNullOrWhiteSpace(x)).Distinct(StringComparer.Ordinal)) : "";
 }

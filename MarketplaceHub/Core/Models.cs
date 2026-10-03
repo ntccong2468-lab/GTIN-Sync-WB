@@ -90,18 +90,20 @@ public sealed record FboSupplyRow(
 
 public sealed record FinanceSnapshot(
     string Currency,
-    decimal Revenue,
-    decimal Payout,
-    decimal Delivery,
-    decimal Storage,
-    decimal Acceptance,
-    decimal Deductions,
-    decimal Penalties,
-    decimal AdditionalPayments,
-    decimal Cashback,
+    decimal? Revenue,
+    decimal? Payout,
+    decimal? Delivery,
+    decimal? Storage,
+    decimal? Acceptance,
+    decimal? Deductions,
+    decimal? Penalties,
+    decimal? AdditionalPayments,
+    decimal? Cashback,
     int ReportCount,
     string From,
-    string To);
+    string To,
+    int ExcludedReports=0,
+    decimal? BankPayment=null);
 
 public sealed record ZnakPipelineRow(
     long Id,
@@ -138,3 +140,4 @@ public sealed record WbReceiveResult(
     DateTimeOffset? RetryAt = null,
     string RetryEndpoint = "");
 public sealed record WbReceiveCheckpoint(string? SupplyId, string State, IReadOnlyList<string> MemberIds);
+

@@ -10,7 +10,7 @@ using System.Text.Json.Nodes;
 if(args.Length>0 && args[0]=="-sign"){File.WriteAllBytes(args[^1],new byte[]{1,2,3,4});return 0;}
 
 var app=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-state-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());var failures=new List<string>();var checks=0;var stores=new List<StoreProfile>();
-async Task Check(string name,Func<Task> run){checks++;try{await run();Console.WriteLine("PASS "+name);}catch(Exception ex){failures.Add(name);Console.WriteLine("FAIL "+name+": "+ex.GetBaseException().Message);}}
+async Task Check(string name,Func<Task> run){checks++;try{await run();Console.WriteLine("PASS "+name);}catch(Exception ex){failures.Add(name);Console.WriteLine("FAIL "+name+": "+ex.GetBaseException().Message);}finally{if(name.StartsWith("SUZ ",StringComparison.Ordinal)||name.StartsWith("KIZ acquisition",StringComparison.Ordinal)){using var clean=new SqliteConnection("Data Source="+app.Db.DbPath);clean.Open();using var cmd=clean.CreateCommand();cmd.CommandText="DELETE FROM kiz_pool";cmd.ExecuteNonQuery();}}}
 void Expect(bool ok,string message){if(!ok)throw new Exception(message);}
 StoreProfile Store(Marketplace m){var store=app.Db.SaveStore(new(0,m,"STATE-FIXTURE-"+Guid.NewGuid().ToString("N"),"123","fixture","456","789","fixture-wb-token",true));stores.Add(store);return store;}
 HttpResponseMessage Json(string body)=>new(HttpStatusCode.OK){Content=new StringContent(body,Encoding.UTF8,"application/json")};
