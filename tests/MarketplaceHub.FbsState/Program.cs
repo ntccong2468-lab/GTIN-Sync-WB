@@ -7,7 +7,7 @@ using System.Text;
 using System.Text.Json.Nodes;
 
 // Test-only signing executable: exercises the real process boundary without a certificate or network.
-if(args.Length>0 && args[0]=="-sign"){File.WriteAllBytes(args[^1],new byte[]{1,2,3,4});return;}
+if(args.Length>0 && args[0]=="-sign"){File.WriteAllBytes(args[^1],new byte[]{1,2,3,4});return 0;}
 
 var app=new AppServices(new MarketplaceHub.Infrastructure.AppDatabase(Path.Combine(Path.GetTempPath(),"MarketplaceHub-state-"+Guid.NewGuid().ToString("N"),"test.db")),new MarketplaceGateway(),LicenseAccessService.CreateDefault());var failures=new List<string>();var checks=0;var stores=new List<StoreProfile>();
 async Task Check(string name,Func<Task> run){checks++;try{await run();Console.WriteLine("PASS "+name);}catch(Exception ex){failures.Add(name);Console.WriteLine("FAIL "+name+": "+ex.GetBaseException().Message);}}
